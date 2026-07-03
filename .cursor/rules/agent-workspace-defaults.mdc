@@ -1,0 +1,16 @@
+---
+description: Core agent behavior for this workspace
+alwaysApply: true
+---
+
+# Workspace Agent Defaults
+
+- Prefer small, focused changes unless asked for larger refactors.
+- Explain tradeoffs briefly when multiple implementation options exist.
+- Run relevant checks after edits and report results clearly.
+- Keep docs and comments concise and actionable.
+- Ask before destructive operations (deleting files, hard resets, force pushes).
+
+# Trading Pulse
+
+This repo is **Trading Pulse** (`my-project/`). For Telegram, plans, guides, or watchlist work, read `.cursor/skills/trading-pulse/SKILL.md` before coding.

@@ -1,0 +1,29 @@
+---
+description: Trading Pulse — sync Telegram changes with guides and HTML conventions
+globs: trading_pulse/agent/dryrun_agent.py,trading_pulse/telegram/**,trading_pulse/agent/capital_allocation.py,trading_pulse/agent/ticker_manager.py,web/static/**,trading_pulse/telegram/telegram_guide.py,trading_pulse/guides/selection_guide.py,trading_pulse/desktop/win_app.py
+alwaysApply: false
+---
+
+# Trading Pulse: Telegram & guides
+
+When editing matched files, read `.cursor/skills/trading-pulse/SKILL.md` first.
+
+## Required on Telegram / UX changes
+
+1. New or changed command → `parse_telegram_user_command` + handler in `dryrun_agent.py`
+2. User-facing text → HTML (`telegram_format.escape_html`, `parse_mode="HTML"`)
+3. Update **`telegram_guide.py`** (dashboard מדריך) for every new user command
+4. Update **`telegram_format.user_guide_full()`** for common commands
+5. Update **`selection_guide.py`** if watchlist, scoring, or scan behavior changes
+6. Verify `app.js` nav/routes if adding a dashboard page
+
+## Two-step flow (do not break)
+
+- שלב 1: `הכל`, `1,2` — digits **without** ח
+- שלב 2: `ח1`…`ח5` — **with** ח
+- Free text must not fall through to approve parsing
+
+## Plans
+
+- Send via `send_plan_notifications()` (summary + table + per-stock charts)
+- Watchlist changes in `ticker_manager.py` → `config.json`; `generate_plan` reloads tickers

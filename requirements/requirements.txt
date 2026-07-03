@@ -1,0 +1,12 @@
+numpy>=2.0,<2.3
+pandas>=2.2,<3
+yfinance
+schedule
+requests
+fastapi
+uvicorn[standard]
+pystray
+Pillow
+pywebview
+python-dotenv
+pytest>=8.0

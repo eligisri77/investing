@@ -1,0 +1,302 @@
+"""How stock recommendations are selected — dashboard guide content."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from trading_pulse.agent.signal_sources import SOURCE_LABELS
+
+RISK_PROFILE_LABELS = {
+    "conservative": "שמרני",
+    "balanced": "מאוזן",
+    "aggressive": "אגרסיבי",
+    "speculative": "ספקולטיבי",
+}
+
+
+def _intraday_selection_block(cfg: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(cfg.get("intraday_check_enabled", True))
+    interval = int(cfg.get("intraday_check_interval_minutes", 60))
+    open_t = str(cfg.get("market_open_sim_time", "16:40"))
+    close_t = str(cfg.get("market_close_sim_time", "23:10"))
+    if not enabled:
+        return {
+            "enabled": False,
+            "title": "מעקב במהלך יום המסחר",
+            "detail": "כבוי (intraday_check_enabled=false). ניתן להפעיל בהגדרות #/settings",
+        }
+    hours = interval // 60 if interval % 60 == 0 else None
+    freq = f"כל {hours} שעות" if hours and hours > 1 else ("כל שעה" if interval == 60 else f"כל {interval} דקות")
+    return {
+        "enabled": True,
+        "title": "מעקב במהלך יום המסחר",
+        "detail": (
+            f"בין {open_t} ל-{close_t} ({freq}) נבדקות מניות מושקעות — "
+            "חריגות (סטופ, ירידה חדה) והצעות רכישה/החלפה ממניות עולות ברשימה. "
+            "התראות בטלגרם בלבד כשיש משהו לדווח. הגדרות: #/settings."
+        ),
+        "interval_minutes": interval,
+        "window": f"{open_t}–{close_t}",
+    }
+
+
+def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = cfg or {}
+    risk = str(cfg.get("risk_profile", "speculative"))
+    speculative = risk == "speculative"
+    signal_sources = cfg.get("signal_sources") or []
+    tickers = cfg.get("tickers") or []
+
+    source_rows = [
+        {
+            "id": sid,
+            "label": SOURCE_LABELS.get(sid, sid),
+            "weight": float((cfg.get("source_weights") or {}).get(sid, 0.5)),
+        }
+        for sid in signal_sources
+    ]
+
+    return {
+        "title": "איך בוחרים מניות?",
+        "subtitle": "תהליך אוטומטי — סריקה, סינון, ציון, דירוג ובחירת Top N",
+        "disclaimer": (
+            "זה Dry Run לצורכי למידה וסימולציה בלבד. "
+            "אין כאן ייעוץ השקעות ואין הבטחה לרווח."
+        ),
+        "pipeline": [
+            {
+                "step": 1,
+                "title": "סריקת רשימת מניות",
+                "detail": (
+                    f"בכל ערב (~21:00) נסרקות {len(tickers)} מניות/ETF מהרשימה ב-config.json. "
+                    "ניתן לעדכן בטלגרם: הוסף / הסר / חפש מניות."
+                ),
+            },
+            {
+                "step": 2,
+                "title": "איסוף אותות ממקורות",
+                "detail": (
+                    f"לכל מניה נשלפת תשובה מ-{len(signal_sources)} מקורות לפחות "
+                    f"(מינימום {cfg.get('min_signal_sources', 3)}). "
+                    "מניה בלי מספיק מקורות — נפסלת."
+                ),
+            },
+            {
+                "step": 3,
+                "title": "סינון איכות",
+                "detail": (
+                    f"נפח ≥ {cfg.get('min_volume_ratio', 1.3)}× ממוצע · "
+                    f"ציון מינימום {cfg.get('min_entry_score', 10)} · "
+                    f"{'פסילה כשמקורות לא מסכימים' if cfg.get('exclude_on_source_disagreement') else 'קנס על חוסר הסכמה'}. "
+                    f"מניה שהפסידה — cooldown {cfg.get('symbol_cooldown_days_after_loss', 5)} ימים. "
+                    f"ETF ממונף 3x — מקסימום {cfg.get('max_leveraged_etf_positions', 1)} בתוכנית."
+                ),
+            },
+            {
+                "step": 4,
+                "title": "סינון בסיסי",
+                "detail": (
+                    f"מחיר מעל ${cfg.get('min_price_usd', 5)} · "
+                    f"נזילות ממוצעת 20 יום מעל {int(cfg.get('min_avg_volume_20d', 0)):,} מניות. "
+                    "מניות שכבר מוחזקות בתיק — לא מוצעות שוב לכניסה."
+                ),
+            },
+            {
+                "step": 5,
+                "title": "ציון ודירוג",
+                "detail": (
+                    "ציון משוקלל מכל המקורות + התאמת חדשות + מיון לפי ציון סופי. "
+                    "הגבוהות בראש הרשימה."
+                ),
+            },
+            {
+                "step": 6,
+                "title": "בחירת Top N",
+                "detail": (
+                    f"נבחרת עד {cfg.get('max_trades_per_day', 1)} כניסה חדשה ליום "
+                    f"(בהתחשב ב-{cfg.get('max_open_positions', 4)} פוזיציות מקסימום ומה שכבר פתוח)."
+                ),
+            },
+            {
+                "step": 7,
+                "title": "אישור שלך",
+                "detail": (
+                    "המלצות מגיעות בטלגרם או בדשבורד — מאשר/דוחה (#/plan), "
+                    "ואז בוחר חלוקת הון (ח1…ח5 בטלגרם או כפתורים בדשבורד)."
+                ),
+            },
+        ],
+        "intraday": _intraday_selection_block(cfg),
+        "strategy": {
+            "profile": risk,
+            "profile_label": RISK_PROFILE_LABELS.get(risk, risk),
+            "mode": "speculative" if speculative else "momentum",
+            "mode_title": "ספקולטיבי — תנודתיות ופריצות" if speculative else "מומנטום — מגמה ונפח",
+            "scoring": (
+                [
+                    "ATR% — תנודתיות יומית (יותר גבוה = ציון גבוה יותר)",
+                    "יחס נפח (vol ratio) מול ממוצע 20 יום",
+                    "קרבה לשיא 20 יום / פריצה",
+                    "תשואה ב-5 ימים האחרונים",
+                ]
+                if speculative
+                else [
+                    "מעל MA20 — מגמה חיובית",
+                    "יחס נפח מול ממוצע",
+                    "תשואה ב-5 ימים האחרונים",
+                ]
+            ),
+            "must_pass": (
+                "לפחות אחד מ: נפח חריג · פריצה לשיא · ATR ≥ 3%"
+                if speculative
+                else "מומנטום חיובי (מעל MA20) או נפח מעל הסף"
+            ),
+            "stops": (
+                f"מחיר תחתון -{int(float(cfg.get('stop_loss_pct', 0.12)) * 100)}% (מכירה אוטומטית) · "
+                f"יעד +{int(float(cfg.get('take_profit_pct', 0.25)) * 100)}%"
+            ),
+            "hold": (
+                f"מצב {cfg.get('hold_mode', 'swing')} · "
+                f"עד {cfg.get('max_hold_days', 5)} ימי החזקה"
+            ),
+        },
+        "sources": {
+            "items": source_rows,
+            "disagreement": (
+                f"אם מקורות לא מסכימים (פער std ≥ {cfg.get('max_source_score_std', 4.5)} "
+                f"או spread ≥ {cfg.get('max_source_score_spread', 9)}): "
+                + (
+                    "המניה נפסלת."
+                    if cfg.get("exclude_on_source_disagreement")
+                    else f"הציון מוכפל ב-{cfg.get('disagreement_score_penalty', 0.75)} (קנס)."
+                )
+            ),
+        },
+        "enrichment": [
+            {
+                "icon": "📰",
+                "title": "חדשות",
+                "detail": (
+                    f"עד {cfg.get('news_headlines_count', 3)} כותרות מ-"
+                    f"{', '.join(cfg.get('news_sources') or ['yahoo', 'google', 'finviz'])}. "
+                    "מילות מפתח חיוביות/שליליות מזיזות את הציון."
+                ),
+            },
+            {
+                "icon": "📊",
+                "title": "Backtest קצר",
+                "detail": (
+                    f"סימולציה על {cfg.get('backtest_days', 90)} ימים אחורה עם אותם סטופ/יעד — "
+                    "win rate וממוצע לעסקה מופיעים בהסבר המניה."
+                ),
+            },
+            {
+                "icon": "🧮",
+                "title": "דירוג סופי",
+                "detail": "אחרי חדשות — מיון מחדש לפי ציון סופי. רק הראשונות נכנסות לתוכנית.",
+            },
+        ],
+        "limits": [
+            {
+                "label": "הון פנוי",
+                "value": "רק מה שלא מושקע בפוזיציות פתוחות",
+            },
+            {
+                "label": "גודל פוזיציה",
+                "value": f"עד {int(float(cfg.get('max_position_pct', 0.25)) * 100)}% מההון לכניסה (טיוטה לפני חלוקה)",
+            },
+            {
+                "label": "הפסד יומי מקס",
+                "value": f"{int(float(cfg.get('max_daily_loss_pct', 0.5)) * 100)}% מההון — מגבלת סיכון",
+            },
+            {
+                "label": "עמלות בסימולציה",
+                "value": f"${cfg.get('commission_per_side_usd', 1)} לצד",
+            },
+        ],
+        "tickers_preview": tickers[:12],
+        "tickers_total": len(tickers),
+    }
+
+
+def format_selection_guide_messages(cfg: dict[str, Any] | None = None) -> list[str]:
+    """Stock selection guide as one or more HTML messages."""
+    from trading_pulse.telegram.telegram_format import chunk_telegram_html, escape_html
+
+    g = get_selection_guide(cfg)
+    parts: list[str] = []
+
+    parts.append(
+        "\n".join(
+            [
+                f"<b>🔍 {escape_html(g['title'])}</b>",
+                f"<i>{escape_html(g['subtitle'])}</i>",
+                f"<i>{escape_html(g['disclaimer'])}</i>",
+            ]
+        )
+    )
+
+    pipe_lines = ["<b>📋 תהליך הבחירה</b>"]
+    for step in g["pipeline"]:
+        pipe_lines.append(
+            f"<b>{step['step']}. {escape_html(step['title'])}</b>\n{escape_html(step['detail'])}"
+        )
+    parts.append("\n".join(pipe_lines))
+
+    intraday = g.get("intraday") or {}
+    if intraday.get("title"):
+        parts.append(
+            "\n".join(
+                [
+                    f"<b>🔍 {escape_html(intraday['title'])}</b>",
+                    escape_html(intraday.get("detail", "")),
+                ]
+            )
+        )
+
+    strat = g["strategy"]
+    strat_lines = [
+        f"<b>🎯 אסטרטגיה — {escape_html(strat['profile_label'])}</b>",
+        escape_html(strat["mode_title"]),
+        "<b>ציון לפי:</b>",
+    ]
+    for row in strat["scoring"]:
+        strat_lines.append(f"• {escape_html(row)}")
+    strat_lines.extend(
+        [
+            f"<b>חובה:</b> {escape_html(strat['must_pass'])}",
+            f"<b>סטופ/יעד:</b> {escape_html(strat['stops'])}",
+            f"<b>החזקה:</b> {escape_html(strat['hold'])}",
+        ]
+    )
+    parts.append("\n".join(strat_lines))
+
+    src_lines = ["<b>📡 מקורות אותות</b>"]
+    for item in g["sources"]["items"]:
+        src_lines.append(
+            f"• {escape_html(item['label'])} — משקל {item['weight']:.2f}"
+        )
+    src_lines.append(escape_html(g["sources"]["disagreement"]))
+    parts.append("\n".join(src_lines))
+
+    enrich_lines = ["<b>➕ העשרה לפני דירוג סופי</b>"]
+    for item in g["enrichment"]:
+        enrich_lines.append(
+            f"{item['icon']} <b>{escape_html(item['title'])}</b> — {escape_html(item['detail'])}"
+        )
+    parts.append("\n".join(enrich_lines))
+
+    lim_lines = ["<b>💰 מגבלות הון</b>"]
+    for row in g["limits"]:
+        lim_lines.append(f"• <b>{escape_html(row['label'])}:</b> {escape_html(row['value'])}")
+    preview = g["tickers_preview"]
+    if preview:
+        more = g["tickers_total"] - len(preview)
+        tickers_str = ", ".join(escape_html(t) for t in preview)
+        if more > 0:
+            tickers_str += f" … +{more}"
+        lim_lines.append(f"<b>רשימת סריקה ({g['tickers_total']}):</b> {tickers_str}")
+    lim_lines.append("<i>עדכון רשימה: <code>מניות</code> · <code>הוסף SYM</code> · <code>חפש מניות</code></i>")
+    parts.append("\n".join(lim_lines))
+
+    return chunk_telegram_html(parts)

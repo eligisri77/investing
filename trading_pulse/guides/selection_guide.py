@@ -17,8 +17,8 @@ RISK_PROFILE_LABELS = {
 def _intraday_selection_block(cfg: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(cfg.get("intraday_check_enabled", True))
     interval = int(cfg.get("intraday_check_interval_minutes", 60))
-    open_t = str(cfg.get("market_open_sim_time", "16:40"))
-    close_t = str(cfg.get("market_close_sim_time", "23:10"))
+    open_t = str(cfg.get("market_open_sim_time", "13:30"))
+    close_t = str(cfg.get("market_close_sim_time", "20:20"))
     if not enabled:
         return {
             "enabled": False,
@@ -31,9 +31,9 @@ def _intraday_selection_block(cfg: dict[str, Any]) -> dict[str, Any]:
         "enabled": True,
         "title": "מעקב במהלך יום המסחר",
         "detail": (
-            f"בין {open_t} ל-{close_t} ({freq}) נבדקות מניות מושקעות — "
-            "חריגות (סטופ, ירידה חדה) והצעות רכישה/החלפה ממניות עולות ברשימה. "
-            "התראות בטלגרם בלבד כשיש משהו לדווח. הגדרות: #/settings."
+            f"בין {open_t} ל-{close_t} UTC ({freq}) נבדקות מניות מושקעות — "
+            "חריגות (סטופ, ירידה חדה) והצעות רכישה/החלפה. "
+            "התראות בטלגרם רק כשיש מה לדווח. הגדרות: #/settings."
         ),
         "interval_minutes": interval,
         "window": f"{open_t}–{close_t}",
@@ -56,19 +56,47 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         for sid in signal_sources
     ]
 
+    deploy_n = int(cfg.get("initial_deploy_stocks", 3))
+    plan_t = str(cfg.get("planning_time", "20:15"))
+    entry_t = str(cfg.get("entry_sim_time", "13:35"))
+    close_t = str(cfg.get("market_close_sim_time", "20:20"))
+    from trading_pulse.core.schedule_tz import format_dual_time
+
+    plan_dual = format_dual_time(plan_t)
+    entry_dual = format_dual_time(entry_t)
+    close_dual = format_dual_time(close_t)
+    max_trades = int(cfg.get("max_trades_per_day", 3))
+
     return {
         "title": "איך בוחרים מניות?",
-        "subtitle": "תהליך אוטומטי — סריקה, סינון, ציון, דירוג ובחירת Top N",
+        "subtitle": "סריקה אוטומטית בערב — אתה מאשר בטלגרם או בדשבורד",
         "disclaimer": (
             "זה Dry Run לצורכי למידה וסימולציה בלבד. "
             "אין כאן ייעוץ השקעות ואין הבטחה לרווח."
         ),
+        "user_flow": [
+            {
+                "step": "א",
+                "title": "ערב — תוכנית",
+                "detail": f"~{plan_dual}: סריקה + המלצות למחר. שלח הכל לאישור.",
+            },
+            {
+                "step": "ב",
+                "title": "בוקר — כניסה",
+                "detail": f"~{entry_dual}: קנייה במחיר פתיחה (אוטומטי אחרי אישור).",
+            },
+            {
+                "step": "ג",
+                "title": "ערב — דוח",
+                "detail": f"~{close_dual}: רווח ממומש + רווח עתידי על מניות פתוחות.",
+            },
+        ],
         "pipeline": [
             {
                 "step": 1,
                 "title": "סריקת רשימת מניות",
                 "detail": (
-                    f"בכל ערב (~21:00) נסרקות {len(tickers)} מניות/ETF מהרשימה ב-config.json. "
+                    f"בכל ערב (~{plan_dual}) נסרקות {len(tickers)} מניות/ETF מהרשימה. "
                     "ניתן לעדכן בטלגרם: הוסף / הסר / חפש מניות."
                 ),
             },
@@ -113,16 +141,18 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "step": 6,
                 "title": "בחירת Top N",
                 "detail": (
-                    f"נבחרת עד {cfg.get('max_trades_per_day', 1)} כניסה חדשה ליום "
-                    f"(בהתחשב ב-{cfg.get('max_open_positions', 4)} פוזיציות מקסימום ומה שכבר פתוח)."
+                    f"יום ראשון: עד {deploy_n} מניות (חלוקה שווה של ההון). "
+                    f"אחר כך: עד {max_trades} כניסה חדשה ליום "
+                    f"(מקסימום {cfg.get('max_open_positions', 4)} פוזיציות פתוחות)."
                 ),
             },
             {
                 "step": 7,
                 "title": "אישור שלך",
                 "detail": (
-                    "המלצות מגיעות בטלגרם או בדשבורד — מאשר/דוחה (#/plan), "
-                    "ואז בוחר חלוקת הון (ח1…ח5 בטלגרם או כפתורים בדשבורד)."
+                    "המלצות מגיעות בטלגרם או בדשבורד — שלח הכל לאישור (#/plan). "
+                    "יום ראשון: ההון מתחלק על כמה מניות. "
+                    "מניה חדשה בלי מזומן: מכור / החלף ואז הכל."
                 ),
             },
         ],
@@ -202,8 +232,12 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "value": "רק מה שלא מושקע בפוזיציות פתוחות",
             },
             {
+                "label": "יום ראשון",
+                "value": f"{deploy_n} מניות — חלוקה שווה אחרי הכל",
+            },
+            {
                 "label": "גודל פוזיציה",
-                "value": f"עד {int(float(cfg.get('max_position_pct', 0.25)) * 100)}% מההון לכניסה (טיוטה לפני חלוקה)",
+                "value": f"עד {int(float(cfg.get('max_position_pct', 0.34)) * 100)}% מההון לכניסה",
             },
             {
                 "label": "הפסד יומי מקס",
@@ -237,6 +271,14 @@ def format_selection_guide_messages(cfg: dict[str, Any] | None = None) -> list[s
     )
 
     pipe_lines = ["<b>📋 תהליך הבחירה</b>"]
+    user_flow = g.get("user_flow") or []
+    if user_flow:
+        pipe_lines.append("<b>זרימה למשתמש</b>")
+        for step in user_flow:
+            pipe_lines.append(
+                f"<b>{step['step']}. {escape_html(step['title'])}</b> — {escape_html(step['detail'])}"
+            )
+        pipe_lines.append("")
     for step in g["pipeline"]:
         pipe_lines.append(
             f"<b>{step['step']}. {escape_html(step['title'])}</b>\n{escape_html(step['detail'])}"

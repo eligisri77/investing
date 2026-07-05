@@ -98,13 +98,23 @@ def test_format_plan_with_recommendations_shows_approval():
         "for_trading_day": "2026-06-29",
         "equity_snapshot": 1000,
         "available_capital_usd": 1000,
+        "deployed_capital_usd": 0,
+        "flow_intent": "first_investment",
         "recommendations": [{"symbol": "NVDA", "capital_usd": 500}],
         "holdings": [],
     }
     text = format_plan(plan, rec_formatter=lambda r, i, p: "")
-    assert "שלב 1" in text
+    assert "יום ראשון" in text
     assert "NVDA" in text
-    assert "ח1" in text
+    assert "הכל" in text
+
+
+def test_format_plan_table_caption_with_picks():
+    from trading_pulse.telegram.telegram_format import format_plan_table_caption
+
+    plan = {"for_trading_day": "2026-06-29", "recommendations": [{"symbol": "NVDA"}]}
+    cap = format_plan_table_caption(plan)
+    assert "הכל" in cap
 
 
 def test_format_plan_table_caption_no_picks():
@@ -124,14 +134,6 @@ def test_format_plan_table_caption_no_picks():
     cap = format_plan_table_caption(plan)
     assert "שלב 1" not in cap
     assert "LABU" in cap
-
-
-def test_format_plan_table_caption_with_picks():
-    from trading_pulse.telegram.telegram_format import format_plan_table_caption
-
-    plan = {"for_trading_day": "2026-06-29", "recommendations": [{"symbol": "NVDA"}]}
-    cap = format_plan_table_caption(plan)
-    assert "שלב 1" in cap
 
 
 def test_load_config_keeps_max_trades_from_file(tmp_path, monkeypatch):

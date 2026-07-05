@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from trading_pulse.core.app_paths import ENV_FILE
 from trading_pulse.core.env_config import (
     clear_telegram_from_config_json,
     mask_secret,
@@ -30,7 +31,7 @@ def get_telegram_settings_payload() -> dict[str, Any]:
         "chat_id_masked": mask_secret(chat_id, visible=3) if chat_id else "",
         "chat_id": chat_id if configured else "",
         "setup_steps": SETUP_STEPS,
-        "env_path": str(__import__("env_config").ENV_FILE),
+        "env_path": str(ENV_FILE),
     }
 
 

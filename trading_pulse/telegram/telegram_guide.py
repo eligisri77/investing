@@ -15,12 +15,25 @@ def _format_interval_hebrew(minutes: int) -> str:
     return f"כל {minutes} דקות"
 
 
+def _schedule_note(cfg: dict[str, Any]) -> str:
+    from trading_pulse.core.schedule_tz import format_dual_time
+
+    plan_t = str(cfg.get("planning_time", "20:15"))
+    entry_t = str(cfg.get("entry_sim_time", "13:35"))
+    close_t = str(cfg.get("market_close_sim_time", "20:20"))
+    return (
+        f"תוכנית {format_dual_time(plan_t)} · "
+        f"כניסה {format_dual_time(entry_t)} · "
+        f"דוח {format_dual_time(close_t)}"
+    )
+
+
 def _intraday_settings_help(cfg: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(cfg.get("intraday_check_enabled", True))
     interval = int(cfg.get("intraday_check_interval_minutes", 60))
     cooldown = int(cfg.get("intraday_alert_cooldown_minutes", 120))
-    open_t = str(cfg.get("market_open_sim_time", "16:40"))
-    close_t = str(cfg.get("market_close_sim_time", "23:10"))
+    open_t = str(cfg.get("market_open_sim_time", "13:30"))
+    close_t = str(cfg.get("market_close_sim_time", "20:20"))
     status = "פעיל" if enabled else "כבוי"
     return {
         "title": "מעקב שעתי במהלך מסחר",
@@ -43,13 +56,13 @@ def _intraday_settings_help(cfg: dict[str, Any]) -> dict[str, Any]:
                 "key": "market_open_sim_time",
                 "label": "תחילת חלון",
                 "value": open_t,
-                "hint": "שעון מקומי (Windows) — מתי מתחיל המעקב",
+                "hint": "UTC — פתיחת וול סטריט (~16:30 ישראל בקיץ)",
             },
             {
                 "key": "market_close_sim_time",
                 "label": "סוף חלון",
                 "value": close_t,
-                "hint": "עד מתי רצות בדיקות (לפני דוח הסימולציה)",
+                "hint": "UTC — לפני דוח סוף יום (~23:20 ישראל בקיץ)",
             },
             {
                 "key": "intraday_alert_cooldown_minutes",
@@ -71,41 +84,43 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     intraday = _intraday_settings_help(cfg)
     enabled = bool(cfg.get("intraday_check_enabled", True))
     interval = int(cfg.get("intraday_check_interval_minutes", 60))
-    open_t = str(cfg.get("market_open_sim_time", "16:40"))
-    close_t = str(cfg.get("market_close_sim_time", "23:10"))
-    plan_t = str(cfg.get("planning_time", "21:00"))
-    reminder_t = str(cfg.get("plan_reminder_time", "22:00"))
-    sim_t = str(cfg.get("market_close_sim_time", "23:10"))
-    heartbeat_t = str(cfg.get("heartbeat_time", "09:00"))
+    open_t = str(cfg.get("market_open_sim_time", "13:30"))
+    close_t = str(cfg.get("market_close_sim_time", "20:20"))
+    plan_t = str(cfg.get("planning_time", "20:15"))
+    entry_t = str(cfg.get("entry_sim_time", "13:35"))
+    reminder_t = str(cfg.get("plan_reminder_time", "20:00"))
+    sim_t = str(cfg.get("market_close_sim_time", "20:20"))
+    heartbeat_t = str(cfg.get("heartbeat_time", "13:00"))
+    from trading_pulse.core.schedule_tz import format_dual_time
+
+    def _dual(t: str) -> str:
+        clean = str(t).lstrip("~")
+        dual = format_dual_time(clean)
+        return dual if dual else str(t)
 
     flow = [
         {
-            "time": plan_t,
-            "label": "תוכנית יומית",
-            "detail": "סיכום + טבלה + הודעה נפרדת לכל מניה עם גרף",
+            "time": _dual(plan_t),
+            "label": "תוכנית ליום המסחר הבא",
+            "detail": "סיכום + טבלה + גרף לכל מניה · שלח הכל לאישור (חלוקה אוטומטית)",
         },
         {
-            "time": "שלב 1",
-            "label": "אישור המלצות",
-            "detail": "שלח הכל / 1,2 / דחה 4",
+            "time": _dual(entry_t),
+            "label": "כניסה בפתיחה",
+            "detail": "סימולציית קנייה במחיר פתיחה + הודעה בטלגרם",
         },
         {
-            "time": "שלב 2",
-            "label": "חלוקת הון",
-            "detail": "שלח ח1…ח5 (עם אות ח') — או בדשבורד #/plan",
-        },
-        {
-            "time": f"~{reminder_t}",
+            "time": _dual(reminder_t),
             "label": "תזכורת",
-            "detail": "אם חסר אישור או חלוקה — הודעה לפני הסימולציה",
+            "detail": "אם לא אושרה תוכנית — תזכורת לפני סגירת השוק",
         },
         {
-            "time": sim_t,
+            "time": _dual(sim_t),
             "label": "דוח יומי",
-            "detail": "סימולציה + סיכום P/L",
+            "detail": "סגירת יום · רווח ממומש + רווח עתידי על מניות פתוחות",
         },
         {
-            "time": heartbeat_t,
+            "time": _dual(heartbeat_t),
             "label": "Heartbeat",
             "detail": "אישור שהסוכן חי",
         },
@@ -114,7 +129,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         flow.insert(
             5,
             {
-                "time": f"{open_t}–{close_t}",
+                "time": f"{_dual(open_t)} – {_dual(close_t)}",
                 "label": "מעקב מסחר",
                 "detail": (
                     f"{_format_interval_hebrew(interval)} — בדיקת מניות מושקעות, "
@@ -128,28 +143,28 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "icon": "📋",
             "title": "תוכנית יומית",
             "when": f"כל יום מסחר ~{plan_t}, או אחרי תוכנית עכשיו",
-                "parts": [
-                    "הודעת סיכום — הון, הוראות שלב 1, רשימת מניות",
-                    "תמונת טבלה — כל ההמלצות במבט אחד",
-                    "לכל מניה — גרף + מחיר תחתון (רף מכירה) + יעד רווח",
-                ],
-        },
-        {
-            "icon": "✅",
-            "title": "אישור המלצות",
-            "when": "אחרי שלב 1 (הכל / 1,2 / דחה)",
             "parts": [
-                "אילו מניות אושרו",
-                "הודעת חלוקת הון (שלב 2) אם יש מאושרות",
+                "מזומן / מושקע / סה\"כ — והמלצות למחר",
+                "יום ראשון: חלוקה על כמה מניות · אחר כך: מניה חדשה או מכירה לפני קנייה",
+                "תמונת טבלה + גרף לכל מניה",
             ],
         },
         {
-            "icon": "💵",
-            "title": "חלוקת הון",
-            "when": "אחרי אישור, או כששולחים חלוקה",
+            "icon": "✅",
+            "title": "אישור (הכל)",
+            "when": "אחרי שליחת הכל / 1,2",
             "parts": [
-                "5 אפשרויות: ח1…ח5 עם פירוט סכומים",
-                "אישור שמירה אחרי בחירת חלוקה",
+                "חלוקה אוטומטית כשיש מזומן",
+                "אם אין מזומן — הודעה עם מכור / החלף",
+            ],
+        },
+        {
+            "icon": "🌅",
+            "title": "כניסה בפתיחה",
+            "when": f"~{entry_t} (פתיחת וול סטריט)",
+            "parts": [
+                "קנייה במחיר פתיחה (dry-run)",
+                "סיכום: אילו מניות נכנסו ובאיזה מחיר",
             ],
         },
         {
@@ -157,9 +172,9 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "title": "דוח יומי",
             "when": f"~{sim_t} בסוף יום מסחר",
             "parts": [
-                "הון לפני/אחרי, רווח/הפסד",
-                "עסקאות שנסגרו ופוזיציות שמוחזקות",
-                "תמונת טבלת דוח",
+                "הון לפני/אחרי, רווח ממומש",
+                "רווח עתידי על מניות שעדיין מוחזקות",
+                "עסקאות שנסגרו ופוזיציות פתוחות",
             ],
         },
         {
@@ -185,12 +200,12 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         },
         {
             "icon": "⏰",
-            "title": "תזכורת לפני סימולציה",
-            "when": f"~{reminder_t} אם חסר אישור או חלוקה",
+            "title": "תזכורת לפני סגירה",
+            "when": f"~{reminder_t} אם לא אושרה תוכנית",
             "parts": [
-                "כמה דקות נותרו עד הסימולציה",
-                "מה לשלוח: הכל / 1,2 או ח4",
-                "אפשר גם לפתוח תוכנית פעילה בדשבורד",
+                "כמה דקות נותרו עד סגירת השוק",
+                "מה לשלוח: הכל או מכור + הכל",
+                "אפשר גם בדשבורד: תוכנית פעילה (#/plan)",
             ],
         },
     ]
@@ -217,9 +232,11 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 
     tips = [
         "כל ההודעות בטלגרם בפורמט HTML — עברית אמורה להופיע תקין.",
-        "אם לא ענית לחלוקה עד הסימולציה — נבחרת אוטומטית ח4 (לפי תוכנית).",
-        "אישור וחלוקה אפשריים גם בדשבורד: תוכנית פעילה (#/plan).",
+        "יום ראשון: שלח הכל — ההון מתחלק אוטומטית על כמה מניות.",
+        "מניה חדשה בלי מזומן: מכור SYMBOL או החלף X Y, ואז הכל.",
+        "אישור אפשרי גם בדשבורד: תוכנית פעילה (#/plan).",
         "דפי עזרה: מדריך (#/guide) · בחירת מניות (#/selection) · חיבור בוט (#/bot-guide).",
+        "שעות נשמרות ב-UTC — בכל מקום מוצג גם שעון ישראל (Asia/Jerusalem).",
         "בלי תאריך — כל הפקודות על התוכנית האחרונה.",
         "שינוי מרווח בדיקת טלגרם בהגדרות נכנס לתוקף תוך ~דקה.",
         "מעקב מסחר: intraday_check_enabled / intraday_check_interval_minutes — נכנס לתוקף תוך ~דקה.",
@@ -231,33 +248,61 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         ),
     ]
 
+    deploy_n = int(cfg.get("initial_deploy_stocks", 3))
+
     return {
         "title": "מדריך טלגרם",
-        "subtitle": "מה הבוט שולח אליך ומה לענות בכל שלב",
+        "subtitle": "תוכנית בערב · כניסה בבוקר · דוח בערב — פשוט וברור",
+        "schedule_note": _schedule_note(cfg),
+        "getting_started": [
+            {
+                "icon": "🚀",
+                "title": "פקודה אחת — התחל",
+                "detail": "יוצר תוכנית, מאשר, ומחלק את ההון. בלי שלבים נפרדים.",
+                "cmd": "התחל",
+            },
+            {
+                "icon": "📈",
+                "title": "ימים רגילים — מניה חדשה",
+                "detail": "יש מזומן? שלח הכל. אין מזומן? קודם מכור חלק ממה שמחזיקים.",
+                "cmd": "מכור SYMBOL → הכל",
+            },
+            {
+                "icon": "🔄",
+                "title": "החלפה מהירה",
+                "detail": "מכירה וקנייה במכה אחת — בלי שלבים נפרדים.",
+                "cmd": "החלף LABU HOOD",
+            },
+        ],
         "flow": flow,
         "outgoing": outgoing,
         "config_help": [intraday],
         "commands": [
             {
-                "id": "step1",
-                "title": "שלב 1 — אישור (מספרים בלי ח')",
-                "warning": "לא לשלוח ח1 כאן — זה שלב 2",
+                "id": "approve",
+                "title": "אישור תוכנית",
                 "items": [
-                    {"cmd": "הכל", "desc": "לאשר את כל ההמלצות"},
+                    {"cmd": "הכל", "desc": "לאשר הכל — חלוקה אוטומטית (יום ראשון: כמה מניות)"},
                     {"cmd": "1,2,3", "desc": "לאשר רק את המספרים האלה"},
                     {"cmd": "דחה 4", "desc": "לדחות המלצה מס' 4"},
                 ],
             },
             {
-                "id": "step2",
-                "title": "שלב 2 — חלוקה (עם אות ח')",
-                "warning": "לא לשלוח 1 או 2 לבד — זה מאשר המלצה, לא חלוקה",
+                "id": "funding",
+                "title": "כשאין מזומן לקנייה חדשה",
+                "items": [
+                    {"cmd": "מכור LABU", "desc": "למכור את כל הפוזיציה ולפנות מזומן"},
+                    {"cmd": "מכור 50% LABU", "desc": "למכור חלק מהפוזיציה"},
+                    {"cmd": "החלף LABU HOOD", "desc": "מכירה + קניית מניה אחרת"},
+                ],
+            },
+            {
+                "id": "advanced",
+                "title": "חלוקה ידנית (מתקדם)",
+                "warning": "רק אם נשלחה הודעת חלוקה ידנית",
                 "items": [
                     {"cmd": "ח1", "desc": "שווה — כל ההון הפנוי"},
-                    {"cmd": "ח2", "desc": "לפי דירוג ההמלצות"},
-                    {"cmd": "ח3", "desc": "מקסימום למניה הראשונה"},
                     {"cmd": "ח4", "desc": "לפי תוכנית + מזומן למחר"},
-                    {"cmd": "ח5", "desc": "שמרני — חצי מהפנוי"},
                     {"cmd": "חלוקה", "desc": "להציג שוב את האפשרויות"},
                 ],
             },
@@ -275,7 +320,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "id": "general",
                 "title": "כללי — בכל שלב",
                 "items": [
-                    {"cmd": "סטטוס", "desc": "מצב התוכנית והחלוקה"},
+                    {"cmd": "סטטוס", "desc": "מצב התוכנית — מה לשלוח עכשיו"},
                     {"cmd": "תיק", "desc": "סיכום השקעות (תמונה)"},
                     {"cmd": "תוכנית", "desc": "לשלוח שוב את התוכנית האחרונה"},
                     {"cmd": "תוכנית עכשיו", "desc": "ליצור תוכנית חדשה מיד"},
@@ -288,14 +333,14 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         ],
         "examples": [
             {
-                "title": "זרימה נכונה",
-                "steps": ["1,2,3", "ח4"],
-                "note": "קודם אישור במספרים, אחר כך חלוקה עם ח'",
+                "title": "יום ראשון — $1,000",
+                "steps": ["הכל"],
+                "note": "ההון מתחלק אוטומטית על ~3 מניות. למחר בפתיחה — כניסה לשוק.",
             },
             {
-                "title": "טעות נפוצה",
-                "steps": ["1"],
-                "note": "אחרי אישור — 1 לבד מאשר רק המלצה #1, לא בוחר חלוקה ח1",
+                "title": "מניה חדשה בלי מזומן",
+                "steps": ["מכור LABU", "הכל"],
+                "note": "קודם מוכרים חלק ממה שמחזיקים, אחר כך מאשרים את הקנייה.",
             },
         ],
         "tips": tips,
@@ -324,6 +369,19 @@ def format_telegram_guide_messages(cfg: dict[str, Any] | None = None) -> list[st
         ]
     )
     parts.append(header)
+
+    gs = g.get("getting_started") or []
+    if gs:
+        gs_lines = ["<b>🚀 התחלה מהירה</b>"]
+        if g.get("schedule_note"):
+            gs_lines.append(f"<i>{escape_html(g['schedule_note'])}</i>")
+        for item in gs:
+            gs_lines.append(
+                f"{item['icon']} <b>{escape_html(item['title'])}</b> — {escape_html(item['detail'])}"
+            )
+            if item.get("cmd"):
+                gs_lines.append(f"  → <code>{escape_html(item['cmd'])}</code>")
+        parts.append("\n".join(gs_lines))
 
     flow_lines = ["<b>⏱ זרימה יומית</b>"]
     for item in g["flow"]:

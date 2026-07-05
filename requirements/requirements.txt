@@ -9,4 +9,5 @@ pystray
 Pillow
 pywebview
 python-dotenv
+python-bidi>=0.6
 pytest>=8.0

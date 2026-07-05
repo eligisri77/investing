@@ -34,30 +34,25 @@ def chunk_telegram_html(parts: list[str]) -> list[str]:
 
 
 def user_guide_step1() -> str:
-    """What the user should send during recommendation approval."""
+    """Buy picks — allocation is automatic when cash is available."""
     return "\n".join(
         [
-            "<b>📝 מה לשלוח עכשיו (שלב 1):</b>",
-            "✅ <code>הכל</code> — לאשר את כל ההמלצות",
-            "✅ <code>1,2,3</code> — לאשר רק את המספרים האלה",
-            "✅ <code>דחה 4</code> — לדחות המלצה מס' 4",
-            "❌ לא עכשיו: <code>ח1</code>…<code>ח5</code> (זה שלב 2, אחרי אישור)",
+            "<b>📝 פקודה אחת:</b>",
+            "✅ <code>התחל</code> — קונה את התיק המומלץ",
+            "✅ <code>מכור SYMBOL</code> — כשצריך מזומן לקנייה חדשה",
+            "✅ <code>החלף X Y</code> — מכירה + קנייה בפעולה אחת",
         ]
     )
 
 
 def user_guide_step2() -> str:
-    """What the user should send during capital allocation."""
+    """Legacy manual allocation — only when advanced split is needed."""
     return "\n".join(
         [
-            "<b>📝 מה לשלוח עכשיו (שלב 2):</b>",
-            "✅ <code>ח1</code> — שווה, כל הפנוי",
-            "✅ <code>ח2</code> — לפי דירוג",
-            "✅ <code>ח3</code> — מקסימום לראשונה",
+            "<b>📝 חלוקה ידנית (רק אם נשלחה):</b>",
+            "✅ <code>ח1</code> — שווה בין המאושרות",
             "✅ <code>ח4</code> — לפי תוכנית + מזומן למחר",
-            "✅ <code>ח5</code> — שמרני, חצי פנוי",
-            "✅ <code>חלוקה</code> — להציג את האפשרויות שוב",
-            "❌ לא: <code>1</code> או <code>2</code> (מאשרים המלצה, לא חלוקה)",
+            "✅ <code>חלוקה</code> — להציג שוב",
         ]
     )
 
@@ -65,9 +60,9 @@ def user_guide_step2() -> str:
 def user_guide_done() -> str:
     return "\n".join(
         [
-            "<b>📝 הכל מוכן.</b>",
-            "אין צורך לשלוח עוד כלום עד דוח המסחר.",
-            "לבדיקה: <code>סטטוס</code> · <code>תיק</code> · <code>תוכנית</code>",
+            "<b>✅ הקנייה בוצעה.</b>",
+            "התיק שלך מעודכן — אין צורך לעשות כלום עד דוח הערב.",
+            "לבדיקה: <code>תיק</code> · <code>סטטוס</code>",
         ]
     )
 
@@ -75,12 +70,12 @@ def user_guide_done() -> str:
 def format_pre_sim_reminder(minutes: int, kind: str) -> str:
     mins = max(0, int(minutes))
     if kind == "allocation":
-        action = "שלח <code>ח4</code> לחלוקה (או <code>ח1</code>…<code>ח5</code>)"
+        action = "שלח <code>הכל</code> לאישור (או בחר חלוקה ידנית אם נשלחה)"
     else:
-        action = "שלח <code>הכל</code> או <code>1,2</code> לאישור"
+        action = "שלח <code>הכל</code> לאישור · אם אין מזומן — <code>מכור SYMBOL</code> קודם"
     return "\n".join(
         [
-            f"⏰ <b>תזכורת</b> — נשארו <b>{mins}</b> דקות עד סימולציה",
+            f"⏰ <b>תזכורת</b> — נשארו <b>{mins}</b> דקות עד סגירת השוק",
             action,
             "",
             "<i>אפשר גם בדשבורד: תוכנית פעילה (#/plan)</i>",
@@ -91,39 +86,46 @@ def format_pre_sim_reminder(minutes: int, kind: str) -> str:
 def user_guide_full() -> str:
     return "\n".join(
         [
-            "<b>📖 שני שלבים — אל תערבב ביניהם</b>",
+            "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "<b>שלב 1 — אישור</b> (מספרים בלי ח')",
-            "<code>הכל</code> · <code>1,2</code> · <code>דחה 3</code>",
+            "1️⃣ <code>התחל</code> — קונה 3 מניות ומחלק את $1,000",
+            "2️⃣ בערב — דוח יומי על הרווח/הפסד",
             "",
-            "<b>שלב 2 — חלוקה</b> (עם אות ח')",
-            "<code>ח1</code>…<code>ח5</code> · <code>חלוקה</code>",
+            "אין מזומן? <code>מכור SYMBOL</code> או <code>החלף X Y</code>",
             "",
-            "<b>דוגמה נכונה:</b>",
-            "1) <code>1,2,3</code>  →  2) <code>ח4</code>",
-            "",
-            "<b>כללי</b>",
-            "<code>סטטוס</code> · <code>תיק</code> · <code>תוכנית</code> · <code>עזרה</code>",
-            "<code>מדריך</code> — מדריך מלא · <code>איך בוחרים מניות</code> — תהליך הבחירה",
-            "<code>חיבור בוט</code> — יצירת בוט והגדרות",
-            "",
-            "<b>רשימת מניות:</b>",
-            "<code>מניות</code> · <code>הוסף SMCI</code> · <code>הסר IONQ</code> · <code>חפש מניות</code>",
-            "",
-            "<code>תוכנית עכשיו</code> — ליצור תוכנית חדשה",
-            "<code>תוכנית</code> — לשלוח שוב את התוכנית האחרונה",
-            "",
-            "<b>מעקב מסחר (במהלך היום):</b>",
-            "התראות על מניות מושקעות + הצעות רכישה/החלפה",
-            "ניתן לכבות או לשנות תדירות ב-<code>#/settings</code>",
-            "(intraday_check_enabled · intraday_check_interval_minutes)",
-            "",
-            "<b>דשבורד:</b> אישור + חלוקה ב-<code>#/plan</code>",
-            "",
-            "<b>טעות נפוצה:</b>",
-            "שליחת <code>1</code> אחרי האישור — לא בוחרת חלוקה!",
+            "<code>תיק</code> · <code>סטטוס</code> · <code>מדריך</code>",
         ]
     )
+
+
+def format_start_investing_reply(result: dict[str, Any]) -> str:
+    status = result.get("status", "")
+    if status in {"bought", "already_bought"}:
+        title = "<b>✅ קנית — בתיק</b>"
+    elif status in {"approved_pending_entry", "already_ready"}:
+        title = "<b>✅ מאושר — ממתין לפתיחת השוק</b>"
+    else:
+        title = "<b>📋 תיק</b>"
+    msg = escape_html(str(result.get("message", "")))
+    lines = [title, "", msg]
+    entry_when = result.get("entry_when")
+    if entry_when and status in {"approved_pending_entry", "already_ready"}:
+        lines.append(f"⏰ כניסה לשוק: <b>{escape_html(entry_when)}</b>")
+    syms = result.get("symbols") or []
+    entries = result.get("entries") or []
+    if entries:
+        lines.append("")
+        for e in entries:
+            lines.append(
+                f"• <b>{escape_html(e['symbol'])}</b> "
+                f"${float(e['capital_usd']):.0f} @ ${float(e['entry_price']):.2f}"
+            )
+    elif syms and status not in {"approved_pending_entry", "already_ready"}:
+        lines.append("")
+        lines.append(" · ".join(f"<b>{escape_html(s)}</b>" for s in syms))
+    if status in {"bought", "already_bought"}:
+        lines.extend(["", user_guide_done()])
+    return finalize("\n".join(lines))
 
 
 def user_guide_invalid_allocation() -> str:
@@ -230,27 +232,28 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     day = escape_html(plan.get("for_trading_day", ""))
     recs = plan.get("recommendations", [])
     equity = float(plan.get("equity_snapshot", 0))
-    free = float(plan.get("available_capital_usd", plan.get("equity_snapshot", 0)))
+    free = float(plan.get("available_capital_usd", 0))
+    invested = float(plan.get("deployed_capital_usd", 0))
     holdings = plan.get("holdings") or []
+    intent = plan.get("flow_intent", "")
 
     lines = [
-        "<b>📋 תוכנית יומית</b>",
+        "<b>📋 תוכנית למחר</b>",
         f"<b>יום מסחר:</b> {day}",
         "",
-        f"💰 הון <b>${equity:.0f}</b> · פנוי <b>${free:.0f}</b>",
+        f"💼 מזומן <b>${free:.0f}</b> · מושקע <b>${invested:.0f}</b> · סה\"כ <b>${equity:.0f}</b>",
     ]
     if plan.get("monthly_target_summary"):
         lines.append(escape_html(truncate(plan["monthly_target_summary"], 100)))
 
     if not recs:
         if holdings:
-            lines.extend(["", "<b>📂 כבר מחזיקים</b>"])
+            lines.extend(["", "<b>📂 מחזיקים — אין כניסות חדשות</b>"])
             for h in holdings:
                 lines.append(
                     f"• <b>{escape_html(h['symbol'])}</b> "
                     f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
                 )
-            lines.extend(["", "אין כניסות חדשות היום — רק החזקה."])
         else:
             lines.extend(["", "🔍 <b>אין המלצות היום</b>"])
             summary = format_scan_summary(plan, html=True)
@@ -261,16 +264,41 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
                 lines.append(escape_html(str(reason)))
         return finalize("\n".join(lines))
 
-    lines.extend(
-        [
-            "",
-            "<b>שלב 1 — אישור המלצות</b>",
-            user_guide_step1(),
-        ]
-    )
+    if intent == "first_investment":
+        each = round(free / max(len(recs), 1))
+        lines.extend(
+            [
+                "",
+                f"<b>🌟 יום ראשון — חלק ${equity:.0f} על {len(recs)} מניות</b>",
+                f"בערך <b>${each:.0f}</b> לכל מניה אחרי <code>הכל</code>",
+                "",
+                user_guide_step1(),
+            ]
+        )
+    elif intent == "add_needs_sell":
+        gap = plan.get("funding") or {}
+        target = escape_html(str(gap.get("target_symbol", recs[0]["symbol"])))
+        lines.extend(
+            [
+                "",
+                f"<b>💡 מומלץ לקנות {target}</b> — אין מספיק מזומן (${free:.0f} פנוי)",
+                f"צריך עוד <b>${float(gap.get('gap_usd', 0)):.0f}</b>",
+                "",
+                "<b>אפשרויות:</b>",
+            ]
+        )
+        for s in (gap.get("sell_suggestions") or [])[:3]:
+            lines.append(
+                f"• <code>מכור {escape_html(s['symbol'])}</code> "
+                f"(${float(s['sell_usd']):.0f} · {float(s['sell_pct']):.0f}% מהפוזיציה)"
+            )
+        lines.append(f"• <code>החלף {escape_html((gap.get('sell_suggestions') or [{}])[0].get('symbol', ''))} {target}</code>")
+        lines.extend(["", "אחרי מכירה — שלח <code>הכל</code> לאישור"])
+    else:
+        lines.extend(["", "<b>כניסות חדשות</b>", user_guide_step1()])
 
     if holdings:
-        lines.extend(["", "<b>📂 כבר מחזיקים</b> (לא נכללים באישור)"])
+        lines.extend(["", "<b>📂 כבר מחזיקים</b>"])
         for h in holdings:
             lines.append(
                 f"• <b>{escape_html(h['symbol'])}</b> "
@@ -281,16 +309,59 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     lines.extend(
         [
             "",
-            f"<b>🆕 {len(recs)} המלצות חדשות</b>",
+            f"<b>🆕 {len(recs)} המלצות</b>",
             symbols,
-            "<i>לכל מניה תישלח הודעה נפרדת עם גרף ופירוט ↓</i>",
+            "<i>פרטים + גרף לכל מניה ↓</i>",
             "",
             SEP,
-            "<b>אחרי שתאשר</b> — תקבל הודעת שלב 2",
-            "שם תשלח <code>ח1</code>…<code>ח5</code> (עם אות <b>ח'</b>)",
-            "טבלת סיכום בתמונה למטה ↑",
+            "<b>⏰ מחר בפתיחת וול סטריט</b> — כניסה במחיר פתיחה",
+            "<b>בערב</b> — דוח יומי",
         ]
     )
+    return finalize("\n".join(lines))
+
+
+def format_funding_prompt(plan: dict[str, Any], gap: dict[str, Any], *, trading_day: str) -> str:
+    target = escape_html(str(gap.get("target_symbol", "")))
+    lines = [
+        "<b>💰 אין מספיק מזומן לקנייה</b>",
+        f"<b>יום מסחר:</b> {escape_html(trading_day)}",
+        "",
+        f"רוצה <b>{target}</b> · חסר <b>${float(gap.get('gap_usd', 0)):.0f}</b>",
+        f"מזומן פנוי: <b>${float(gap.get('cash_free_usd', 0)):.0f}</b>",
+        "",
+        "<b>מכור חלק ממה שמחזיקים:</b>",
+    ]
+    for s in gap.get("sell_suggestions") or []:
+        lines.append(
+            f"• <code>מכור {escape_html(s['symbol'])}</code> "
+            f"(${float(s['sell_usd']):.0f})"
+            f" או <code>מכור {float(s['sell_pct']):.0f}% {escape_html(s['symbol'])}</code>"
+        )
+    lines.extend(
+        [
+            "",
+            f"או: <code>החלף SYMBOL {target}</code>",
+            "",
+            "אחרי מכירה — שלח <code>התחל</code> לקנייה",
+        ]
+    )
+    return finalize("\n".join(lines))
+
+
+def format_entry_notification(entries: list[dict[str, Any]], *, trading_day: str) -> str:
+    if not entries:
+        return ""
+    lines = [
+        f"<b>✅ קנית · {escape_html(trading_day)}</b>",
+        "",
+    ]
+    for e in entries:
+        lines.append(
+            f"• <b>{escape_html(e['symbol'])}</b> "
+            f"${float(e['capital_usd']):.0f} @ <b>${float(e['entry_price']):.2f}</b>"
+        )
+    lines.extend(["", "דוח סוף יום יישלח אחרי סגירת וול סטריט"])
     return finalize("\n".join(lines))
 
 
@@ -300,8 +371,8 @@ def format_plan_table_caption(plan: dict[str, Any]) -> str:
     recs = plan.get("recommendations") or []
     if recs:
         return (
-            f"<b>📋 תוכנית {day}</b>\n"
-            "שלב 1: אשר עם <code>הכל</code> / <code>1,2</code>"
+            f"<b>📋 המלצות {day}</b>\n"
+            "שלח <code>התחל</code> לקנייה"
         )
     summary = format_scan_summary(plan, html=True)
     if summary:
@@ -353,35 +424,41 @@ def format_approval_reply(
     all_approved_symbols: list[str],
     rejected: bool = False,
     allocation_sent: bool = False,
+    auto_allocated: bool = False,
+    funding_sent: bool = False,
+    cfg: Any | None = None,
+    trading_day_date: Any | None = None,
 ) -> str:
     if rejected:
         return (
-            f"🚫 <b>נדחו:</b> {escape_html(', '.join(picked_symbols))}\n"
-            f"<b>יום מסחר:</b> {escape_html(trading_day)}\n\n"
-            f"סטטוס: <code>סטטוס</code>"
+            f"🚫 <b>בוטל:</b> {escape_html(', '.join(picked_symbols))}\n"
+            f"<b>יום:</b> {escape_html(trading_day)}"
         )
 
     lines = [
-        "<b>✅ שלב 1 הושלם — אישור המלצות</b>",
-        f"<b>יום מסחר:</b> {escape_html(trading_day)}",
-        "",
-        f"<b>בחרת עכשיו:</b> {escape_html(', '.join(picked_symbols))}",
-        (
-            f"<b>סה\"כ מאושרות:</b> {escape_html(', '.join(all_approved_symbols))}"
-            f" ({len(all_approved_symbols)} מניות)"
-        ),
+        f"<b>✅ מאושר — {escape_html(', '.join(all_approved_symbols))}</b>",
+        f"<b>יום:</b> {escape_html(trading_day)}",
     ]
-    if allocation_sent:
+    if auto_allocated and cfg is not None and trading_day_date is not None:
+        from trading_pulse.agent.trading_flow import scheduled_entry_moment
+
+        when = scheduled_entry_moment(cfg, trading_day_date)
         lines.extend(
             [
                 "",
-                SEP,
-                "<b>▶️ עכשיו שלב 2 — חלוקת הון</b>",
-                "נשלחה הודעה נפרדת עם האפשרויות.",
-                "",
-                user_guide_step2(),
+                "💰 חולקים את הכסף — הקנייה תתבצע בפתיחת השוק",
+                f"⏰ כניסה לשוק: <b>{escape_html(when)}</b>",
             ]
         )
+    elif funding_sent:
+        lines.extend(
+            [
+                "",
+                "💰 <b>אין מספיק מזומן</b> — שלח <code>מכור SYMBOL</code> או <code>החלף X Y</code>",
+            ]
+        )
+    elif allocation_sent:
+        lines.extend(["", user_guide_step2()])
     else:
         lines.extend(["", user_guide_step1()])
     return "\n".join(lines)
@@ -399,6 +476,12 @@ def format_report(report: dict[str, Any]) -> str:
     ]
     if report.get("fees_usd"):
         lines.append(f"עמלות: ${float(report['fees_usd']):.2f}")
+    unrealized = float(report.get("unrealized_pnl_usd", 0))
+    if unrealized or report.get("held_eod"):
+        ur_sign = "+" if unrealized >= 0 else ""
+        lines.append(f"רווח עתידי (לא ממומש): <b>{ur_sign}${unrealized:.2f}</b>")
+        if report.get("equity_marked_usd") is not None:
+            lines.append(f"שווי משוער כולל: <code>${float(report['equity_marked_usd']):.2f}</code>")
     if report.get("monthly_target_summary"):
         lines.append(escape_html(truncate(report["monthly_target_summary"], 120)))
 
@@ -406,9 +489,12 @@ def format_report(report: dict[str, Any]) -> str:
     if held:
         lines.extend(["", "<b>📂 עדיין מחזיקים</b>"])
         for pos in held:
+            ur = float(pos.get("unrealized_pnl_usd", 0))
+            ur_sign = "+" if ur >= 0 else ""
+            ur_txt = f" · {ur_sign}${ur:.2f} ({float(pos.get('unrealized_pnl_pct', 0)):+.1f}%)" if pos.get("unrealized_pnl_usd") is not None else ""
             lines.append(
                 f"• <b>{escape_html(pos['symbol'])}</b> "
-                f"${float(pos['capital_usd']):.0f} · {pos.get('days_held', 0)} ימים"
+                f"${float(pos['capital_usd']):.0f} · {pos.get('days_held', 0)} ימים{ur_txt}"
             )
 
     executed = report.get("executed", [])
@@ -436,28 +522,48 @@ def format_report(report: dict[str, Any]) -> str:
 
 
 def format_portfolio(data: dict[str, Any]) -> str:
+    from trading_pulse.core.schedule_tz import format_local_entry_moment
+
     pnl = float(data["total_realized_pnl"])
+    unrealized = float(data.get("unrealized_pnl_usd", 0))
+    marked = float(data.get("open_marked_usd", data.get("open_capital_usd", 0)))
     sign = "+" if pnl >= 0 else ""
+    ur_sign = "+" if unrealized >= 0 else ""
     lines = [
         "<b>💼 תיק השקעות</b>",
         SEP,
         f"הון: <b>${data['equity']:.2f}</b>",
-        f"מושקע: <b>${data['open_capital_usd']:.0f}</b> ({data['open_count']} פוזיציות)",
-        f"רווח מצטבר: <b>{sign}${pnl:.2f}</b>",
+        f"שווי פתוח: <b>${marked:.0f}</b> · רווח פתוח: <b>{ur_sign}${unrealized:.2f}</b>",
+        f"רווח ממומש: <b>{sign}${pnl:.2f}</b>",
     ]
 
     open_positions = data.get("open_positions") or []
-    if open_positions:
-        lines.extend(["", "<b>📌 פתוח / ממתין</b>"])
-        for p in open_positions:
+    pending = [p for p in open_positions if p.get("status") == "pending_market_entry"]
+    holding = [p for p in open_positions if p.get("status") == "holding"]
+    if pending:
+        lines.extend(["", "<b>⏳ מאושר — ממתין לפתיחת השוק</b>"])
+        for p in pending:
             sym = escape_html(p["symbol"])
-            if p.get("status") == "holding":
-                lines.append(
-                    f"• <b>{sym}</b> ${p['capital_usd']:.0f} · מחזיק {p.get('days_held', 0)} ימים"
-                )
-            else:
-                lines.append(f"• <b>{sym}</b> ${p['capital_usd']:.0f} · ממתין לכניסה")
-    else:
+            when = escape_html(str(p.get("scheduled_entry", "פתיחת השוק")))
+            approved = format_local_entry_moment(p.get("approved_at"))
+            lines.append(
+                f"• <b>{sym}</b> ${p['capital_usd']:.0f} · אושר {escape_html(approved)} · כניסה {when}"
+            )
+    if holding:
+        lines.extend(["", "<b>📌 בתיק עכשיו</b>"])
+        for p in holding:
+            sym = escape_html(p["symbol"])
+            entry = p.get("entry_price")
+            when = format_local_entry_moment(p.get("entry_at"))
+            price_bit = f" @ <b>${float(entry):.2f}</b>" if entry else ""
+            marked_val = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
+            ur = float(p.get("unrealized_pnl_usd", 0))
+            ur_s = "+" if ur >= 0 else ""
+            lines.append(
+                f"• <b>{sym}</b> ${p['capital_usd']:.0f}{price_bit} → שווי <b>${marked_val:.0f}</b> "
+                f"({ur_s}${ur:.0f}) · {escape_html(when)}"
+            )
+    elif not pending:
         lines.append("\n📌 אין פוזיציות פתוחות")
 
     by_symbol = data.get("by_symbol") or []

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from trading_pulse.core.app_paths import CONFIG_FILE, USER_DATA_DIR
+from trading_pulse.core.schedule_tz import dual_times_from_config
 
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
@@ -48,23 +49,31 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
     {
         "id": "schedule",
         "title": "לוח זמנים",
+        "note": "השעות נשמרות ב-UTC. מתחת לכל שדה — גם בשעון ישראל.",
         "fields": [
             {
                 "key": "planning_time",
                 "label": "שעת תוכנית יומית",
                 "type": "time",
-                "hint": "שעון מקומי (Windows)",
+                "hint": "אחרי סגירת וול סטריט — תוכנית למחר",
+            },
+            {
+                "key": "entry_sim_time",
+                "label": "שעת כניסה בפתיחה",
+                "type": "time",
+                "hint": "~5 דקות אחרי פתיחת השוק",
             },
             {
                 "key": "market_close_sim_time",
-                "label": "שעת סימולציה ודוח",
+                "label": "שעת דוח יומי",
                 "type": "time",
+                "hint": "דוח סוף יום מסחר",
             },
             {
                 "key": "market_open_sim_time",
                 "label": "תחילת חלון מסחר (מעקב שעתי)",
                 "type": "time",
-                "hint": "שעון מקומי — מתחיל בדיקות שעתיות על מניות מושקעות",
+                "hint": "תחילת מעקב intraday",
             },
             {
                 "key": "intraday_check_enabled",
@@ -285,6 +294,7 @@ def get_settings_payload() -> dict[str, Any]:
     return {
         "sections": SETTINGS_SECTIONS,
         "values": values,
+        "time_dual": dual_times_from_config(cfg),
         "restart_required_keys": restart_keys,
         "secrets_source": secrets,
         "config_path": str(CONFIG_FILE),

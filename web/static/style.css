@@ -241,6 +241,51 @@ body {
   color: var(--green);
   border: 1px solid rgba(0, 255, 136, 0.35);
 }
+.btn-start {
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.25), rgba(0, 255, 136, 0.2));
+  color: var(--cyan);
+  border: 2px solid rgba(0, 240, 255, 0.55);
+  font-size: 1.05rem;
+  padding: 0.85rem 2rem;
+  margin-top: 1rem;
+  box-shadow: 0 0 24px rgba(0, 240, 255, 0.15);
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
+}
+.plan-cta {
+  min-width: 220px;
+}
+.btn-start:hover {
+  box-shadow: 0 0 32px rgba(0, 240, 255, 0.28);
+}
+.plan-simple {
+  text-align: center;
+  max-width: 520px;
+  margin: 2rem auto;
+}
+.plan-simple h1 {
+  font-size: 1.75rem;
+  margin-bottom: 0.75rem;
+}
+.plan-simple-sub {
+  color: var(--muted);
+  margin: 0.5rem 0 0;
+}
+.plan-simple-done h1 {
+  color: var(--green);
+}
+.plan-details {
+  max-width: 640px;
+  margin: 1.5rem auto;
+  color: var(--muted);
+}
+.plan-details summary {
+  cursor: pointer;
+  color: var(--cyan);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
 .btn-reject {
   background: rgba(255, 51, 102, 0.12);
   color: var(--red);
@@ -898,6 +943,21 @@ body {
   color: var(--muted);
   font-size: 0.8rem;
   line-height: 1.4;
+}
+
+.settings-dual-time {
+  color: var(--cyan);
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin: 0.35rem 0 0;
+  direction: ltr;
+  text-align: right;
+}
+
+.settings-section-note {
+  color: var(--muted);
+  font-size: 0.88rem;
+  margin: -0.25rem 0 0.85rem;
 }
 
 .settings-restart-tag {

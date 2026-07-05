@@ -107,6 +107,47 @@ def evaluate_intraday_exit(
     return None
 
 
+def unrealized_pnl_for_position(
+    pos: dict[str, Any],
+    *,
+    mark_price: float | None = None,
+    trading_day: date | None = None,
+) -> dict[str, Any]:
+    """Mark open position at EOD close; returns enriched copy with unrealized fields."""
+    enriched = dict(pos)
+    entry = float(enriched.get("entry_price") or enriched.get("entry_ref_price") or 0)
+    capital = float(enriched.get("capital_usd", 0))
+    mark = mark_price
+    if mark is None and trading_day is not None and entry > 0:
+        bar = fetch_day_ohlc(str(enriched["symbol"]), trading_day)
+        mark = float(bar["close"]) if bar else None
+    if mark is not None and entry > 0:
+        pnl_pct = (mark / entry - 1) * 100
+        pnl_usd = capital * (mark / entry - 1)
+        enriched["mark_price"] = round(mark, 4)
+        enriched["unrealized_pnl_usd"] = round(pnl_usd, 2)
+        enriched["unrealized_pnl_pct"] = round(pnl_pct, 2)
+    else:
+        enriched["mark_price"] = None
+        enriched["unrealized_pnl_usd"] = 0.0
+        enriched["unrealized_pnl_pct"] = 0.0
+    return enriched
+
+
+def enrich_held_unrealized(
+    positions: list[dict[str, Any]],
+    trading_day: date,
+) -> tuple[list[dict[str, Any]], float]:
+    """Add unrealized P/L per held position; returns (enriched, total_usd)."""
+    enriched: list[dict[str, Any]] = []
+    total = 0.0
+    for pos in positions:
+        row = unrealized_pnl_for_position(pos, trading_day=trading_day)
+        enriched.append(row)
+        total += float(row.get("unrealized_pnl_usd", 0))
+    return enriched, round(total, 2)
+
+
 def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -> dict[str, Any]:
     entry = float(pos["entry_price"])
     capital = float(pos["capital_usd"])
@@ -125,10 +166,13 @@ def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -
 
 
 def new_position_from_rec(rec: dict[str, Any], entry_price: float, trading_day: str) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
     floor = rec_floor_price(rec, entry_price)
     return {
         "symbol": rec["symbol"],
         "entry_day": trading_day,
+        "entry_at": datetime.now(timezone.utc).isoformat(),
         "entry_price": round(entry_price, 4),
         "capital_usd": round(float(rec["capital_usd"]), 2),
         "stop_loss_pct": float(rec.get("stop_loss_pct", 0.12)),
@@ -218,6 +262,9 @@ def simulate_swing_day(
     state: dict[str, Any],
     trading_day: date,
     approved: list[dict[str, Any]],
+    *,
+    entries_only: bool = False,
+    eod_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float, float]:
     """Process one trading day. Returns (executed_trades, held_eod, pnl_total, fees_total)."""
     ensure_open_positions(state)
@@ -229,26 +276,33 @@ def simulate_swing_day(
     pnl_total = 0.0
     fees_total = 0.0
 
-    for pos in list(state.get("open_positions", [])):
-        pos = dict(pos)
-        pos["days_held"] = int(pos.get("days_held", 0)) + 1
-        bar = fetch_day_ohlc(str(pos["symbol"]), trading_day)
-        if bar is None:
-            still_open.append(pos)
-            continue
+    if not entries_only:
+        for pos in list(state.get("open_positions", [])):
+            pos = dict(pos)
+            pos["days_held"] = int(pos.get("days_held", 0)) + 1
+            bar = fetch_day_ohlc(str(pos["symbol"]), trading_day)
+            if bar is None:
+                still_open.append(pos)
+                continue
 
-        exit_info = evaluate_intraday_exit(pos, bar, cfg)
-        if exit_info:
-            exit_price, reason = exit_info
-            trade = trade_from_close(pos, exit_price, reason)
-            trade["fees_usd"] = round(commission, 2)
-            trade["pnl_usd"] = round(trade["pnl_usd"] - commission, 2)
-            pnl_total += trade["pnl_usd"]
-            fees_total += commission
-            executed.append(trade)
-            _record_loss_cooldown_if_needed(state, trade, cfg, trading_day)
-        else:
-            still_open.append(pos)
+            exit_info = evaluate_intraday_exit(pos, bar, cfg)
+            if exit_info:
+                exit_price, reason = exit_info
+                trade = trade_from_close(pos, exit_price, reason)
+                trade["fees_usd"] = round(commission, 2)
+                trade["pnl_usd"] = round(trade["pnl_usd"] - commission, 2)
+                pnl_total += trade["pnl_usd"]
+                fees_total += commission
+                executed.append(trade)
+                _record_loss_cooldown_if_needed(state, trade, cfg, trading_day)
+            else:
+                still_open.append(pos)
+    else:
+        still_open = [dict(p) for p in state.get("open_positions", [])]
+
+    if eod_only:
+        state["open_positions"] = still_open
+        return executed, still_open, round(pnl_total, 2), round(fees_total, 2)
 
     held_symbols_today = {p["symbol"] for p in still_open}
     equity_before = float(state["equity"])
@@ -265,7 +319,11 @@ def simulate_swing_day(
 
         bar = fetch_day_ohlc(symbol, trading_day)
         if bar is None:
-            continue
+            ref = rec.get("entry_ref_price")
+            if ref is None:
+                continue
+            price = float(ref)
+            bar = {"open": price, "high": price, "low": price, "close": price}
 
         pos = new_position_from_rec(rec, bar["open"], day_str)
         exit_info = evaluate_intraday_exit(pos, bar, cfg)
@@ -305,8 +363,49 @@ def simulate_swing_day(
     return executed, still_open, round(pnl_total, 2), round(fees_total, 2)
 
 
+def partial_sell_position(
+    cfg: Any,
+    state: dict[str, Any],
+    symbol: str,
+    fraction: float,
+    *,
+    trading_day: date | None = None,
+    reason: str = "user_sell",
+) -> dict[str, Any] | None:
+    """Sell fraction of an open position at latest close (dry-run)."""
+    ensure_open_positions(state)
+    symbol = symbol.upper()
+    fraction = max(0.01, min(1.0, float(fraction)))
+    day = trading_day or date.today()
+    commission = float(getattr(cfg, "commission_per_side_usd", 0.0))
+
+    for i, pos in enumerate(state.get("open_positions", [])):
+        if str(pos.get("symbol")) != symbol:
+            continue
+        pos = dict(pos)
+        bar = fetch_day_ohlc(symbol, day)
+        if bar is None:
+            return None
+        exit_price = float(bar["close"])
+        sell_capital = round(float(pos["capital_usd"]) * fraction, 2)
+        slice_pos = {**pos, "capital_usd": sell_capital}
+        trade = trade_from_close(slice_pos, exit_price, reason)
+        trade["fees_usd"] = round(commission, 2)
+        trade["pnl_usd"] = round(trade["pnl_usd"] - commission, 2)
+        state["equity"] = round(float(state.get("equity", 0)) + float(trade["pnl_usd"]), 2)
+        remaining = round(float(pos["capital_usd"]) - sell_capital, 2)
+        if remaining < 1 or fraction >= 0.999:
+            state["open_positions"].pop(i)
+        else:
+            pos["capital_usd"] = remaining
+            state["open_positions"][i] = pos
+        return trade
+    return None
+
+
 def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
     ensure_open_positions(state)
+    entry_at_fallback = _plan_entry_executed_at()
     rows: list[dict[str, Any]] = []
     for pos in state.get("open_positions", []):
         rows.append(
@@ -314,6 +413,7 @@ def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
                 "symbol": pos["symbol"],
                 "capital_usd": float(pos.get("capital_usd", 0)),
                 "entry_day": pos.get("entry_day"),
+                "entry_at": pos.get("entry_at") or entry_at_fallback,
                 "entry_price": float(pos.get("entry_price", 0)),
                 "floor_price": float(pos.get("floor_price", 0)) or None,
                 "days_held": int(pos.get("days_held", 0)),
@@ -321,6 +421,17 @@ def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _plan_entry_executed_at() -> str | None:
+    from trading_pulse.agent.dryrun_agent import PLANS_DIR, read_json
+
+    for path in sorted(PLANS_DIR.glob("plan_*.json"), reverse=True):
+        plan = read_json(path)
+        ts = plan.get("entry_executed_at")
+        if ts:
+            return str(ts)
+    return None
 
 
 def format_holdings_lines(holdings: list[dict[str, Any]], *, html: bool = False) -> list[str]:

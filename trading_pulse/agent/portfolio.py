@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from trading_pulse.agent.dryrun_agent import PLANS_DIR, REPORTS_DIR, load_config, load_state, read_json
@@ -14,41 +15,109 @@ def load_report(trading_day: str) -> dict[str, Any] | None:
     return read_json(path)
 
 
+def _append_pending_approved_rows(
+    cfg: Any, open_positions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    from trading_pulse.agent.trading_flow import (
+        before_market_entry,
+        entries_already_run,
+        scheduled_entry_moment,
+    )
+
+    held_symbols = {p["symbol"] for p in open_positions}
+    rows = list(open_positions)
+    for path in sorted(PLANS_DIR.glob("plan_*.json")):
+        plan = read_json(path)
+        trading_day = plan.get("for_trading_day", path.stem.replace("plan_", ""))
+        if load_report(trading_day):
+            continue
+        alloc = plan.get("allocation") or {}
+        if alloc.get("status") != "applied":
+            continue
+        td = date.fromisoformat(trading_day)
+        if entries_already_run(plan, td) or not before_market_entry(cfg, td):
+            continue
+        entry_when = scheduled_entry_moment(cfg, td)
+        for rec in plan.get("recommendations", []):
+            if not rec.get("approved"):
+                continue
+            sym = str(rec["symbol"])
+            if sym in held_symbols:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "capital_usd": round(float(rec.get("capital_usd", 0)), 2),
+                    "entry_ref_price": rec.get("entry_ref_price") or rec.get("last_price"),
+                    "status": "pending_market_entry",
+                    "entry_day": trading_day,
+                    "approved_at": plan.get("approved_at"),
+                    "scheduled_entry": entry_when,
+                }
+            )
+            held_symbols.add(sym)
+    return rows
+
+
 def load_open_positions() -> list[dict[str, Any]]:
-    """Positions held in market + approved trades waiting for first trading day."""
+    """Positions currently held in the portfolio (with mark-to-market)."""
+    from trading_pulse.agent.positions import enrich_held_unrealized
+
     cfg = load_config()
     state = load_state(cfg)
     from trading_pulse.agent.positions import ensure_open_positions, holdings_snapshot
+    from trading_pulse.agent.trading_flow import (
+        entries_already_run,
+        revert_premarket_fills,
+    )
 
     ensure_open_positions(state)
-    open_positions = list(holdings_snapshot(state))
 
     for path in sorted(PLANS_DIR.glob("plan_*.json")):
         plan = read_json(path)
         trading_day = plan.get("for_trading_day", path.stem.replace("plan_", ""))
         if load_report(trading_day):
             continue
-        held_symbols = {p["symbol"] for p in open_positions}
-        for rec in plan.get("recommendations", []):
-            if not rec.get("approved"):
-                continue
-            symbol = rec["symbol"]
-            if symbol in held_symbols:
-                continue
-            open_positions.append(
-                {
-                    "symbol": symbol,
-                    "trading_day": trading_day,
-                    "capital_usd": round(float(rec.get("capital_usd", 0)), 2),
-                    "entry_ref_price": round(float(rec.get("entry_ref_price", 0)), 4),
-                    "stop_loss_pct": float(rec.get("stop_loss_pct", 0)),
-                    "take_profit_pct": float(rec.get("take_profit_pct", 0)),
-                    "score": float(rec.get("score", 0)),
-                    "status": "pending_execution",
-                }
-            )
-            held_symbols.add(symbol)
-    open_positions.sort(key=lambda x: (x.get("trading_day", x.get("entry_day", "")), x["symbol"]))
+        alloc = plan.get("allocation") or {}
+        if alloc.get("status") != "applied":
+            continue
+        td = date.fromisoformat(trading_day)
+        if revert_premarket_fills(cfg, state, plan, td):
+            state = load_state(cfg)
+            ensure_open_positions(state)
+
+    open_positions = _append_pending_approved_rows(cfg, list(holdings_snapshot(state)))
+
+    from trading_pulse.agent.positions import _plan_entry_executed_at
+    from trading_pulse.agent.dryrun_agent import STATE_FILE, save_json
+
+    ts = _plan_entry_executed_at()
+    changed = False
+    for pos in state.get("open_positions", []):
+        if not pos.get("entry_at") and ts:
+            pos["entry_at"] = ts
+            changed = True
+    if changed:
+        save_json(STATE_FILE, state)
+        open_positions = _append_pending_approved_rows(cfg, list(holdings_snapshot(state)))
+
+    holding = [p for p in open_positions if p.get("status") == "holding"]
+    if holding:
+        enriched, _total_ur = enrich_held_unrealized(holding, date.today())
+        by_sym = {r["symbol"]: r for r in enriched}
+        merged: list[dict[str, Any]] = []
+        for p in open_positions:
+            if p.get("status") == "holding" and p["symbol"] in by_sym:
+                row = dict(by_sym[p["symbol"]])
+                cap = float(row.get("capital_usd", 0))
+                ur = float(row.get("unrealized_pnl_usd", 0))
+                row["marked_value_usd"] = round(cap + ur, 2)
+                merged.append(row)
+            else:
+                merged.append(p)
+        open_positions = merged
+
+    open_positions.sort(key=lambda x: (x.get("entry_day", x.get("trading_day", "")), x["symbol"]))
     return open_positions
 
 
@@ -118,63 +187,26 @@ def build_portfolio() -> dict[str, Any]:
     by_symbol, trades = aggregate_symbol_pnl(state)
     open_total = round(sum(p["capital_usd"] for p in open_positions), 2)
     realized_pnl = round(sum(s["total_pnl_usd"] for s in by_symbol), 2)
+    unrealized_pnl = round(
+        sum(float(p.get("unrealized_pnl_usd", 0)) for p in open_positions if p.get("status") == "holding"),
+        2,
+    )
+    marked_total = round(
+        sum(float(p.get("marked_value_usd", p.get("capital_usd", 0))) for p in open_positions),
+        2,
+    )
 
     return {
         "equity": round(float(state.get("equity", cfg.initial_capital)), 2),
         "initial_capital": float(cfg.initial_capital),
         "open_positions": open_positions,
         "open_capital_usd": open_total,
+        "open_marked_usd": marked_total,
         "open_count": len(open_positions),
+        "unrealized_pnl_usd": unrealized_pnl,
         "by_symbol": by_symbol,
         "trades": trades,
         "total_realized_pnl": realized_pnl,
         "symbol_count": len(by_symbol),
         "trade_count": len(trades),
     }
-
-
-def format_portfolio_message(data: dict[str, Any]) -> str:
-    pnl = float(data["total_realized_pnl"])
-    pnl_sign = "+" if pnl >= 0 else ""
-
-    lines = [
-        "💼 תיק השקעות",
-        "",
-        f"הון נוכחי: ${data['equity']:.2f}",
-        f"מושקע (ממתין): ${data['open_capital_usd']:.0f} · {data['open_count']} עסקאות",
-        f"רווח/הפסד מצטבר: {pnl_sign}${pnl:.2f} · {data['trade_count']} עסקאות · {data['symbol_count']} מניות",
-    ]
-
-    open_positions = data.get("open_positions") or []
-    if open_positions:
-        lines.extend(["", "📌 מושקע / ממתין:"])
-        for p in open_positions:
-            if p.get("status") == "holding":
-                lines.append(
-                    f"  {p['symbol']} · ${p['capital_usd']:.0f} · מ-{p.get('entry_day')} · "
-                    f"{p.get('days_held', 0)} ימים · מחזיק"
-                )
-            else:
-                sl = int(float(p.get("stop_loss_pct", 0)) * 100)
-                tp = int(float(p.get("take_profit_pct", 0)) * 100)
-                lines.append(
-                    f"  {p['symbol']} · ${p['capital_usd']:.0f} · {p.get('trading_day')} · "
-                    f"ממתין לכניסה · SL -{sl}% / TP +{tp}%"
-                )
-    else:
-        lines.extend(["", "📌 מושקע עכשיו: אין"])
-
-    by_symbol = data.get("by_symbol") or []
-    if by_symbol:
-        lines.extend(["", "📊 סיכום לפי מניה:"])
-        for s in by_symbol:
-            sign = "+" if s["total_pnl_usd"] >= 0 else ""
-            lines.append(
-                f"  {s['symbol']} · {s['trade_count']} עסק · ${s['total_capital_usd']:.0f} הושקע"
-                f" · {sign}${s['total_pnl_usd']:.2f} ({sign}{s['avg_pnl_pct']:.2f}%)"
-                f" · win {s['win_rate_pct']:.0f}%"
-            )
-    else:
-        lines.extend(["", "📊 עדיין לא בוצעו עסקאות"])
-
-    return "\n".join(lines)

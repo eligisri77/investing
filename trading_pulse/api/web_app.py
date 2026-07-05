@@ -31,18 +31,24 @@ try:
         format_heartbeat_message,
         format_plan_message,
         format_report_message,
+        generate_plan,
         get_active_trading_day,
         load_config as load_agent_config,
         load_state as load_agent_state,
         parse_indices,
         plan_path,
+        send_plan_notifications,
         set_plan_status,
+        start_investing,
     )
     from trading_pulse.agent.capital_allocation import allocation_options_payload, allocation_pending
     from trading_pulse.agent.signal_sources import SOURCE_LABELS
 except ImportError:
     format_plan_message = None  # type: ignore
     SOURCE_LABELS = {}  # type: ignore
+    generate_plan = None  # type: ignore
+    send_plan_notifications = None  # type: ignore
+    start_investing = None  # type: ignore
     get_active_trading_day = None  # type: ignore
     apply_allocation_choice = None  # type: ignore
     allocation_options_payload = None  # type: ignore
@@ -473,6 +479,29 @@ def api_inbox_mark_read() -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.post("/api/plan/start")
+def api_plan_start() -> dict[str, Any]:
+    if start_investing is None:
+        raise HTTPException(status_code=503, detail="Agent module unavailable")
+    return start_investing(load_agent_config())
+
+
+@app.post("/api/plan/generate-now")
+def api_plan_generate_now() -> dict[str, Any]:
+    if generate_plan is None or send_plan_notifications is None or load_agent_config is None:
+        raise HTTPException(status_code=503, detail="Agent module unavailable")
+    cfg = load_agent_config()
+    state = load_agent_state(cfg)
+    plan = generate_plan(cfg, state, date.today(), force=True)
+    send_plan_notifications(cfg, plan)
+    trading_day = str(plan.get("for_trading_day", ""))
+    return {
+        "ok": True,
+        "trading_day": trading_day,
+        "recommendations": len(plan.get("recommendations", [])),
+    }
+
+
 @app.get("/api/plan/active")
 def api_plan_active() -> dict[str, Any]:
     if get_active_trading_day is None:
@@ -489,12 +518,23 @@ def api_plan_active() -> dict[str, Any]:
     alloc = plan.get("allocation") or {}
     allocation_options = None
     alloc_pending = False
+    bought = False
+    entry_when = None
     if allocation_pending is not None and allocation_options_payload is not None and load_agent_state is not None:
         alloc_pending = allocation_pending(plan)
         if alloc_pending:
             cfg_agent = load_agent_config()
             state = load_agent_state(cfg_agent)
             allocation_options = allocation_options_payload(cfg_agent, plan, state)
+    try:
+        from trading_pulse.agent.trading_flow import entries_already_run, scheduled_entry_moment
+
+        td = date.fromisoformat(trading_day)
+        bought = entries_already_run(plan, td)
+        entry_when = scheduled_entry_moment(load_agent_config(), td)
+    except Exception:
+        bought = False
+        entry_when = None
     return {
         "trading_day": trading_day,
         "pending": pending,
@@ -503,6 +543,9 @@ def api_plan_active() -> dict[str, Any]:
         "allocation": alloc if alloc else None,
         "allocation_options": allocation_options,
         "plan": plan,
+        "ready": bool(recs) and not pending and alloc.get("status") == "applied",
+        "bought": bought,
+        "entry_when": entry_when,
     }
 
 

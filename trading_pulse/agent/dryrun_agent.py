@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -127,12 +128,14 @@ class AgentConfig:
     stop_loss_pct: float = 0.03
     take_profit_pct: float = 0.06
     max_daily_loss_pct: float = 0.02
-    planning_time: str = "21:00"
-    market_open_sim_time: str = "16:40"  # UTC ~ 09:40 ET (summer)
-    market_close_sim_time: str = "23:10"  # UTC ~ 16:10 ET (summer)
-    heartbeat_time: str = "09:00"
+    planning_time: str = "20:15"  # UTC ≈ 16:15 ET — תוכנית אחרי סגירת וול סטריט
+    entry_sim_time: str = "13:35"  # UTC ≈ 09:35 ET — כניסה במחיר פתיחה
+    market_open_sim_time: str = "13:30"  # UTC ≈ 09:30 ET — תחילת מעקב intraday
+    market_close_sim_time: str = "20:20"  # UTC ≈ 16:20 ET — דוח סוף יום
+    heartbeat_time: str = "13:00"  # UTC ≈ 09:00 ET
     send_heartbeat_on_startup: bool = True
-    plan_reminder_time: str = "22:00"
+    plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
+    initial_deploy_stocks: int = 3  # יום ראשון — חלוקה על כמה מניות
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
@@ -321,6 +324,19 @@ def monthly_target_summary(cfg: AgentConfig, state: dict[str, Any]) -> str:
     )
 
 
+class _SafeConsoleFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            stream = sys.stdout
+            enc = getattr(stream, "encoding", None) or "utf-8"
+            msg.encode(enc)
+        except (UnicodeEncodeError, LookupError):
+            record.msg = record.getMessage().encode("ascii", "replace").decode("ascii")
+            record.args = ()
+        return True
+
+
 def setup_logger(log_file: Path | None = None) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_file is not None:
@@ -332,6 +348,9 @@ def setup_logger(log_file: Path | None = None) -> None:
         handlers=handlers,
         force=True,
     )
+    for handler in handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.addFilter(_SafeConsoleFilter())
 
 
 def get_next_us_trading_day(from_day: date) -> date:
@@ -339,6 +358,13 @@ def get_next_us_trading_day(from_day: date) -> date:
     while nxt.weekday() >= 5:
         nxt += timedelta(days=1)
     return nxt
+
+
+def resolve_plan_target_day(run_day: date, *, force: bool = False) -> date:
+    """Evening plan → next session. Manual תוכנית עכשיו on a trading day → today if not closed."""
+    if force and is_us_trading_day(run_day) and not report_path(run_day).exists():
+        return run_day
+    return get_next_us_trading_day(run_day)
 
 
 def is_us_trading_day(day: date) -> bool:
@@ -1298,6 +1324,75 @@ def parse_indices(raw: str, total: int) -> list[int]:
     return sorted(set(picked))
 
 
+def execute_sell_command(cfg: AgentConfig, symbol: str, fraction: float = 1.0) -> str:
+    from trading_pulse.agent.positions import partial_sell_position
+
+    state = load_state(cfg)
+    trade = partial_sell_position(cfg, state, symbol, fraction)
+    if trade is None:
+        return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
+    save_json(STATE_FILE, state)
+    from trading_pulse.agent.positions import free_cash
+
+    cash = free_cash(state)
+    sign = "+" if float(trade["pnl_usd"]) >= 0 else ""
+    pct = int(round(fraction * 100))
+    return (
+        f"✅ <b>מכרת {symbol}</b> ({pct}%)\n"
+        f"רווח/הפסד ממומש: <b>{sign}${float(trade['pnl_usd']):.2f}</b>\n"
+        f"מזומן פנוי: <b>${cash:.0f}</b> — שלח <code>התחל</code> לקנייה"
+    )
+
+
+def execute_buys_for_plan(
+    cfg: AgentConfig,
+    trading_day: str,
+    *,
+    notify: bool = True,
+) -> list[dict[str, Any]]:
+    """Run entry simulation only after scheduled market open (legacy helper)."""
+    from trading_pulse.agent.trading_flow import before_market_entry
+
+    td = date.fromisoformat(trading_day)
+    if before_market_entry(cfg, td):
+        return []
+    path = plan_path(td)
+    if not path.exists():
+        return []
+    plan = read_json(path)
+    if plan.get("allocation", {}).get("status") != "applied":
+        return []
+    state = load_state(cfg)
+    entries = run_entry_simulation(cfg, state, td)
+    if notify and entries:
+        from trading_pulse.telegram.telegram_format import format_entry_notification
+
+        send_user_notification(
+            cfg,
+            format_entry_notification(entries, trading_day=trading_day),
+            context="entry:immediate",
+            parse_mode="HTML",
+        )
+    return entries
+
+
+def execute_swap_command(cfg: AgentConfig, from_symbol: str, to_symbol: str) -> str:
+    sell_reply = execute_sell_command(cfg, from_symbol, 1.0)
+    if sell_reply.startswith("❌"):
+        return sell_reply
+    trading_day = resolve_trading_day(None)
+    path = plan_path(date.fromisoformat(trading_day))
+    if not path.exists():
+        return sell_reply + f"\n\n❌ אין תוכנית ל-{trading_day}"
+    plan = read_json(path)
+    recs = plan.get("recommendations", [])
+    indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol.upper()]
+    if not indices:
+        return sell_reply + f"\n\n❌ {to_symbol} לא בתוכנית ל-{trading_day}"
+    approve_reply = set_plan_status(trading_day, "APPROVE", indices, cfg=cfg)
+    return sell_reply + "\n\n" + approve_reply
+
+
 def set_plan_status(
     trading_day: str,
     action: str,
@@ -1306,6 +1401,7 @@ def set_plan_status(
     cfg: AgentConfig | None = None,
     notify_allocation: bool = True,
 ) -> str:
+    cfg_obj = cfg or load_config()
     path = plan_path(date.fromisoformat(trading_day))
     if not path.exists():
         return f"❌ <b>אין תוכנית ל-{trading_day}</b>\nחכה לתוכנית ב-21:00."
@@ -1321,6 +1417,9 @@ def set_plan_status(
         symbols.append(str(recs[idx]["symbol"]))
     plan["status"] = "approved" if any(x.get("approved") for x in recs) else "pending_approval"
     plan["approved_at"] = datetime.now(timezone.utc).isoformat()
+    if approved_value:
+        st = load_state(cfg or load_config())
+        plan["pre_entry_equity"] = round(float(st.get("equity", cfg.initial_capital if cfg else 1000)), 2)
     if not any(x.get("approved") for x in recs):
         plan.pop("allocation", None)
     elif action.upper() == "APPROVE":
@@ -1337,9 +1436,26 @@ def set_plan_status(
     verb = "אושרו" if approved_value else "נדחו"
     all_approved = [str(r["symbol"]) for r in recs if r.get("approved")]
     allocation_sent = False
+    auto_allocated = False
+    funding_sent = False
     if approved_value and notify_allocation and all_approved:
-        send_allocation_prompt(trading_day, cfg=cfg)
-        allocation_sent = True
+        state = load_state(cfg_obj)
+        from trading_pulse.agent.trading_flow import auto_allocate_equal, funding_gap, should_auto_allocate
+
+        gap = funding_gap(plan, state, cfg_obj)
+        if gap:
+            send_funding_prompt(trading_day, plan, gap, cfg=cfg_obj)
+            funding_sent = True
+        elif should_auto_allocate(cfg_obj, plan, state):
+            if auto_allocate_equal(cfg_obj, plan, state):
+                save_json(path, plan)
+                auto_allocated = True
+            else:
+                send_allocation_prompt(trading_day, cfg=cfg)
+                allocation_sent = True
+        else:
+            send_allocation_prompt(trading_day, cfg=cfg)
+            allocation_sent = True
 
     from trading_pulse.telegram.telegram_format import format_approval_reply
 
@@ -1349,6 +1465,32 @@ def set_plan_status(
         all_approved_symbols=all_approved,
         rejected=not approved_value,
         allocation_sent=allocation_sent,
+        auto_allocated=auto_allocated,
+        funding_sent=funding_sent,
+        cfg=cfg_obj,
+        trading_day_date=date.fromisoformat(trading_day),
+    )
+
+
+def send_funding_prompt(
+    trading_day: str,
+    plan: dict[str, Any],
+    gap: dict[str, Any],
+    *,
+    cfg: AgentConfig | None = None,
+) -> bool:
+    from trading_pulse.telegram.app_notify import notify_user
+    from trading_pulse.telegram.telegram_format import format_funding_prompt
+
+    if cfg is None:
+        cfg = load_config()
+    text = format_funding_prompt(plan, gap, trading_day=trading_day)
+    return notify_user(
+        cfg,
+        text,
+        "funding:prompt",
+        parse_mode="HTML",
+        telegram_sender=send_telegram_message,
     )
 
 
@@ -1398,7 +1540,12 @@ def apply_allocation_choice(trading_day: str, option_id: int, *, cfg: AgentConfi
 
         return user_guide_invalid_allocation()
     save_json(path, plan)
-    return format_allocation_applied(chosen, trading_day)
+    from trading_pulse.agent.trading_flow import scheduled_entry_moment
+
+    return (
+        format_allocation_applied(chosen, trading_day)
+        + f"\n\n⏰ כניסה לשוק: <b>{scheduled_entry_moment(cfg, date.fromisoformat(trading_day))}</b>"
+    )
 
 
 def ensure_plan_allocation(cfg: AgentConfig, plan: dict[str, Any], state: dict[str, Any], trading_day: date) -> None:
@@ -1424,12 +1571,16 @@ def plan_status_text(trading_day: str) -> str:
         return f"❌ <b>אין תוכנית ל-{trading_day}</b>."
     plan = read_json(path)
     recs = plan.get("recommendations", [])
+    intent = plan.get("flow_intent", "")
     lines = [
         f"<b>📋 סטטוס תוכנית</b>",
         f"<b>יום מסחר:</b> {trading_day}",
-        "",
-        "<b>שלב 1 — אישור</b>",
     ]
+    if intent == "first_investment":
+        lines.append("<b>🌟 יום ראשון</b> — שלח <code>הכל</code> לחלוקה על כמה מניות")
+    elif intent == "add_needs_sell":
+        lines.append("<b>💰 אין מספיק מזומן</b> — <code>מכור SYMBOL</code> ואז <code>הכל</code>")
+    lines.append("")
     if not recs:
         lines.append("אין המלצות.")
         return "\n".join(lines)
@@ -1444,20 +1595,16 @@ def plan_status_text(trading_day: str) -> str:
     all_approved = [r["symbol"] for r in recs if r.get("approved")]
     lines.extend(["", f"<b>מאושרות:</b> {', '.join(all_approved) or 'אין'} ({approved_n}/{len(recs)})"])
     alloc = plan.get("allocation") or {}
-    lines.append("")
-    lines.append("<b>שלב 2 — חלוקה</b>")
     if alloc.get("status") == "applied":
-        lines.append(f"✅ {alloc.get('title', '')} · ח{alloc.get('selected_option', '?')}")
+        lines.append("")
+        lines.append(f"✅ חלוקה: {alloc.get('title', '')}")
         amounts = alloc.get("amounts") or {}
         if amounts:
             parts = [f"{s} ${a:.0f}" for s, a in amounts.items()]
             lines.append(" · ".join(parts))
     elif approved_n and alloc.get("status") == "pending":
-        lines.append("⏳ ממתין לבחירת חלוקה")
-    elif approved_n:
-        lines.append("⏳ חלוקה לא נבחרה")
-    else:
-        lines.append("— טרם אושרו המלצות")
+        lines.append("")
+        lines.append("⏳ ממתין לחלוקה ידנית")
     lines.extend(["", SEP, "<b>מה לשלוח:</b>"])
     if alloc.get("status") == "applied":
         lines.append(user_guide_done())
@@ -1469,22 +1616,25 @@ def plan_status_text(trading_day: str) -> str:
 
 
 def get_active_trading_day() -> str | None:
-    """Most recently generated plan (the one the user just received)."""
+    """Active plan: prefer today if still open, else latest non-reported plan."""
+    today = date.today()
+    today_str = today.isoformat()
+    today_path = plan_path(today)
+    if today_path.exists() and not report_path(today).exists():
+        return today_str
+
     latest_day: str | None = None
     latest_gen = ""
     for path in PLANS_DIR.glob("plan_*.json"):
         plan = read_json(path)
-        gen = str(plan.get("generated_at", ""))
         td = plan.get("for_trading_day")
-        if td and gen >= latest_gen:
+        if not td or report_path(date.fromisoformat(str(td))).exists():
+            continue
+        gen = str(plan.get("generated_at", ""))
+        if gen >= latest_gen:
             latest_gen = gen
             latest_day = str(td)
-    if latest_day:
-        return latest_day
-    today_path = plan_path(date.today())
-    if today_path.exists():
-        return date.today().isoformat()
-    return None
+    return latest_day
 
 
 def resolve_trading_day(explicit: str | None) -> str:
@@ -1581,12 +1731,43 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     if remove_match:
         return {"kind": "ticker_remove", "symbol": remove_match.group(1).upper()}
 
+    sell_match = re.fullmatch(
+        r"(?:מכור|sell)\s+(?:(\d+(?:\.\d+)?)%\s+)?([A-Za-z][A-Za-z0-9.\-^]{0,9})",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_match:
+        pct_raw = sell_match.group(1)
+        fraction = float(pct_raw) / 100.0 if pct_raw else 1.0
+        return {"kind": "sell", "symbol": sell_match.group(2).upper(), "fraction": fraction}
+
+    swap_match = re.fullmatch(
+        r"(?:החלף|swap)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_match:
+        return {
+            "kind": "swap",
+            "from_symbol": swap_match.group(1).upper(),
+            "to_symbol": swap_match.group(2).upper(),
+        }
+
     plan_now_phrases = {
         "תוכנית עכשיו",
         "תוכנית חדשה",
         "צור תוכנית",
         "plan now",
         "new plan",
+    }
+    start_phrases = {
+        "התחל",
+        "להתחיל",
+        "התחל להשקיע",
+        "start",
+        "go",
+        "יאללה",
+        "בוא נתחיל",
     }
     plan_show_phrases = {
         "תוכנית",
@@ -1597,6 +1778,8 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         "plan",
         "show plan",
     }
+    if lower in start_phrases:
+        return {"kind": "start", "day": None}
     if lower in plan_now_phrases:
         return {"kind": "plan_now", "day": None}
     if lower in plan_show_phrases or lower.startswith("תוכנית "):
@@ -1738,6 +1921,83 @@ def run_plan_now_telegram(cfg: AgentConfig) -> str:
     )
 
 
+def start_investing(cfg: AgentConfig) -> dict[str, Any]:
+    """
+    One-step flow: ensure plan for today (or next session) and approve all.
+    Returns payload for API / Telegram.
+    """
+    state = load_state(cfg)
+    target = resolve_plan_target_day(date.today(), force=True)
+    td_str = target.isoformat()
+    path = plan_path(target)
+    created = False
+
+    if path.exists() and not report_path(target).exists():
+        plan = read_json(path)
+    else:
+        plan = generate_plan(cfg, state, date.today(), force=True)
+        send_plan_notifications(cfg, plan)
+        td_str = str(plan.get("for_trading_day", td_str))
+        path = plan_path(date.fromisoformat(td_str))
+        plan = read_json(path)
+        created = True
+
+    recs = plan.get("recommendations", [])
+    if not recs:
+        return {
+            "ok": True,
+            "status": "no_picks",
+            "trading_day": td_str,
+            "message": "אין המלצות היום — נסה שוב מחר או אחרי עדכון רשימת המניות.",
+            "symbols": [],
+        }
+
+    alloc = plan.get("allocation") or {}
+    already = all(r.get("approved") for r in recs) and alloc.get("status") == "applied"
+    if not already:
+        set_plan_status(td_str, "APPROVE", list(range(len(recs))), cfg=cfg, notify_allocation=False)
+        plan = read_json(path)
+
+    from trading_pulse.agent.trading_flow import entries_already_run, scheduled_entry_moment
+
+    symbols = [r["symbol"] for r in plan.get("recommendations", []) if r.get("approved")]
+    entry_when = scheduled_entry_moment(cfg, date.fromisoformat(td_str))
+    amounts = " · ".join(
+        f"{r['symbol']} ${float(r.get('capital_usd', 0)):.0f}"
+        for r in plan.get("recommendations", [])
+        if r.get("approved")
+    )
+    if entries_already_run(plan, date.fromisoformat(td_str)):
+        status = "already_bought"
+        message = f"כבר נכנסת לשוק ({amounts}). צפה ב־<code>תיק</code>."
+    elif already and not created:
+        status = "already_ready"
+        message = f"כבר מאושר ({amounts}). כניסה לשוק ב-{entry_when}."
+    else:
+        status = "approved_pending_entry"
+        message = (
+            f"אושר ({amounts}). הקנייה תתבצע בפתיחת השוק — {entry_when}."
+        )
+
+    return {
+        "ok": True,
+        "status": status,
+        "trading_day": td_str,
+        "created_plan": created,
+        "symbols": symbols,
+        "entries": [],
+        "entry_when": entry_when,
+        "message": message,
+    }
+
+
+def run_start_investing_telegram(cfg: AgentConfig) -> str:
+    from trading_pulse.telegram.telegram_format import format_start_investing_reply
+
+    result = start_investing(cfg)
+    return format_start_investing_reply(result)
+
+
 def process_telegram_commands(cfg: AgentConfig) -> int:
     if not uses_telegram_notifications(cfg):
         return 0
@@ -1831,16 +2091,68 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 continue
             elif kind == "portfolio":
                 from trading_pulse.agent.portfolio import build_portfolio
+                from trading_pulse.telegram.telegram_format import format_portfolio
                 from trading_pulse.telegram.telegram_images import render_portfolio_image
 
                 pdata = build_portfolio()
-                img = render_portfolio_image(pdata)
+                text_reply = format_portfolio(pdata)
+                from trading_pulse.core.schedule_tz import format_local_entry_moment
+
                 sign = "+" if pdata["total_realized_pnl"] >= 0 else ""
-                caption = (
-                    f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
-                    f"P/L <b>{sign}${pdata['total_realized_pnl']:.2f}</b>"
-                )
-                send_telegram_photo(cfg, img, caption, context="reply:portfolio", parse_mode="HTML")
+                ur = float(pdata.get("unrealized_pnl_usd", 0))
+                ur_sign = "+" if ur >= 0 else ""
+                holdings = [
+                    p for p in pdata.get("open_positions", []) if p.get("status") == "holding"
+                ]
+                pending = [
+                    p for p in pdata.get("open_positions", []) if p.get("status") == "pending_market_entry"
+                ]
+                if holdings:
+                    lines = [
+                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
+                        f"שווי <b>${float(pdata.get('open_marked_usd', 0)):.0f}</b> · "
+                        f"פתוח <b>{ur_sign}${ur:.0f}</b>"
+                    ]
+                    for p in holdings:
+                        ep = float(p.get("entry_price") or 0)
+                        when = format_local_entry_moment(p.get("entry_at"))
+                        mv = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
+                        row_ur = float(p.get("unrealized_pnl_usd", 0))
+                        row_ur_s = "+" if row_ur >= 0 else ""
+                        lines.append(
+                            f"• <b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} "
+                            f"@ <b>${ep:.2f}</b> → ${mv:.0f} ({row_ur_s}${row_ur:.0f}) · {when}"
+                        )
+                    caption = "\n".join(lines)
+                elif pending:
+                    lines = [
+                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
+                        f"<b>ממתין לפתיחת השוק</b>"
+                    ]
+                    for p in pending:
+                        approved = format_local_entry_moment(p.get("approved_at"))
+                        entry_when = str(p.get("scheduled_entry", "פתיחה"))
+                        lines.append(
+                            f"• <b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} · "
+                            f"אושר {approved} → כניסה {entry_when}"
+                        )
+                    caption = "\n".join(lines)
+                else:
+                    caption = (
+                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
+                        f"P/L <b>{sign}${pdata['total_realized_pnl']:.2f}</b>"
+                    )
+                try:
+                    img = render_portfolio_image(pdata)
+                    send_telegram_photo(cfg, img, caption, context="reply:portfolio", parse_mode="HTML")
+                except Exception as ex:
+                    logging.warning("Portfolio image failed, sending text: %s", ex)
+                    send_telegram_message(
+                        cfg,
+                        text_reply,
+                        context="reply:portfolio",
+                        parse_mode="HTML",
+                    )
                 handled += 1
                 continue
             elif kind == "allocation_show":
@@ -1881,6 +2193,9 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                     send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                 handled += 1
                 continue
+            elif kind == "start":
+                reply = run_start_investing_telegram(cfg)
+                reply_context = "reply:start"
             elif kind == "plan_now":
                 reply = run_plan_now_telegram(cfg)
                 reply_context = "reply:plan"
@@ -1927,6 +2242,24 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 reply = format_discover_reply(result)
                 reply_context = "reply:tickers_discover"
                 send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "sell":
+                reply = execute_sell_command(
+                    cfg,
+                    str(parsed.get("symbol", "")),
+                    float(parsed.get("fraction", 1.0)),
+                )
+                send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "swap":
+                reply = execute_swap_command(
+                    cfg,
+                    str(parsed.get("from_symbol", "")),
+                    str(parsed.get("to_symbol", "")),
+                )
+                send_telegram_message(cfg, reply, context="reply:swap", parse_mode="HTML")
                 handled += 1
                 continue
             elif kind == "allocation_pick":
@@ -2029,8 +2362,15 @@ def generate_plan(
         pass
 
     from trading_pulse.agent.positions import available_capital, deployed_capital, held_symbols, holdings_snapshot
+    from trading_pulse.agent.trading_flow import (
+        funding_gap,
+        initial_deploy_slots,
+        is_empty_portfolio,
+        per_trade_cap_for_plan,
+        plan_intent,
+    )
 
-    target_day = get_next_us_trading_day(run_day)
+    target_day = resolve_plan_target_day(run_day, force=force)
     existing_path = plan_path(target_day)
     if not force and existing_path.exists():
         existing = read_json(existing_path)
@@ -2062,9 +2402,13 @@ def generate_plan(
     )
     logging.info("Found %d candidate(s) after quality filters", len(candidates))
     open_slots = max(0, int(cfg.max_open_positions) - len(holdings))
-    new_trade_slots = min(open_slots, int(cfg.max_trades_per_day))
+    if is_empty_portfolio(state):
+        new_trade_slots = min(initial_deploy_slots(cfg, state), open_slots or initial_deploy_slots(cfg, state))
+    else:
+        new_trade_slots = min(open_slots, int(cfg.max_trades_per_day))
     deployable = available_capital(cfg, state)
-    per_trade_cap = min(capital * cfg.max_position_pct, deployable / max(new_trade_slots, 1))
+    if is_empty_portfolio(state):
+        deployable = capital
 
     if not candidates.empty and held:
         candidates = candidates[~candidates["symbol"].isin(held)]
@@ -2075,6 +2419,8 @@ def generate_plan(
         deployed_capital(state),
     )
     picks = candidates.head(new_trade_slots) if new_trade_slots > 0 and not candidates.empty else pd.DataFrame()
+    n_picks = len(picks)
+    per_trade_cap = per_trade_cap_for_plan(cfg, state, max(n_picks, 1))
     recommendations: list[dict[str, Any]] = []
     speculative = is_speculative(cfg)
 
@@ -2177,6 +2523,10 @@ def generate_plan(
             plan["no_picks_reason"] = "לא נמצאו מועמדים בסריקת האותות להיום."
     if speculative:
         plan["monthly_target_summary"] = monthly_target_summary(cfg, state)
+    plan["flow_intent"] = plan_intent(plan, state, cfg)
+    gap = funding_gap(plan, state, cfg)
+    if gap:
+        plan["funding"] = gap
     save_json(plan_path(target_day), plan)
     logging.info("Saved plan: %s", plan_path(target_day))
     return plan
@@ -2255,6 +2605,55 @@ def _merge_intraday_floor_exits(
     return merged
 
 
+def run_entry_simulation(
+    cfg: AgentConfig,
+    state: dict[str, Any],
+    trading_day: date,
+) -> list[dict[str, Any]]:
+    """Morning job: open approved positions at market open price."""
+    from trading_pulse.agent.positions import simulate_swing_day
+    from trading_pulse.agent.trading_flow import entries_already_run, mark_entries_executed
+
+    path = plan_path(trading_day)
+    if not path.exists():
+        return []
+    plan = read_json(path)
+    if entries_already_run(plan, trading_day):
+        logging.info("Entry simulation skipped for %s: already executed", trading_day.isoformat())
+        return []
+    ensure_plan_allocation(cfg, plan, state, trading_day)
+    plan = read_json(path)
+    approved = [x for x in plan.get("recommendations", []) if x.get("approved")]
+    if not approved:
+        return []
+
+    held_before = {str(p["symbol"]) for p in state.get("open_positions", [])}
+    _, still_open, pnl_total, _fees = simulate_swing_day(
+        cfg, state, trading_day, approved, entries_only=True
+    )
+    from datetime import datetime, time
+
+    from trading_pulse.core.schedule_tz import UTC
+
+    hour, minute = (int(x) for x in str(getattr(cfg, "entry_sim_time", "13:35")).split(":"))
+    entry_at = datetime.combine(trading_day, time(hour, minute), tzinfo=UTC).isoformat()
+    for pos in state.get("open_positions", []):
+        if str(pos["symbol"]) not in held_before and pos.get("entry_day") == trading_day.isoformat():
+            pos["entry_at"] = entry_at
+    state["equity"] = round(float(state["equity"]) + pnl_total, 2)
+    save_json(STATE_FILE, state)
+
+    new_entries: list[dict[str, Any]] = []
+    for pos in still_open:
+        if str(pos["symbol"]) not in held_before and pos.get("entry_day") == trading_day.isoformat():
+            new_entries.append(pos)
+
+    if new_entries:
+        mark_entries_executed(plan, trading_day, cfg=cfg)
+        save_json(path, plan)
+    return new_entries
+
+
 def simulate_day(
     cfg: AgentConfig,
     state: dict[str, Any],
@@ -2297,12 +2696,15 @@ def simulate_day(
     approved = [x for x in plan.get("recommendations", []) if x.get("approved")]
 
     if getattr(cfg, "hold_mode", "swing") == "swing":
-        from trading_pulse.agent.positions import simulate_swing_day
+        from trading_pulse.agent.positions import enrich_held_unrealized, simulate_swing_day
 
         equity_before = float(state["equity"])
         daily_loss_limit = equity_before * cfg.max_daily_loss_pct
+        from trading_pulse.agent.trading_flow import entries_already_run
+
+        skip_entries = entries_already_run(plan, trading_day)
         executed, held_eod, pnl_total, fees_total = simulate_swing_day(
-            cfg, state, trading_day, approved
+            cfg, state, trading_day, approved, eod_only=skip_entries
         )
         executed = _merge_intraday_floor_exits(state, trading_day, executed)
         if not executed and not approved and not held_eod:
@@ -2320,12 +2722,15 @@ def simulate_day(
             return report
 
         equity_after = equity_before + pnl_total
+        held_eod, unrealized_pnl_usd = enrich_held_unrealized(held_eod, trading_day)
         report = {
             "trading_day": trading_day.isoformat(),
             "executed": executed,
             "held_eod": held_eod,
             "pnl_usd": round(pnl_total, 2),
             "fees_usd": fees_total,
+            "unrealized_pnl_usd": unrealized_pnl_usd,
+            "equity_marked_usd": round(equity_after + unrealized_pnl_usd, 2),
             "equity_before": round(equity_before, 2),
             "equity_after": round(equity_after, 2),
             "max_daily_loss_usd": round(daily_loss_limit, 2),
@@ -2619,6 +3024,29 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("plan", "failed", str(ex))
             logging.exception("JOB FAILED: daily plan: %s", ex)
 
+    def run_entry_job() -> None:
+        today = date.today()
+        if not should_run_simulation_today(today):
+            record_job("entry", "skipped", f"today={today.isoformat()}")
+            return
+        logging.info("JOB START: market entry")
+        try:
+            state = load_state(cfg)
+            entries = run_entry_simulation(cfg, state, today)
+            if not entries:
+                record_job("entry", "skipped", f"no new entries; day={today.isoformat()}")
+                logging.info("JOB SKIP: entry (nothing to open for %s)", today.isoformat())
+                return
+            from trading_pulse.telegram.telegram_format import format_entry_notification
+
+            msg = format_entry_notification(entries, trading_day=today.isoformat())
+            send_user_notification(cfg, msg, context="entry", parse_mode="HTML")
+            record_job("entry", "ok", trading_day=today.isoformat(), count=len(entries))
+            logging.info("JOB END: market entry (%d position(s))", len(entries))
+        except Exception as ex:
+            record_job("entry", "failed", str(ex))
+            logging.exception("JOB FAILED: market entry: %s", ex)
+
     def run_sim_job() -> None:
         today = date.today()
         if not should_run_simulation_today(today):
@@ -2700,6 +3128,7 @@ def run_scheduler_loop(service: bool = True) -> None:
             logging.exception("JOB FAILED: intraday check: %s", ex)
 
     schedule.every().day.at(cfg.planning_time).do(run_plan_job)
+    schedule.every().day.at(cfg.entry_sim_time).do(run_entry_job)
     schedule.every().day.at(cfg.market_close_sim_time).do(run_sim_job)
     schedule.every().day.at(cfg.heartbeat_time).do(run_heartbeat_job)
     schedule.every().day.at(cfg.plan_reminder_time).do(run_plan_reminder_job)
@@ -2747,7 +3176,9 @@ def run_scheduler_loop(service: bool = True) -> None:
     logging.info("  notification_mode: %s", cfg.notification_mode)
     logging.info("  risk profile: %s", risk_profile_summary(cfg))
     logging.info("  heartbeat: %s", cfg.heartbeat_time)
-    logging.info("  plan: %s", cfg.planning_time)
+    logging.info("  plan: %s (UTC ~ after US close)", cfg.planning_time)
+    logging.info("  entry: %s (UTC ~ US market open)", cfg.entry_sim_time)
+    logging.info("  report: %s (UTC ~ US close)", cfg.market_close_sim_time)
     logging.info("  plan reminder: %s", cfg.plan_reminder_time)
     logging.info("  simulation report: %s", cfg.market_close_sim_time)
     if cfg.intraday_check_enabled:

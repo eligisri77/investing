@@ -53,6 +53,12 @@ class TradingPulseApp:
     def dashboard_url(self) -> str:
         return DASHBOARD_URL
 
+    def _run_scheduler_safe(self) -> None:
+        try:
+            run_scheduler_loop(service=True)
+        except Exception:
+            logging.exception("Scheduler thread crashed")
+
     def start_background_services(self) -> None:
         with self._lock:
             if self._started:
@@ -72,7 +78,7 @@ class TradingPulseApp:
                 daemon=True,
             ).start()
             threading.Thread(
-                target=lambda: run_scheduler_loop(service=True),
+                target=self._run_scheduler_safe,
                 name="scheduler",
                 daemon=True,
             ).start()

@@ -237,7 +237,7 @@ function renderDashboard(data, health) {
     : 0;
 
   const pendingBanner = data.inbox?.pending_plan_day
-    ? `<a href="#/plan" class="pending-banner">📋 תוכנית ל-${data.inbox.pending_plan_day} ממתינה לאישור — לחץ כאן</a>`
+    ? `<a href="#/plan" class="pending-banner">👉 אשר את התיק (המלצות ל-${data.inbox.pending_plan_day})</a>`
     : "";
 
   app.innerHTML = `
@@ -615,10 +615,64 @@ function renderAllocationPanel(data) {
     .join("");
   return `
     <section class="plan-allocation">
-      <h2>💵 שלב 2 — חלוקת הון</h2>
-      <p class="allocation-hint">בחר אחת מהאפשרויות (מקביל ל־ח1…ח5 בטלגרם). מומלץ: <strong>ח4</strong></p>
+      <h2>💵 חלוקה ידנית (אופציונלי)</h2>
+      <p class="allocation-hint">ברוב המקרים <strong>אשר הכל</strong> מספיק — החלוקה אוטומטית. אם תרצה לבחור ידנית:</p>
       <div class="allocation-options">${cards}</div>
     </section>`;
+}
+
+async function startInvesting() {
+  const btn = document.getElementById("planStartBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "רגע…";
+  }
+  try {
+    const res = await fetch("/api/plan/start", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || res.statusText);
+    await renderActivePlan();
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "אשר והתחל";
+    }
+    alert(err.message || "שגיאה");
+  }
+}
+
+async function generatePlanNow() {
+  const btn = document.getElementById("planNowBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "יוצר תוכנית…";
+  }
+  try {
+    const res = await fetch("/api/plan/generate-now", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    await renderActivePlan();
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "תוכנית עכשיו";
+    }
+    alert(`שגיאה: ${err.message}`);
+  }
+}
+
+function renderPlanRecCard(rec, idx) {
+  return `
+    <div class="plan-rec-card">
+      <div class="plan-rec-head">
+        <span class="pick-symbol">#${idx} ${rec.symbol}</span>
+        <span>$${Number(rec.capital_usd).toFixed(0)}</span>
+      </div>
+      <div class="pick-meta">
+        <span>SL -${(rec.stop_loss_pct * 100).toFixed(0)}%</span>
+        <span>TP +${(rec.take_profit_pct * 100).toFixed(0)}%</span>
+        <span>ציון ${Number(rec.score).toFixed(1)}</span>
+      </div>
+    </div>`;
 }
 
 async function renderActivePlan() {
@@ -627,8 +681,13 @@ async function renderActivePlan() {
     data = await fetchJson("/api/plan/active");
   } catch {
     app.innerHTML = `
-      <section class="hero"><h1>תוכנית פעילה</h1><p>אין תוכנית ממתינה כרגע. חכה ל-21:00.</p></section>
-      <a href="#/" style="color:var(--cyan)">← חזרה לדשבורד</a>`;
+      <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
+      <section class="hero plan-simple">
+        <h1>💰 מוכנים לקנות?</h1>
+        <p>לחיצה אחת — קונים 3 מניות ומחלקים את $1,000.</p>
+        <button type="button" class="btn btn-start plan-cta" id="planStartBtn">אשר והתחל</button>
+      </section>`;
+    document.getElementById("planStartBtn")?.addEventListener("click", startInvesting);
     return;
   }
 
@@ -636,101 +695,57 @@ async function renderActivePlan() {
   const plan = data.plan;
   const day = data.trading_day;
   const recs = plan.recommendations || [];
-  const showApproval = !data.allocation_applied;
+  const symbols = recs.map((r) => r.symbol).join(" · ");
+
+  if (data.ready) {
+    const bought = data.bought;
+    const entryWhen = data.entry_when ? escapeHtml(data.entry_when) : "";
+    app.innerHTML = `
+      <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
+      <section class="hero plan-simple ${bought ? "plan-simple-done" : ""}">
+        <h1>${bought ? "✅ קנית את התיק" : "✅ התיק מאושר — ממתין לפתיחת השוק"}</h1>
+        <p><b>${escapeHtml(symbols)}</b>${bought ? " — בתיק שלך עכשיו" : ` — $${recs.reduce((s, r) => s + Number(r.capital_usd || 0), 0).toFixed(0)} סה״כ`}</p>
+        ${bought
+          ? `<a href="#/portfolio" class="btn btn-start plan-cta">צפה בתיק שלך →</a>`
+          : `<p class="plan-simple-sub">⏰ כניסה לשוק: <b>${entryWhen}</b></p>
+             <a href="#/portfolio" class="btn btn-start plan-cta">צפה במה שמאושר →</a>`}
+      </section>
+      <details class="plan-details">
+        <summary>פרטי המלצות</summary>
+        <div id="planRecs" class="plan-recs"></div>
+      </details>`;
+    const doneContainer = document.getElementById("planRecs");
+    recs.forEach((rec, i) => {
+      doneContainer.insertAdjacentHTML("beforeend", renderPlanRecCard(rec, i + 1));
+    });
+    return;
+  }
 
   app.innerHTML = `
     <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
-    <section class="hero plan-hero">
-      <h1>📋 תוכנית · ${day}</h1>
-      <p>הון $${Number(plan.equity_snapshot || 0).toFixed(0)} · ${escapeHtml(plan.risk_profile_summary || "")}</p>
-      ${plan.monthly_target_summary ? `<p>${escapeHtml(plan.monthly_target_summary)}</p>` : ""}
+    <section class="hero plan-simple">
+      <h1>📋 המלצות ליום ${escapeHtml(day)}</h1>
+      <p>${recs.length} מניות: <b>${escapeHtml(symbols)}</b></p>
+      <p class="plan-simple-sub">לחיצה מאשרת ומחלקת את ההון — הקנייה בפתיחת השוק.</p>
+      <button type="button" class="btn btn-start plan-cta" id="planStartBtn">אשר והתחל</button>
     </section>
-    ${
-      showApproval
-        ? `<div class="plan-actions">
-      <button type="button" class="btn btn-approve" id="approveAll">אשר הכל</button>
-      <button type="button" class="btn btn-reject" id="rejectAll">דחה הכל</button>
-    </div>`
-        : ""
-    }
-    <div id="planRecs" class="plan-recs"></div>
-    <div id="planAllocation"></div>
-    <p id="planStatus" class="plan-status-msg"></p>
-  `;
+    <details class="plan-details" open>
+      <summary>מה בחרנו?</summary>
+      <div id="planRecs" class="plan-recs"></div>
+    </details>
+    <p id="planStatus" class="plan-status-msg"></p>`;
 
   const container = document.getElementById("planRecs");
   recs.forEach((rec, i) => {
-    const idx = i + 1;
-    const approved = rec.approved;
-    container.insertAdjacentHTML(
-      "beforeend",
-      `
-      <div class="plan-rec-card ${approved ? "is-approved" : ""}">
-        <div class="plan-rec-head">
-          <span class="pick-symbol">#${idx} ${rec.symbol}</span>
-          <span class="badge ${approved ? "badge-invested" : "badge-pending"}">${approved ? "מאושר" : "ממתין"}</span>
-        </div>
-        <div class="pick-meta">
-          <span>$${Number(rec.capital_usd).toFixed(0)}</span>
-          <span>SL -${(rec.stop_loss_pct * 100).toFixed(0)}%</span>
-          <span>TP +${(rec.take_profit_pct * 100).toFixed(0)}%</span>
-          <span>ציון ${Number(rec.score).toFixed(1)}</span>
-        </div>
-        ${renderSignalMeta(rec)}
-        ${renderSourceScores(rec, false)}
-        ${renderEnrichmentMeta(rec)}
-        ${rec.news_summary ? `<p class="plan-news">📰 ${escapeHtml(rec.news_summary)}</p>` : ""}
-        ${
-          showApproval
-            ? `<div class="plan-rec-actions">
-          <button type="button" class="btn btn-sm btn-approve" data-action="approve" data-idx="${idx}">אשר</button>
-          <button type="button" class="btn btn-sm btn-reject" data-action="reject" data-idx="${idx}">דחה</button>
-        </div>`
-            : ""
-        }
-      </div>`
-    );
+    container.insertAdjacentHTML("beforeend", renderPlanRecCard(rec, i + 1));
   });
-
-  document.getElementById("planAllocation").innerHTML = renderAllocationPanel(data);
-
-  const statusEl = document.getElementById("planStatus");
-  async function run(action, indices) {
-    statusEl.textContent = "שומר...";
-    try {
-      const result = await planAction(day, action, indices);
-      statusEl.textContent = stripHtml(result.message);
-      await renderActivePlan();
-    } catch (err) {
-      statusEl.textContent = `שגיאה: ${err.message}`;
-    }
-  }
-
-  async function runAllocation(optionId) {
-    statusEl.textContent = "שומר חלוקה...";
-    try {
-      const result = await planAllocation(day, optionId);
-      statusEl.textContent = stripHtml(result.message);
-      await renderActivePlan();
-    } catch (err) {
-      statusEl.textContent = `שגיאה: ${err.message}`;
-    }
-  }
-
-  if (showApproval) {
-    document.getElementById("approveAll").onclick = () => run("approve", "ALL");
-    document.getElementById("rejectAll").onclick = () => run("reject", "ALL");
-    container.querySelectorAll("[data-action]").forEach((btn) => {
-      btn.onclick = () => run(btn.dataset.action, [Number(btn.dataset.idx)]);
-    });
-  }
-
-  document.querySelectorAll("[data-option-id]").forEach((btn) => {
-    btn.onclick = () => runAllocation(Number(btn.dataset.optionId));
-  });
+  document.getElementById("planStartBtn")?.addEventListener("click", startInvesting);
 }
 
 function renderPortfolio(data) {
+  const hasPending = data.open_positions.some(
+    (p) => p.status === "pending_execution" || p.status === "pending_market_entry"
+  );
   const openRows = data.open_positions.length
     ? data.open_positions
         .map(
@@ -741,11 +756,17 @@ function renderPortfolio(data) {
           <td>$${p.capital_usd.toFixed(0)}</td>
           <td>${p.entry_price ? `$${Number(p.entry_price).toFixed(2)}` : p.entry_ref_price ? `$${Number(p.entry_ref_price).toFixed(2)}` : "—"}</td>
           <td>${p.stop_loss_pct != null ? `-${(p.stop_loss_pct * 100).toFixed(0)}% / +${(p.take_profit_pct * 100).toFixed(0)}%` : "—"}</td>
-          <td><span class="badge ${p.status === "holding" ? "badge-invested" : "badge-pending"}">${p.status === "holding" ? `מחזיק ${p.days_held || 0} ימים` : "ממתין לכניסה"}</span></td>
+          <td><span class="badge ${p.status === "holding" ? "badge-invested" : "badge-pending"}">${
+            p.status === "holding"
+              ? `מחזיק ${p.days_held || 0} ימים`
+              : p.status === "pending_market_entry"
+                ? `מאושר · כניסה ${p.scheduled_entry || "בפתיחה"}`
+                : "ממתין לקנייה"
+          }</span></td>
         </tr>`
         )
         .join("")
-    : `<tr><td colspan="6" class="empty-cell">אין עסקאות מאושרות שממתינות לסימולציה</td></tr>`;
+    : `<tr><td colspan="6" class="empty-cell">אין מניות בתיק — שלח התחל או לחץ קנה בדשבורד</td></tr>`;
 
   const symbolRows = data.by_symbol.length
     ? data.by_symbol
@@ -796,7 +817,7 @@ function renderPortfolio(data) {
         <div class="value">$${data.equity.toFixed(2)}</div>
       </div>
       <div class="stat-card">
-        <div class="label">מושקע עכשיו (ממתין)</div>
+        <div class="label">מושקע בתיק</div>
         <div class="value">$${data.open_capital_usd.toFixed(0)}</div>
         <div class="sub">${data.open_count} עסקאות</div>
       </div>
@@ -808,7 +829,13 @@ function renderPortfolio(data) {
     </div>
 
     <h2 class="section-title">מושקע עכשיו</h2>
-    <p class="section-hint">עסקאות שאישרת — יבוצעו בסימולציה בסוף יום המסחר</p>
+    <p class="section-hint">${
+      hasPending
+        ? "מאושר — הקנייה תתבצע בפתיחת השוק (ראה עמודת סטטוס)"
+        : data.open_positions.length
+          ? "המניות בתיק שלך — המערכת מטפלת במכירות אוטומטיות (SL/TP)"
+          : "אין מניות בתיק — אשר המלצות ב־#/plan"
+    }</p>
     <div class="portfolio-table-wrap">
       <table class="portfolio-table">
         <thead>
@@ -922,11 +949,30 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
-function renderSettingsField(field, value) {
+function formatDualUtc(hhmm) {
+  if (!/^\d{2}:\d{2}$/.test(String(hhmm || ""))) return "";
+  const [h, m] = String(hhmm).split(":").map(Number);
+  const now = new Date();
+  const utc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m));
+  const il = utc.toLocaleTimeString("he-IL", {
+    timeZone: "Asia/Jerusalem",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${hhmm} UTC · ${il} ישראל`;
+}
+
+function renderSettingsField(field, value, dualTimes) {
   const id = `setting-${field.key}`;
   const hint = field.hint
     ? `<p class="settings-hint">${escapeHtml(field.hint)}</p>`
     : "";
+  const dualRaw = dualTimes?.[field.key] || (field.type === "time" ? formatDualUtc(value) : "");
+  const dualHint =
+    field.type === "time" && dualRaw
+      ? `<p class="settings-dual-time" data-dual-for="${field.key}">${escapeHtml(dualRaw)}</p>`
+      : "";
   const restart = field.restart_required
     ? `<span class="settings-restart-tag">דורש הפעלה מחדש</span>`
     : "";
@@ -985,6 +1031,7 @@ function renderSettingsField(field, value) {
         value="${escapeHtml(displayValue)}"
         ${step} ${min} ${max}
       />
+      ${dualHint}
       ${hint}
     </div>`;
 }
@@ -1035,6 +1082,19 @@ async function saveSettings(formEl, statusEl) {
 async function renderSelectionGuide() {
   const data = await fetchJson("/api/selection/guide");
   const strat = data.strategy || {};
+
+  const userFlowHtml = (data.user_flow || [])
+    .map(
+      (step) => `
+      <div class="guide-flow-step">
+        <div class="guide-flow-marker">${escapeHtml(step.step)}</div>
+        <div class="guide-flow-body">
+          <div class="guide-flow-title">${escapeHtml(step.title)}</div>
+          <div class="guide-flow-detail">${escapeHtml(step.detail)}</div>
+        </div>
+      </div>`
+    )
+    .join("");
 
   const pipelineHtml = (data.pipeline || [])
     .map(
@@ -1111,8 +1171,17 @@ async function renderSelectionGuide() {
 
     <p class="guide-disclaimer">${escapeHtml(data.disclaimer || "")}</p>
 
+    ${
+      userFlowHtml
+        ? `<section class="guide-section">
+      <h2 class="section-title">זרימה יומית (מה אתה עושה)</h2>
+      <div class="guide-flow">${userFlowHtml}</div>
+    </section>`
+        : ""
+    }
+
     <section class="guide-section">
-      <h2 class="section-title">תהליך בקצרה</h2>
+      <h2 class="section-title">איך המערכת בוחרת מניות</h2>
       <div class="guide-flow">${pipelineHtml}</div>
     </section>
 
@@ -1249,12 +1318,38 @@ async function renderTelegramGuide() {
     )
     .join("");
 
+  const gettingStartedHtml = (data.getting_started || [])
+    .map(
+      (item) => `
+      <article class="guide-card guide-card-highlight">
+        <div class="guide-card-head">
+          <span class="guide-card-icon">${item.icon}</span>
+          <div>
+            <h3>${escapeHtml(item.title)}</h3>
+            <p class="guide-card-when">${escapeHtml(item.detail)}</p>
+            ${item.cmd ? `<p><code>${escapeHtml(item.cmd)}</code></p>` : ""}
+          </div>
+        </div>
+      </article>`
+    )
+    .join("");
+
   app.innerHTML = `
     <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
     <section class="hero">
       <h1>📖 ${escapeHtml(data.title || "מדריך טלגרם")}</h1>
       <p>${escapeHtml(data.subtitle || "")}</p>
+      ${data.schedule_note ? `<p class="guide-note">${escapeHtml(data.schedule_note)}</p>` : ""}
     </section>
+
+    ${
+      gettingStartedHtml
+        ? `<section class="guide-section">
+      <h2 class="section-title">התחלה מהירה</h2>
+      <div class="guide-cards">${gettingStartedHtml}</div>
+    </section>`
+        : ""
+    }
 
     <section class="guide-section">
       <h2 class="section-title">זרימת יום מסחר</h2>
@@ -1482,13 +1577,15 @@ async function renderSettings() {
     fetchJson("/api/settings"),
     fetchJson("/api/settings/telegram"),
   ]);
+  const timeDual = data.time_dual || {};
   const sections = (data.sections || [])
     .map(
       (section) => `
       <section class="settings-section">
         <h2 class="section-title">${escapeHtml(section.title)}</h2>
+        ${section.note ? `<p class="settings-section-note">${escapeHtml(section.note)}</p>` : ""}
         <div class="settings-grid">
-          ${section.fields.map((field) => renderSettingsField(field, data.values[field.key])).join("")}
+          ${section.fields.map((field) => renderSettingsField(field, data.values[field.key], timeDual)).join("")}
         </div>
       </section>`
     )
@@ -1528,6 +1625,13 @@ async function renderSettings() {
   });
   document.getElementById("telegramTestBtn").onclick = () =>
     testTelegramConnection(tgForm, tgStatus);
+
+  form.querySelectorAll('input[type="time"]').forEach((input) => {
+    input.addEventListener("input", () => {
+      const dualEl = form.querySelector(`[data-dual-for="${input.name}"]`);
+      if (dualEl) dualEl.textContent = formatDualUtc(input.value);
+    });
+  });
 }
 
 async function router() {

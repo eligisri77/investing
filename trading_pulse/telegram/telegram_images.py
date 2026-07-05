@@ -121,50 +121,206 @@ def _render_table(
     return buf.getvalue()
 
 
+def _pil_hebrew(text: str) -> str:
+    """Render Hebrew correctly on PIL's LTR canvas."""
+    try:
+        from bidi.algorithm import get_display
+
+        return get_display(text)
+    except Exception:
+        return text
+
+
+def _shares_count(capital_usd: float, entry_price: float | None) -> str:
+    if not entry_price or entry_price <= 0:
+        return "—"
+    qty = capital_usd / entry_price
+    if qty >= 10:
+        return f"{qty:.1f}"
+    if qty >= 1:
+        return f"{qty:.2f}"
+    return f"{qty:.3f}"
+
+
 def render_portfolio_image(data: dict[str, Any]) -> bytes:
+    from trading_pulse.core.schedule_tz import format_local_entry_moment
+
+    equity = float(data.get("equity", 0))
+    invested = float(data.get("open_capital_usd", 0))
+    marked = float(data.get("open_marked_usd", invested))
     pnl = float(data.get("total_realized_pnl", 0))
+    unrealized = float(data.get("unrealized_pnl_usd", 0))
     sign = "+" if pnl >= 0 else ""
-    subtitle = (
-        f"Equity ${data['equity']:.2f}  |  Open ${data['open_capital_usd']:.0f}  |  "
-        f"P/L {sign}${pnl:.2f}"
-    )
-    headers = ["Symbol", "Trades", "Invested", "P/L", "Win%"]
+    ur_sign = "+" if unrealized >= 0 else ""
+    open_positions = data.get("open_positions") or []
+    pending = [p for p in open_positions if p.get("status") == "pending_market_entry"]
+    holding = [p for p in open_positions if p.get("status") == "holding"]
+
+    if pending and not holding:
+        title = _pil_hebrew("תיק — מאושר, ממתין לפתיחה")
+    else:
+        title = _pil_hebrew("תיק השקעות — מה קנית")
+
+    if pending:
+        subtitle = _pil_hebrew(
+            f"הון ${equity:.2f}  |  ממומש {sign}${pnl:.2f}  |  "
+            f"{len(pending)} מניות ממתינות לפתיחת השוק"
+        )
+    else:
+        subtitle = _pil_hebrew(
+            f"הון ${equity:.2f}  |  שווי ${marked:.0f}  |  "
+            f"רווח פתוח {ur_sign}${unrealized:.2f}  |  ממומש {sign}${pnl:.2f}"
+        )
+
+    headers = [
+        _pil_hebrew("מניה"),
+        _pil_hebrew("סכום"),
+        _pil_hebrew("@מחיר"),
+        _pil_hebrew("שווי"),
+        _pil_hebrew("רווח פתוח"),
+        _pil_hebrew("אושר / כניסה"),
+    ]
     rows: list[list[str]] = []
     colors: list[list[tuple[int, int, int]]] = []
 
-    open_positions = data.get("open_positions") or []
-    for p in open_positions:
-        status = "HOLD" if p.get("status") == "holding" else "WAIT"
-        rows.append(
-            [
-                f"{p['symbol']} ({status})",
-                "—",
-                f"${p['capital_usd']:.0f}",
-                "—",
-                "—",
-            ]
-        )
-        colors.append([CYAN, TEXT, TEXT, TEXT, TEXT])
-
-    for s in data.get("by_symbol") or []:
-        ps = "+" if s["total_pnl_usd"] >= 0 else ""
-        rows.append(
-            [
-                str(s["symbol"]),
-                str(s["trade_count"]),
-                f"${s['total_capital_usd']:.0f}",
-                f"{ps}${s['total_pnl_usd']:.2f}",
-                f"{s['win_rate_pct']:.0f}%",
-            ]
-        )
-        pnl_col = _pnl_color(float(s["total_pnl_usd"]))
-        colors.append([TEXT, TEXT, TEXT, pnl_col, TEXT])
+    for p in sorted(open_positions, key=lambda x: (x.get("entry_at") or x.get("approved_at") or "", x["symbol"])):
+        symbol = str(p["symbol"])
+        capital = float(p.get("capital_usd", 0))
+        entry = p.get("entry_price") or p.get("entry_ref_price")
+        entry_f = float(entry) if entry else 0.0
+        if p.get("status") == "pending_market_entry":
+            approved = format_local_entry_moment(p.get("approved_at"))
+            entry_when = str(p.get("scheduled_entry", "פתיחה"))
+            rows.append(
+                [
+                    f"{symbol} *",
+                    f"${capital:.0f}",
+                    f"~${entry_f:.2f}" if entry_f > 0 else "—",
+                    "—",
+                    "—",
+                    _pil_hebrew(f"{approved} → {entry_when}"),
+                ]
+            )
+            colors.append([PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
+            continue
+        when = format_local_entry_moment(p.get("entry_at"))
+        if p.get("status") == "holding":
+            marked_val = float(p.get("marked_value_usd", capital))
+            ur = float(p.get("unrealized_pnl_usd", 0))
+            ur_pct = float(p.get("unrealized_pnl_pct", 0))
+            ur_sign_row = "+" if ur >= 0 else ""
+            rows.append(
+                [
+                    symbol,
+                    f"${capital:.0f}",
+                    f"${entry_f:.2f}" if entry_f > 0 else "—",
+                    f"${marked_val:.0f}",
+                    f"{ur_sign_row}${ur:.0f} ({ur_sign_row}{ur_pct:.1f}%)",
+                    when,
+                ]
+            )
+            colors.append([CYAN, TEXT, GREEN, TEXT, _pnl_color(ur), MUTED])
+        else:
+            ref = float(p.get("entry_ref_price", 0) or 0)
+            rows.append(
+                [
+                    f"{symbol} *",
+                    f"${capital:.0f}",
+                    f"~${ref:.2f}" if ref > 0 else "—",
+                    "—",
+                    "—",
+                    _pil_hebrew("ממתין"),
+                ]
+            )
+            colors.append([PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
 
     if not rows:
-        rows = [["—", "—", "—", "—", "No trades yet"]]
-        colors = [[MUTED] * 5]
+        rows = [[_pil_hebrew("אין מניות"), "—", "—", "—", "—", "—"]]
+        colors = [[MUTED] * 6]
 
-    return _render_table(title="Portfolio / תיק", subtitle=subtitle, headers=headers, rows=rows, row_colors=colors)
+    footnote = _pil_hebrew(
+        "סימולציה dry-run — אושר = רגע האישור; כניסה = מחיר פתיחת השוק (~16:35 ישראל)"
+    )
+
+    return _render_portfolio_holdings(
+        title=title,
+        subtitle=subtitle,
+        footnote=footnote,
+        headers=headers,
+        rows=rows,
+        row_colors=colors,
+        width=1040,
+    )
+
+
+def _portfolio_column_widths(col_count: int, usable: int) -> list[int]:
+    """Wider columns for P/L and time."""
+    if col_count == 6:
+        ratios = [0.11, 0.12, 0.13, 0.12, 0.28, 0.24]
+        widths = [max(56, int(usable * r)) for r in ratios]
+        widths[-1] += usable - sum(widths)
+        return widths
+    base = usable // max(col_count, 1)
+    return [base] * col_count
+
+
+def _render_portfolio_holdings(
+    *,
+    title: str,
+    subtitle: str,
+    footnote: str,
+    headers: list[str],
+    rows: list[list[str]],
+    row_colors: list[list[tuple[int, int, int]]] | None = None,
+    width: int = 920,
+) -> bytes:
+    font_title = _load_font(26, bold=True)
+    font_sub = _load_font(16)
+    font_head = _load_font(14, bold=True)
+    font_cell = _load_font(14)
+    font_note = _load_font(13)
+
+    pad_x = 28
+    row_h = 40
+    header_h = 44
+    col_count = len(headers)
+    usable = width - pad_x * 2
+    col_widths = _portfolio_column_widths(col_count, usable)
+
+    content_h = 28 + 36 + 36 + header_h + row_h * max(len(rows), 1) + (28 if footnote else 16) + 20
+    img = Image.new("RGB", (width, content_h), BG)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((12, 12, width - 12, content_h - 12), radius=16, fill=SURFACE, outline=BORDER, width=2)
+
+    y = 28
+    draw.text((pad_x, y), title, fill=CYAN, font=font_title)
+    y += 36
+    draw.text((pad_x, y), subtitle, fill=MUTED, font=font_sub)
+    y += 36
+
+    draw.rectangle((pad_x, y, width - pad_x, y + header_h), fill=HEADER_BG)
+    x = pad_x
+    for i, head in enumerate(headers):
+        draw.text((x + 8, y + 12), head, fill=PINK, font=font_head)
+        x += col_widths[i]
+    y += header_h
+
+    for r_idx, row in enumerate(rows):
+        bg = ROW_ALT if r_idx % 2 else SURFACE
+        draw.rectangle((pad_x, y, width - pad_x, y + row_h), fill=bg)
+        x = pad_x
+        for c_idx, cell in enumerate(row):
+            color = row_colors[r_idx][c_idx] if row_colors and r_idx < len(row_colors) else TEXT
+            draw.text((x + 8, y + 11), cell, fill=color, font=font_cell)
+            x += col_widths[c_idx]
+        y += row_h
+
+    if footnote:
+        draw.text((pad_x, y + 4), footnote, fill=MUTED, font=font_note)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 def render_plan_image(plan: dict[str, Any]) -> bytes:
@@ -244,16 +400,18 @@ def render_report_image(report: dict[str, Any]) -> bytes:
         colors.append([TEXT, TEXT, TEXT, _pnl_color(p), _pnl_color(p)])
 
     for pos in report.get("held_eod") or []:
+        ur = float(pos.get("unrealized_pnl_usd", 0))
+        ps = "+" if ur >= 0 else ""
         rows.append(
             [
                 str(pos["symbol"]),
                 "Holding",
                 str(pos.get("days_held", 0)),
-                "—",
-                "—",
+                f"{ps}${ur:.2f}" if pos.get("unrealized_pnl_usd") is not None else "—",
+                f"{float(pos.get('unrealized_pnl_pct', 0)):+.1f}%" if pos.get("unrealized_pnl_pct") is not None else "—",
             ]
         )
-        colors.append([CYAN, CYAN, MUTED, TEXT, TEXT])
+        colors.append([CYAN, CYAN, MUTED, _pnl_color(ur), _pnl_color(ur)])
 
     if not rows:
         rows = [["—", "—", "—", "—", "No activity"]]

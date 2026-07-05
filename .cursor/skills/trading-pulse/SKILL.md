@@ -31,14 +31,18 @@ Read this skill before changing Telegram, plans, guides, or watchlist behavior.
 
 Paths are under `trading_pulse/` unless noted. Entry: `python -m trading_pulse`, `python -m trading_pulse.api`, `python -m trading_pulse.desktop`.
 
-## Telegram: two-step user flow
+## Telegram: simplified user flow
 
-**שלב 1 — אישור** (digits without ח'): `הכל`, `1,2,3`, `דחה 4`  
-**שלב 2 — חלוקה** (with ח'): `ח1`…`ח5`, `חלוקה`  
-Never confuse `1` (approve #1) with `ח1` (allocation).
+**ערב (~20:15 UTC)** — תוכנית למחר + `הכל` לאישור (חלוקה אוטומטית)  
+**בוקר (~13:35 UTC)** — כניסה במחיר פתיחה + הודעה  
+**ערב (~20:20 UTC)** — דוח יומי (ממומש + עתידי)
+
+**יום ראשון:** `הכל` מחלק $1,000 על ~3 מניות (`initial_deploy_stocks`)  
+**מניה חדשה בלי מזומן:** `מכור SYMBOL` / `החלף X Y` → אז `הכל`  
+**חלוקה ידנית (מתקדם):** `ח1`…`ח5` רק אם נשלחה הודעת חלוקה ידנית
 
 Parser: `parse_telegram_user_command()` in `dryrun_agent.py`.  
-Unknown Hebrew text must return `kind: unknown`, not default to approve.
+Flow helpers: `trading_flow.py` (`plan_intent`, `auto_allocate_equal`, `funding_gap`).
 
 ## Telegram messages: rules
 

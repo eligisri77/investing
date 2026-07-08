@@ -13,6 +13,27 @@ from trading_pulse.core.app_paths import LOCK_FILE
 _lock_held = False
 
 
+def _process_image_name(pid: int) -> str | None:
+    """Best-effort executable name for a live PID (Windows)."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        buf_len = wintypes.DWORD(260)
+        buf = ctypes.create_unicode_buffer(buf_len.value)
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(buf_len)):
+            return buf.value
+        return None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -30,6 +51,22 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _is_our_process(pid: int) -> bool:
+    """True only if the live PID is actually a python process (not a reused PID).
+
+    Guards against PID reuse after an unclean shutdown (e.g. power loss), where a
+    stale lock's PID may have been reassigned to an unrelated process at boot.
+    """
+    if not _pid_alive(pid):
+        return False
+    image = _process_image_name(pid)
+    if image is None:
+        # Can't verify (non-Windows or query failed) — fall back to alive check.
+        return sys.platform != "win32"
+    name = os.path.basename(image).lower()
+    return name in {"python.exe", "pythonw.exe"}
 
 
 def _read_lock() -> tuple[int, str] | None:
@@ -68,13 +105,18 @@ def acquire_instance_lock(role: str = "app") -> bool:
         if pid == os.getpid():
             _lock_held = True
             return True
-        if _pid_alive(pid):
+        if _is_our_process(pid):
             logging.error(
                 "Another Trading Pulse instance is running (pid=%s, role=%s). Exiting.",
                 pid,
                 existing_role,
             )
             return False
+        logging.warning(
+            "Found stale lock (pid=%s, role=%s) — previous instance gone. Reclaiming.",
+            pid,
+            existing_role,
+        )
 
     try:
         LOCK_FILE.write_text(f"{os.getpid()} {role}\n", encoding="utf-8")
@@ -92,5 +134,5 @@ def lock_status() -> dict:
     if not existing:
         return {"locked": False, "pid": None, "role": None, "alive": False}
     pid, role = existing
-    alive = _pid_alive(pid)
+    alive = _is_our_process(pid)
     return {"locked": True, "pid": pid, "role": role, "alive": alive, "this_process": pid == os.getpid()}

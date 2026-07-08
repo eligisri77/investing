@@ -164,6 +164,12 @@ class AgentConfig:
     max_hold_days: int = 5
     max_open_positions: int = 4
     commission_per_side_usd: float = 1.0
+    weekly_scan_enabled: bool = True
+    weekly_scan_day: str = "sunday"
+    weekly_scan_time: str = "06:00"
+    weekly_watchlist_size: int = 60
+    weekly_scan_chunk: int = 20
+    weekly_scan_throttle_sec: float = 1.5
     tickers: list[str] = None
 
     def __post_init__(self) -> None:
@@ -395,14 +401,12 @@ def plan_path(trading_day: date) -> Path:
     return PLANS_DIR / f"plan_{trading_day.isoformat()}.json"
 
 
-def plan_is_protected(plan: dict[str, Any]) -> bool:
-    """Approved or allocated plans must not be overwritten by scheduled jobs."""
-    alloc = plan.get("allocation") or {}
-    if alloc.get("status") == "applied":
-        return True
-    if plan.get("status") == "approved":
-        return True
-    return any(r.get("approved") for r in plan.get("recommendations") or [])
+def plan_is_protected(
+    plan: dict[str, Any], *, state: dict[str, Any] | None = None, as_of: date | None = None
+) -> bool:
+    from trading_pulse.agent.plan_engine import plan_is_protected as _engine_protected
+
+    return _engine_protected(plan, state=state, as_of=as_of)
 
 
 def pending_plan_entry_symbols(*, as_of: date | None = None) -> set[str]:
@@ -1340,7 +1344,7 @@ def execute_sell_command(cfg: AgentConfig, symbol: str, fraction: float = 1.0) -
     return (
         f"✅ <b>מכרת {symbol}</b> ({pct}%)\n"
         f"רווח/הפסד ממומש: <b>{sign}${float(trade['pnl_usd']):.2f}</b>\n"
-        f"מזומן פנוי: <b>${cash:.0f}</b> — שלח <code>התחל</code> לקנייה"
+        f"מזומן פנוי: <b>${cash:.0f}</b> — שלח <code>הכל</code> לאישור"
     )
 
 
@@ -1415,15 +1419,37 @@ def set_plan_status(
     for idx in indices:
         recs[idx]["approved"] = approved_value
         symbols.append(str(recs[idx]["symbol"]))
-    plan["status"] = "approved" if any(x.get("approved") for x in recs) else "pending_approval"
-    plan["approved_at"] = datetime.now(timezone.utc).isoformat()
-    if approved_value:
-        st = load_state(cfg or load_config())
-        plan["pre_entry_equity"] = round(float(st.get("equity", cfg.initial_capital if cfg else 1000)), 2)
+
+    state = load_state(cfg_obj)
+    allocation_sent = False
+    auto_allocated = False
+    funding_sent = False
+    all_approved = [str(r["symbol"]) for r in recs if r.get("approved")]
+
     if not any(x.get("approved") for x in recs):
+        plan["status"] = "draft"
         plan.pop("allocation", None)
-    elif action.upper() == "APPROVE":
-        plan["allocation"] = {"status": "pending"}
+        plan.pop("confirmed_at", None)
+    elif approved_value and len(all_approved) == len(recs):
+        from trading_pulse.agent.plan_engine import apply_confirm
+        from trading_pulse.agent.trading_flow import funding_gap
+
+        gap = funding_gap(plan, state, cfg_obj)
+        if gap and notify_allocation:
+            plan["status"] = "draft"
+            plan["allocation"] = {"status": "pending"}
+            save_json(path, plan)
+            send_funding_prompt(trading_day, plan, gap, cfg=cfg_obj)
+            funding_sent = True
+        else:
+            plan = apply_confirm(plan, state, cfg_obj)
+            auto_allocated = True
+    else:
+        plan["status"] = "draft"
+        plan["approved_at"] = datetime.now(timezone.utc).isoformat()
+        if approved_value:
+            plan["allocation"] = {"status": "pending"}
+
     save_json(path, plan)
     clear_pending_plan(trading_day)
     log_telegram_message(
@@ -1434,28 +1460,27 @@ def set_plan_status(
     )
 
     verb = "אושרו" if approved_value else "נדחו"
-    all_approved = [str(r["symbol"]) for r in recs if r.get("approved")]
-    allocation_sent = False
-    auto_allocated = False
-    funding_sent = False
-    if approved_value and notify_allocation and all_approved:
-        state = load_state(cfg_obj)
-        from trading_pulse.agent.trading_flow import auto_allocate_equal, funding_gap, should_auto_allocate
+    if (
+        approved_value
+        and notify_allocation
+        and all_approved
+        and len(all_approved) == len(recs)
+        and not funding_sent
+        and not auto_allocated
+    ):
+        from trading_pulse.agent.trading_flow import should_auto_allocate
 
-        gap = funding_gap(plan, state, cfg_obj)
-        if gap:
-            send_funding_prompt(trading_day, plan, gap, cfg=cfg_obj)
-            funding_sent = True
-        elif should_auto_allocate(cfg_obj, plan, state):
-            if auto_allocate_equal(cfg_obj, plan, state):
-                save_json(path, plan)
-                auto_allocated = True
-            else:
-                send_allocation_prompt(trading_day, cfg=cfg)
-                allocation_sent = True
-        else:
+        if should_auto_allocate(cfg_obj, plan, state):
             send_allocation_prompt(trading_day, cfg=cfg)
             allocation_sent = True
+    elif (
+        approved_value
+        and notify_allocation
+        and all_approved
+        and len(all_approved) < len(recs)
+    ):
+        send_allocation_prompt(trading_day, cfg=cfg)
+        allocation_sent = True
 
     from trading_pulse.telegram.telegram_format import format_approval_reply
 
@@ -1549,18 +1574,18 @@ def apply_allocation_choice(trading_day: str, option_id: int, *, cfg: AgentConfi
 
 
 def ensure_plan_allocation(cfg: AgentConfig, plan: dict[str, Any], state: dict[str, Any], trading_day: date) -> None:
-    """Apply default allocation (original plan amounts) if user did not choose."""
-    from trading_pulse.agent.capital_allocation import allocation_pending, apply_allocation_option, ensure_allocation_options
+    """Entry runs only on user-confirmed plans."""
+    from trading_pulse.agent.plan_engine import STATUS_CONFIRMED, normalize_status
 
-    if not allocation_pending(plan):
+    if normalize_status(plan) != STATUS_CONFIRMED:
+        logging.warning(
+            "Entry skipped for %s: plan not confirmed (send הכל or confirm in app)",
+            trading_day.isoformat(),
+        )
         return
-    options = ensure_allocation_options(cfg, plan, state)
-    apply_allocation_option(plan, 4, options)
-    save_json(plan_path(trading_day), plan)
-    logging.info(
-        "Allocation auto-applied for %s: original plan amounts (no user choice)",
-        trading_day.isoformat(),
-    )
+    alloc = plan.get("allocation") or {}
+    if alloc.get("status") != "applied":
+        logging.warning("Entry skipped for %s: allocation not applied", trading_day.isoformat())
 
 
 def plan_status_text(trading_day: str) -> str:
@@ -1616,25 +1641,9 @@ def plan_status_text(trading_day: str) -> str:
 
 
 def get_active_trading_day() -> str | None:
-    """Active plan: prefer today if still open, else latest non-reported plan."""
-    today = date.today()
-    today_str = today.isoformat()
-    today_path = plan_path(today)
-    if today_path.exists() and not report_path(today).exists():
-        return today_str
+    from trading_pulse.agent.plan_engine import active_trading_day
 
-    latest_day: str | None = None
-    latest_gen = ""
-    for path in PLANS_DIR.glob("plan_*.json"):
-        plan = read_json(path)
-        td = plan.get("for_trading_day")
-        if not td or report_path(date.fromisoformat(str(td))).exists():
-            continue
-        gen = str(plan.get("generated_at", ""))
-        if gen >= latest_gen:
-            latest_gen = gen
-            latest_day = str(td)
-    return latest_day
+    return active_trading_day()
 
 
 def resolve_trading_day(explicit: str | None) -> str:
@@ -1664,7 +1673,13 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     raw = text.strip()
     lower = raw.lower()
 
-    if lower in {"help", "עזרה", "?", "פקודות", "help"}:
+    if lower in {"help", "עזרה", "?", "פקודות"}:
+        return {"kind": "help"}
+
+    if lower in {"אישור", "אשור", "אשר", "אישר", "confirm", "approval", "מאשר"}:
+        return {"kind": "approve", "day": None, "indices_raw": "ALL"}
+
+    if re.search(r"פקודה\s*מלאה|איזה\s+פקודה|מה\s+לשלוח|תוכל\s+לשלוח", raw, flags=re.IGNORECASE):
         return {"kind": "help"}
 
     if lower in {"מדריך", "מדריך טלגרם", "guide", "telegram guide"}:
@@ -1715,6 +1730,16 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     }:
         return {"kind": "tickers_discover"}
 
+    if lower in {
+        "בנה רשימה",
+        "רשימה שבועית",
+        "סריקה שבועית",
+        "סרוק שבועי",
+        "build watchlist",
+        "weekly scan",
+    }:
+        return {"kind": "build_watchlist"}
+
     add_match = re.fullmatch(
         r"(?:הוסף|add|\+)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})",
         raw.strip(),
@@ -1753,6 +1778,20 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "to_symbol": swap_match.group(2).upper(),
         }
 
+    nl_swap = re.search(
+        r"(?:ל)?מכור\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s+"
+        r"(?:ו|ו)?(?:ל)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)\s+"
+        r"([A-Za-z][A-Za-z0-9.\-^]{0,9})",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if nl_swap:
+        return {
+            "kind": "swap",
+            "from_symbol": nl_swap.group(1).upper(),
+            "to_symbol": nl_swap.group(2).upper(),
+        }
+
     plan_now_phrases = {
         "תוכנית עכשיו",
         "תוכנית חדשה",
@@ -1778,8 +1817,19 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         "plan",
         "show plan",
     }
+    plan_cancel_phrases = {
+        "בטל תוכנית",
+        "ביטול תוכנית",
+        "בטל את התוכנית",
+        "מחק תוכנית",
+        "בטל תוכנית למחר",
+        "cancel plan",
+        "cancel",
+    }
     if lower in start_phrases:
         return {"kind": "start", "day": None}
+    if lower in plan_cancel_phrases:
+        return {"kind": "plan_cancel", "day": None}
     if lower in plan_now_phrases:
         return {"kind": "plan_now", "day": None}
     if lower in plan_show_phrases or lower.startswith("תוכנית "):
@@ -1872,9 +1922,19 @@ def _looks_like_indices(raw: str) -> bool:
 
 
 def telegram_help_text() -> str:
-    from trading_pulse.telegram.telegram_format import user_guide_full
-
-    return user_guide_full()
+    return "\n".join(
+        [
+            "<b>📋 פקודות שימושיות</b>",
+            "",
+            "אישור תוכנית: <code>הכל</code> · <code>אישור</code>",
+            "ביטול תוכנית: <code>בטל תוכנית</code>",
+            "החלפה: <code>החלף SOXL HOOD</code>",
+            "או בשפה חופשית: <code>למכור SOXL ולקנות HOOD</code>",
+            "מכירה: <code>מכור SYMBOL</code>",
+            "",
+            "<code>תיק</code> · <code>סטטוס</code> · <code>מדריך</code>",
+        ]
+    )
 
 
 def telegram_unknown_reply() -> str:
@@ -1895,6 +1955,32 @@ def resend_plan_telegram(cfg: AgentConfig, plan: dict[str, Any]) -> None:
     send_telegram_message(cfg, text, context="plan:resend", parse_mode="HTML")
     send_plan_table_image(cfg, plan)
     send_plan_stock_charts(cfg, plan)
+
+
+def cancel_plan_telegram(cfg: AgentConfig) -> str:
+    """Cancel the active plan (next open session) via Telegram."""
+    from trading_pulse.agent.plan_engine import cancel_plan
+
+    result = cancel_plan()
+    if result.get("ok"):
+        day = escape_html(str(result.get("day", "")))
+        syms = result.get("symbols") or []
+        syms_txt = ", ".join(escape_html(s) for s in syms) if syms else "—"
+        return (
+            f"<b>🗑️ התוכנית בוטלה</b>\n"
+            f"<b>יום מסחר:</b> {day}\n"
+            f"בוטלו: {syms_txt}\n\n"
+            "שלח <code>תוכנית עכשיו</code> ליצירת תוכנית חדשה, "
+            "או חכה לתוכנית הערב."
+        )
+    reason = result.get("reason")
+    if reason == "already_executed":
+        return (
+            "❌ <b>אי אפשר לבטל</b>\n"
+            "התוכנית כבר בוצעה (הפוזיציות נפתחו). "
+            "למכירה שלח <code>מכור SYMBOL</code>."
+        )
+    return "ℹ️ <b>אין תוכנית פעילה לביטול</b>\nשלח <code>תוכנית עכשיו</code> ליצירת תוכנית."
 
 
 def run_plan_now_telegram(cfg: AgentConfig) -> str:
@@ -1953,12 +2039,22 @@ def start_investing(cfg: AgentConfig) -> dict[str, Any]:
         }
 
     alloc = plan.get("allocation") or {}
-    already = all(r.get("approved") for r in recs) and alloc.get("status") == "applied"
-    if not already:
-        set_plan_status(td_str, "APPROVE", list(range(len(recs))), cfg=cfg, notify_allocation=False)
-        plan = read_json(path)
+    from trading_pulse.agent.plan_engine import STATUS_CONFIRMED, apply_confirm, normalize_status, pending_buy_symbols
+    from trading_pulse.agent.trading_flow import entries_already_run, funding_gap, scheduled_entry_moment
 
-    from trading_pulse.agent.trading_flow import entries_already_run, scheduled_entry_moment
+    already = normalize_status(plan) == STATUS_CONFIRMED and alloc.get("status") == "applied"
+    if not already:
+        gap = funding_gap(plan, state, cfg)
+        if gap:
+            return {
+                "ok": False,
+                "status": "needs_cash",
+                "trading_day": td_str,
+                "message": f"אין מספיק מזומן לקנייה. מכור מניה קיימת ואז אשר שוב.",
+                "symbols": [r["symbol"] for r in recs],
+            }
+        plan = apply_confirm(plan, state, cfg)
+        save_json(path, plan)
 
     symbols = [r["symbol"] for r in plan.get("recommendations", []) if r.get("approved")]
     entry_when = scheduled_entry_moment(cfg, date.fromisoformat(td_str))
@@ -1967,17 +2063,21 @@ def start_investing(cfg: AgentConfig) -> dict[str, Any]:
         for r in plan.get("recommendations", [])
         if r.get("approved")
     )
-    if entries_already_run(plan, date.fromisoformat(td_str)):
+    pending = pending_buy_symbols(plan, state)
+    td = date.fromisoformat(td_str)
+    if entries_already_run(plan, td) or (already and not pending):
         status = "already_bought"
-        message = f"כבר נכנסת לשוק ({amounts}). צפה ב־<code>תיק</code>."
-    elif already and not created:
-        status = "already_ready"
-        message = f"כבר מאושר ({amounts}). כניסה לשוק ב-{entry_when}."
-    else:
-        status = "approved_pending_entry"
         message = (
-            f"אושר ({amounts}). הקנייה תתבצע בפתיחת השוק — {entry_when}."
+            f"התיק מעודכן ({amounts}). צפה ב־<code>תיק</code>."
+            if not pending
+            else f"מאושר ({amounts}). כניסה לשוק ב-{entry_when}."
         )
+    elif already and not created:
+        status = "confirmed_pending_entry"
+        message = f"מאושר ({amounts}). הקנייה תתבצע בפתיחת השוק — {entry_when}."
+    else:
+        status = "confirmed_pending_entry"
+        message = f"אושר ({amounts}). הקנייה תתבצע בפתיחת השוק — {entry_when}."
 
     return {
         "ok": True,
@@ -2202,6 +2302,11 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                 handled += 1
                 continue
+            elif kind == "plan_cancel":
+                reply = cancel_plan_telegram(cfg)
+                send_telegram_message(cfg, reply, context="reply:plan_cancel", parse_mode="HTML")
+                handled += 1
+                continue
             elif kind == "tickers_list":
                 from trading_pulse.agent.ticker_manager import format_tickers_list_html
 
@@ -2242,6 +2347,41 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 reply = format_discover_reply(result)
                 reply_context = "reply:tickers_discover"
                 send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "build_watchlist":
+                import threading
+
+                send_telegram_message(
+                    cfg,
+                    "🗓️ <b>בונה רשימה שבועית…</b>\nסריקה איטית של מאות מניות — ייקח כמה דקות. אשלח סיכום בסיום.",
+                    context="reply:build_watchlist",
+                    parse_mode="HTML",
+                )
+
+                def _run_weekly_scan() -> None:
+                    from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
+                    from trading_pulse.telegram.telegram_format import escape_html, format_weekly_watchlist
+
+                    try:
+                        fresh_cfg = load_config()
+                        result = build_weekly_watchlist(fresh_cfg)
+                        send_telegram_message(
+                            cfg,
+                            format_weekly_watchlist(result),
+                            context="reply:build_watchlist_done",
+                            parse_mode="HTML",
+                        )
+                    except Exception as ex:
+                        logging.exception("Weekly watchlist (telegram) failed: %s", ex)
+                        send_telegram_message(
+                            cfg,
+                            f"❌ <b>בניית הרשימה נכשלה</b>\n{escape_html(str(ex))}",
+                            context="reply:build_watchlist_err",
+                            parse_mode="HTML",
+                        )
+
+                threading.Thread(target=_run_weekly_scan, daemon=True).start()
                 handled += 1
                 continue
             elif kind == "sell":
@@ -2374,9 +2514,9 @@ def generate_plan(
     existing_path = plan_path(target_day)
     if not force and existing_path.exists():
         existing = read_json(existing_path)
-        if plan_is_protected(existing):
+        if plan_is_protected(existing, state=state, as_of=run_day):
             logging.info(
-                "Plan for %s is approved/allocated — skipping regeneration",
+                "Plan for %s is confirmed with pending fills — keeping until market open",
                 target_day.isoformat(),
             )
             existing["_regeneration_skipped"] = True
@@ -2385,9 +2525,18 @@ def generate_plan(
     capital = float(state["equity"])
     held = held_symbols(state)
     holdings = holdings_snapshot(state)
-    logging.info("Scanning %d tickers (%s strategy)", len(cfg.tickers), strategy)
-    candidates = fetch_signal_universe(cfg.tickers, cfg)
+    scan_tickers = sorted(set(cfg.tickers) | held)
+    logging.info("Scanning %d tickers (%s strategy)", len(scan_tickers), strategy)
+    candidates = fetch_signal_universe(scan_tickers, cfg)
     candidates_before_quality = len(candidates)
+    raw_universe = candidates.copy()
+    universe_scores: dict[str, dict[str, Any]] = {}
+    if not candidates.empty:
+        for _, _row in candidates.iterrows():
+            universe_scores[str(_row["symbol"])] = {
+                "score": float(_row.get("score", 0) or 0),
+                "close": float(_row.get("close", 0) or 0),
+            }
     logging.info("Found %d candidate(s) before quality filters", candidates_before_quality)
     from trading_pulse.agent.symbol_cooldown import filter_candidates_dataframe
 
@@ -2419,6 +2568,25 @@ def generate_plan(
         deployed_capital(state),
     )
     picks = candidates.head(new_trade_slots) if new_trade_slots > 0 and not candidates.empty else pd.DataFrame()
+    fallback_used = False
+    if picks.empty and new_trade_slots > 0 and not raw_universe.empty:
+        from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
+
+        pool = raw_universe[~raw_universe["symbol"].isin(held)]
+        if not pool.empty:
+            pool = pool[
+                ~pool["symbol"].apply(
+                    lambda s: is_symbol_in_cooldown(state, str(s), as_of=run_day)
+                )
+            ]
+        if not pool.empty:
+            picks = pool.sort_values("score", ascending=False).head(1)
+            fallback_used = True
+            logging.info(
+                "No pick passed quality bar — using best-available fallback: %s (score %.2f)",
+                str(picks.iloc[0]["symbol"]),
+                float(picks.iloc[0]["score"]),
+            )
     n_picks = len(picks)
     per_trade_cap = per_trade_cap_for_plan(cfg, state, max(n_picks, 1))
     recommendations: list[dict[str, Any]] = []
@@ -2451,6 +2619,7 @@ def generate_plan(
             "sources_used": int(row.get("sources_used", 0)),
             "sources_list": list(row.get("sources_list", [])),
             "approved": False,
+            "below_bar": fallback_used,
         }
         if speculative:
             breakout_flag = "yes" if bool(row.get("breakout_ok", False)) else "no"
@@ -2479,6 +2648,13 @@ def generate_plan(
 
     enrich_recommendations(recommendations, cfg, speculative=speculative)
 
+    from trading_pulse.agent.holdings_review import review_holdings
+
+    holding_actions = [
+        r.to_dict()
+        for r in review_holdings(holdings, cfg, universe_scores, recommendations)
+    ]
+
     plan = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "for_trading_day": target_day.isoformat(),
@@ -2490,6 +2666,8 @@ def generate_plan(
         "deployed_capital_usd": deployed_capital(state),
         "available_capital_usd": round(deployable, 2),
         "holdings": holdings,
+        "holding_actions": holding_actions,
+        "fallback_pick": fallback_used,
         "max_trades": new_trade_slots,
         "planned_per_trade_cap": round(per_trade_cap, 2),
         "daily_loss_limit_usd": round(capital * cfg.max_daily_loss_pct, 2),
@@ -2505,11 +2683,12 @@ def generate_plan(
         },
     }
     if recommendations:
-        plan["status"] = "pending_approval"
+        plan["status"] = "draft"
     elif holdings:
-        plan["status"] = "hold_only"
+        plan["status"] = "draft"
+        plan["hold_only"] = True
     else:
-        plan["status"] = "no_picks"
+        plan["status"] = "draft"
         if candidates_before_quality > 0 and candidates.empty:
             top = filter_stats.get("top_skipped_scores") or []
             if top:
@@ -2527,6 +2706,9 @@ def generate_plan(
     gap = funding_gap(plan, state, cfg)
     if gap:
         plan["funding"] = gap
+    from trading_pulse.agent.plan_engine import supersede_other_plans
+
+    supersede_other_plans(target_day)
     save_json(plan_path(target_day), plan)
     logging.info("Saved plan: %s", plan_path(target_day))
     return plan
@@ -2649,7 +2831,9 @@ def run_entry_simulation(
             new_entries.append(pos)
 
     if new_entries:
-        mark_entries_executed(plan, trading_day, cfg=cfg)
+        from trading_pulse.agent.plan_engine import mark_executed
+
+        mark_executed(plan, trading_day, cfg=cfg)
         save_json(path, plan)
     return new_entries
 
@@ -2847,6 +3031,14 @@ def simulate_day(
         report["monthly_target_summary"] = monthly_target_summary(cfg, state)
         save_json(report_path(trading_day), report)
     save_json(STATE_FILE, state)
+    try:
+        from trading_pulse.agent.plan_engine import mark_closed
+
+        plan = read_json(plan_path(trading_day))
+        mark_closed(plan)
+        save_json(plan_path(trading_day), plan)
+    except OSError:
+        pass
     return report
 
 
@@ -2912,6 +3104,23 @@ def cmd_reset_experiment(args: argparse.Namespace) -> None:
         result["archive_dir"],
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def cmd_build_watchlist(args: argparse.Namespace) -> None:
+    from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
+
+    ensure_dirs()
+    setup_logger(scheduler_log_file())
+    cfg = load_config()
+    size = getattr(args, "size", None)
+    notify = bool(getattr(args, "notify", False))
+    result = build_weekly_watchlist(cfg, target_size=size)
+    print(json.dumps({k: v for k, v in result.items() if k != "symbols"}, indent=2, ensure_ascii=False))
+    print("symbols:", ", ".join(result["symbols"]))
+    if notify:
+        from trading_pulse.telegram.telegram_format import format_weekly_watchlist
+
+        send_user_notification(cfg, format_weekly_watchlist(result), context="weekly_watchlist", parse_mode="HTML")
 
 
 def cmd_heartbeat(_: argparse.Namespace) -> None:
@@ -3131,7 +3340,37 @@ def run_scheduler_loop(service: bool = True) -> None:
     schedule.every().day.at(cfg.entry_sim_time).do(run_entry_job)
     schedule.every().day.at(cfg.market_close_sim_time).do(run_sim_job)
     schedule.every().day.at(cfg.heartbeat_time).do(run_heartbeat_job)
+    def run_weekly_scan_job() -> None:
+        active_cfg = load_config()
+        if not bool(getattr(active_cfg, "weekly_scan_enabled", True)):
+            return
+        logging.info("JOB START: weekly watchlist scan")
+        try:
+            from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
+            from trading_pulse.telegram.telegram_format import format_weekly_watchlist
+
+            result = build_weekly_watchlist(active_cfg)
+            record_job("weekly_scan", "ok", f"{result['selected']} symbols")
+            send_user_notification(
+                active_cfg,
+                format_weekly_watchlist(result),
+                context="weekly_watchlist",
+                parse_mode="HTML",
+            )
+            logging.info("JOB END: weekly watchlist scan (%d symbols)", result["selected"])
+        except Exception as ex:
+            record_job("weekly_scan", "failed", str(ex))
+            logging.exception("JOB FAILED: weekly watchlist scan: %s", ex)
+
     schedule.every().day.at(cfg.plan_reminder_time).do(run_plan_reminder_job)
+    if bool(getattr(cfg, "weekly_scan_enabled", True)):
+        _day = str(getattr(cfg, "weekly_scan_day", "sunday")).lower()
+        _weekly = getattr(schedule.every(), _day, None)
+        if _weekly is not None:
+            _weekly.at(cfg.weekly_scan_time).do(run_weekly_scan_job)
+            logging.info("  weekly scan: %s at %s", _day, cfg.weekly_scan_time)
+        else:
+            logging.warning("Unknown weekly_scan_day '%s' — weekly scan not scheduled", _day)
     cfg_holder: dict[str, AgentConfig] = {"cfg": cfg}
 
     def run_telegram_poll_job() -> None:
@@ -3269,6 +3508,11 @@ def build_parser() -> argparse.ArgumentParser:
     reset_cmd.add_argument("--label", default="july_2026", help="Experiment label for archive folder")
     reset_cmd.add_argument("--month", default="2026-07", help="Month key YYYY-MM for target tracking")
     reset_cmd.set_defaults(func=cmd_reset_experiment)
+
+    watchlist_cmd = sub.add_parser("build-watchlist", help="Weekly scan: build the trading watchlist")
+    watchlist_cmd.add_argument("--size", type=int, default=None, help="How many symbols to keep")
+    watchlist_cmd.add_argument("--notify", action="store_true", help="Send summary to Telegram")
+    watchlist_cmd.set_defaults(func=cmd_build_watchlist)
     return p
 
 

@@ -31,6 +31,26 @@ Read this skill before changing Telegram, plans, guides, or watchlist behavior.
 
 Paths are under `trading_pulse/` unless noted. Entry: `python -m trading_pulse`, `python -m trading_pulse.api`, `python -m trading_pulse.desktop`.
 
+## Plan lifecycle (broker-style)
+
+Module: `trading_pulse/agent/plan_engine.py`
+
+| Status | Meaning |
+|--------|---------|
+| `draft` | Evening research — awaiting user confirm |
+| `confirmed` | Order placed — fills at market open |
+| `executed` | Filled at open |
+| `closed` | EOD report done |
+| `superseded` | Replaced by newer evening plan |
+
+**Evening (~20:15 UTC)** — fresh scan from current portfolio; supersedes stale plans  
+**Confirm** — one step (`הכל` / אשר הזמנה): approve + equal split  
+**Morning (~13:35 UTC)** — fill confirmed orders at open price  
+**Evening (~20:20 UTC)** — EOD report, plan → `closed`
+
+Locked only when `confirmed` + pending buys + before market open.  
+Holding all picks already → evening regenerates.
+
 ## Telegram: simplified user flow
 
 **ערב (~20:15 UTC)** — תוכנית למחר + `הכל` לאישור (חלוקה אוטומטית)  

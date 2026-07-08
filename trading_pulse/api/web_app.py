@@ -519,6 +519,7 @@ def api_plan_active() -> dict[str, Any]:
     allocation_options = None
     alloc_pending = False
     bought = False
+    confirmed = False
     entry_when = None
     if allocation_pending is not None and allocation_options_payload is not None and load_agent_state is not None:
         alloc_pending = allocation_pending(plan)
@@ -527,23 +528,39 @@ def api_plan_active() -> dict[str, Any]:
             state = load_agent_state(cfg_agent)
             allocation_options = allocation_options_payload(cfg_agent, plan, state)
     try:
+        from trading_pulse.agent.plan_engine import (
+            STATUS_CONFIRMED,
+            STATUS_DRAFT,
+            normalize_status,
+            pending_buy_symbols,
+        )
         from trading_pulse.agent.trading_flow import entries_already_run, scheduled_entry_moment
 
+        cfg_agent = load_agent_config()
+        state = load_agent_state(cfg_agent) if load_agent_state else {}
         td = date.fromisoformat(trading_day)
-        bought = entries_already_run(plan, td)
-        entry_when = scheduled_entry_moment(load_agent_config(), td)
+        st = normalize_status(plan)
+        entry_when = scheduled_entry_moment(cfg_agent, td)
+        confirmed = st == STATUS_CONFIRMED and alloc.get("status") == "applied"
+        pending = st == STATUS_DRAFT and bool(recs)
+        bought = entries_already_run(plan, td) or (
+            confirmed and not pending_buy_symbols(plan, state or {})
+        )
     except Exception:
+        pending = any(not r.get("approved") for r in recs) if recs else False
+        confirmed = alloc.get("status") == "applied"
         bought = False
         entry_when = None
     return {
         "trading_day": trading_day,
         "pending": pending,
+        "confirmed": confirmed,
         "allocation_pending": alloc_pending,
         "allocation_applied": alloc.get("status") == "applied",
         "allocation": alloc if alloc else None,
         "allocation_options": allocation_options,
         "plan": plan,
-        "ready": bool(recs) and not pending and alloc.get("status") == "applied",
+        "ready": pending,
         "bought": bought,
         "entry_when": entry_when,
     }

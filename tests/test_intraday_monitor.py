@@ -92,6 +92,58 @@ def test_build_swap_when_full_and_weak_holding():
     assert any(s.kind == "swap" and s.swap_from == "IONQ" for s in suggestions)
 
 
+def test_sell_recommended_on_heavy_loss():
+    cfg = FakeCfg(max_open_positions=4)
+    holdings = [{"symbol": "SOXL", "entry_price": 197.21}]
+    quotes = {"SOXL": {"last": 168.0, "change_pct": -14.0}}
+    alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "הפסד משמעותי", severity=2)]}
+    suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
+    sells = [s for s in suggestions if s.kind == "sell"]
+    assert len(sells) == 1
+    assert sells[0].symbol == "SOXL"
+
+
+def test_sell_recommended_on_near_stop_without_scores():
+    cfg = FakeCfg()
+    holdings = [{"symbol": "MSTR", "entry_price": 100.0}]
+    quotes = {"MSTR": {"last": 89.0, "change_pct": -5.0}}
+    alerts = {"MSTR": [PositionAlert("MSTR", "near_stop", "קרוב לרף", severity=3)]}
+    suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
+    assert any(s.kind == "sell" and s.symbol == "MSTR" for s in suggestions)
+
+
+def test_sell_recommendation_includes_redeploy_swap():
+    cfg = FakeCfg(max_open_positions=4)
+    holdings = [{"symbol": "SOXL", "entry_price": 197.0}]
+    quotes = {"SOXL": {"last": 168.0, "change_pct": -14.0}}
+    alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "x", severity=2)]}
+    scores = {"NVDA": {"score": 12.0, "ret_5d_pct": 8.0, "vol_ratio": 1.5, "volume_ok": True}}
+    suggestions = build_suggestions(cfg, holdings, scores, quotes, alerts)
+    sells = [s for s in suggestions if s.kind == "sell"]
+    assert len(sells) == 1
+    assert "החלף SOXL NVDA" in sells[0].message
+
+
+def test_sell_recommendation_holds_cash_when_no_candidate():
+    cfg = FakeCfg()
+    holdings = [{"symbol": "SOXL", "entry_price": 197.0}]
+    quotes = {"SOXL": {"last": 168.0, "change_pct": -14.0}}
+    alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "x", severity=2)]}
+    suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
+    sells = [s for s in suggestions if s.kind == "sell"]
+    assert len(sells) == 1
+    assert "מזומן" in sells[0].message
+
+
+def test_no_sell_on_mild_drop():
+    cfg = FakeCfg()
+    holdings = [{"symbol": "HOOD", "entry_price": 100.0}]
+    quotes = {"HOOD": {"last": 96.0, "change_pct": -4.0}}
+    alerts = {"HOOD": [PositionAlert("HOOD", "intraday_drop", "ירידה יומית", severity=2)]}
+    suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
+    assert not any(s.kind == "sell" for s in suggestions)
+
+
 def test_cooldown_filters_repeat_alerts():
     report = IntradayReport(
         checked_at="now",

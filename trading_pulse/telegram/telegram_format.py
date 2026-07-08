@@ -91,7 +91,7 @@ def user_guide_full() -> str:
             "1️⃣ <code>התחל</code> — קונה 3 מניות ומחלק את $1,000",
             "2️⃣ בערב — דוח יומי על הרווח/הפסד",
             "",
-            "אין מזומן? <code>מכור SYMBOL</code> או <code>החלף X Y</code>",
+            "אין מזומן? <code>מכור SYMBOL</code> · <code>החלף X Y</code> · <code>למכור X ולקנות Y</code>",
             "",
             "<code>תיק</code> · <code>סטטוס</code> · <code>מדריך</code>",
         ]
@@ -102,14 +102,14 @@ def format_start_investing_reply(result: dict[str, Any]) -> str:
     status = result.get("status", "")
     if status in {"bought", "already_bought"}:
         title = "<b>✅ קנית — בתיק</b>"
-    elif status in {"approved_pending_entry", "already_ready"}:
+    elif status in {"confirmed_pending_entry", "already_ready"}:
         title = "<b>✅ מאושר — ממתין לפתיחת השוק</b>"
     else:
         title = "<b>📋 תיק</b>"
     msg = escape_html(str(result.get("message", "")))
     lines = [title, "", msg]
     entry_when = result.get("entry_when")
-    if entry_when and status in {"approved_pending_entry", "already_ready"}:
+    if entry_when and status in {"confirmed_pending_entry", "already_ready", "approved_pending_entry"}:
         lines.append(f"⏰ כניסה לשוק: <b>{escape_html(entry_when)}</b>")
     syms = result.get("symbols") or []
     entries = result.get("entries") or []
@@ -227,6 +227,55 @@ def format_scan_summary(plan: dict[str, Any], *, html: bool = True) -> str:
     return "\n".join(lines)
 
 
+def format_weekly_watchlist(result: dict[str, Any]) -> str:
+    """Summary of the weekly watchlist selection for Telegram."""
+    week = escape_html(str(result.get("week", "")))
+    selected = int(result.get("selected", 0))
+    scanned = int(result.get("scanned", 0))
+    universe = int(result.get("universe_size", 0))
+    symbols = result.get("symbols") or []
+    lines = [
+        f"<b>🗓️ רשימת המסחר לשבוע {week}</b>",
+        SEP,
+        f"נסרקו <b>{scanned}</b> מתוך {universe} · נבחרו <b>{selected}</b>",
+        "",
+        escape_html(", ".join(symbols)),
+        "",
+        "<i>התוכנית היומית תיסרק רק על הרשימה הזו. אפשר לערוך עם</i> "
+        "<code>הוסף SYMBOL</code> / <code>הסר SYMBOL</code>.",
+    ]
+    return finalize("\n".join(lines))
+
+
+_VERDICT_META = {
+    "hold": ("🟢", "החזק"),
+    "sell": ("🔴", "מכור"),
+    "swap": ("🔄", "החלף"),
+    "take_profit": ("💰", "ממש רווח"),
+}
+
+
+def format_holding_actions(actions: list[dict[str, Any]]) -> list[str]:
+    """Evening decision lines: hold / sell / swap / take-profit per holding."""
+    if not actions:
+        return []
+    lines = ["<b>📊 מה לעשות עם התיק שלך</b>"]
+    for a in actions:
+        sym = escape_html(str(a.get("symbol", "")))
+        verdict = str(a.get("verdict", "hold"))
+        icon, label = _VERDICT_META.get(verdict, ("🟢", "החזק"))
+        pnl = float(a.get("pnl_pct", 0))
+        head = f"{icon} <b>{sym}</b> · {pnl:+.1f}% · <b>{label}</b>"
+        reason = escape_html(str(a.get("reason", "")))
+        lines.append(f"{head} — {reason}")
+        if verdict == "swap" and a.get("swap_to"):
+            to_sym = escape_html(str(a["swap_to"]))
+            lines.append(f"   ↳ <code>החלף {sym} {to_sym}</code>")
+        elif verdict in {"sell", "take_profit"}:
+            lines.append(f"   ↳ <code>מכור {sym}</code>")
+    return lines
+
+
 def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     """Format daily plan overview for Telegram (details sent per stock)."""
     day = escape_html(plan.get("for_trading_day", ""))
@@ -235,6 +284,7 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     free = float(plan.get("available_capital_usd", 0))
     invested = float(plan.get("deployed_capital_usd", 0))
     holdings = plan.get("holdings") or []
+    actions = plan.get("holding_actions") or []
     intent = plan.get("flow_intent", "")
 
     lines = [
@@ -248,12 +298,16 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
 
     if not recs:
         if holdings:
-            lines.extend(["", "<b>📂 מחזיקים — אין כניסות חדשות</b>"])
-            for h in holdings:
-                lines.append(
-                    f"• <b>{escape_html(h['symbol'])}</b> "
-                    f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
-                )
+            lines.append("")
+            if actions:
+                lines.extend(format_holding_actions(actions))
+            else:
+                lines.append("<b>📂 מחזיקים — אין כניסות חדשות</b>")
+                for h in holdings:
+                    lines.append(
+                        f"• <b>{escape_html(h['symbol'])}</b> "
+                        f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
+                    )
         else:
             lines.extend(["", "🔍 <b>אין המלצות היום</b>"])
             summary = format_scan_summary(plan, html=True)
@@ -270,7 +324,7 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
             [
                 "",
                 f"<b>🌟 יום ראשון — חלק ${equity:.0f} על {len(recs)} מניות</b>",
-                f"בערך <b>${each:.0f}</b> לכל מניה אחרי <code>הכל</code>",
+                f"בערך <b>${each:.0f}</b> לכל מניה — לחץ <code>הכל</code> לאישור",
                 "",
                 user_guide_step1(),
             ]
@@ -298,18 +352,29 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
         lines.extend(["", "<b>כניסות חדשות</b>", user_guide_step1()])
 
     if holdings:
-        lines.extend(["", "<b>📂 כבר מחזיקים</b>"])
-        for h in holdings:
-            lines.append(
-                f"• <b>{escape_html(h['symbol'])}</b> "
-                f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
-            )
+        lines.append("")
+        if actions:
+            lines.extend(format_holding_actions(actions))
+        else:
+            lines.append("<b>📂 כבר מחזיקים</b>")
+            for h in holdings:
+                lines.append(
+                    f"• <b>{escape_html(h['symbol'])}</b> "
+                    f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
+                )
 
     symbols = " · ".join(f"<b>#{idx} {escape_html(rec['symbol'])}</b>" for idx, rec in enumerate(recs, start=1))
+    header = f"<b>🆕 {len(recs)} המלצות</b>"
+    if plan.get("fallback_pick"):
+        header = "<b>⚠️ אין מניה שעברה את סף האיכות</b>"
+        symbols = (
+            f"הטובה ביותר היום (מתחת לסף): {symbols}\n"
+            "<i>לשיקולך בלבד — איכות נמוכה מהרגיל. אפשר גם לוותר היום.</i>"
+        )
     lines.extend(
         [
             "",
-            f"<b>🆕 {len(recs)} המלצות</b>",
+            header,
             symbols,
             "<i>פרטים + גרף לכל מניה ↓</i>",
             "",
@@ -372,7 +437,7 @@ def format_plan_table_caption(plan: dict[str, Any]) -> str:
     if recs:
         return (
             f"<b>📋 המלצות {day}</b>\n"
-            "שלח <code>התחל</code> לקנייה"
+            "שלח <code>הכל</code> לאישור"
         )
     summary = format_scan_summary(plan, html=True)
     if summary:

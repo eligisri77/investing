@@ -28,6 +28,13 @@ def available_capital(cfg: Any, state: dict[str, Any]) -> float:
     return max(0.0, round(float(state.get("equity", 0)) - deployed_capital(state), 2))
 
 
+def free_cash(state: dict[str, Any], cfg: Any | None = None) -> float:
+    """Undeployed cash (alias used by sell/swap replies)."""
+    if cfg is not None:
+        return available_capital(cfg, state)
+    return max(0.0, round(float(state.get("equity", 0)) - deployed_capital(state), 2))
+
+
 def fetch_day_ohlc(symbol: str, trading_day: date) -> dict[str, float] | None:
     day_df = yf.download(
         symbol,

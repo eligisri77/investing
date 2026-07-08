@@ -697,21 +697,18 @@ async function renderActivePlan() {
   const recs = plan.recommendations || [];
   const symbols = recs.map((r) => r.symbol).join(" · ");
 
-  if (data.ready) {
-    const bought = data.bought;
+  if (data.confirmed && !data.bought) {
     const entryWhen = data.entry_when ? escapeHtml(data.entry_when) : "";
     app.innerHTML = `
       <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
-      <section class="hero plan-simple ${bought ? "plan-simple-done" : ""}">
-        <h1>${bought ? "✅ קנית את התיק" : "✅ התיק מאושר — ממתין לפתיחת השוק"}</h1>
-        <p><b>${escapeHtml(symbols)}</b>${bought ? " — בתיק שלך עכשיו" : ` — $${recs.reduce((s, r) => s + Number(r.capital_usd || 0), 0).toFixed(0)} סה״כ`}</p>
-        ${bought
-          ? `<a href="#/portfolio" class="btn btn-start plan-cta">צפה בתיק שלך →</a>`
-          : `<p class="plan-simple-sub">⏰ כניסה לשוק: <b>${entryWhen}</b></p>
-             <a href="#/portfolio" class="btn btn-start plan-cta">צפה במה שמאושר →</a>`}
+      <section class="hero plan-simple">
+        <h1>✅ מאושר — ממתין לפתיחת השוק</h1>
+        <p><b>${escapeHtml(symbols)}</b> — $${recs.reduce((s, r) => s + Number(r.capital_usd || 0), 0).toFixed(0)} סה״כ</p>
+        <p class="plan-simple-sub">⏰ כניסה לשוק: <b>${entryWhen}</b></p>
+        <a href="#/portfolio" class="btn btn-start plan-cta">צפה בתיק →</a>
       </section>
       <details class="plan-details">
-        <summary>פרטי המלצות</summary>
+        <summary>פרטי ההזמנה</summary>
         <div id="planRecs" class="plan-recs"></div>
       </details>`;
     const doneContainer = document.getElementById("planRecs");
@@ -721,13 +718,25 @@ async function renderActivePlan() {
     return;
   }
 
-  app.innerHTML = `
+  if (data.bought) {
+    app.innerHTML = `
+      <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
+      <section class="hero plan-simple plan-simple-done">
+        <h1>✅ בתיק</h1>
+        <p><b>${escapeHtml(symbols)}</b> — מחזיק</p>
+        <a href="#/portfolio" class="btn btn-start plan-cta">צפה בתיק שלך →</a>
+      </section>`;
+    return;
+  }
+
+  if (data.ready || recs.length) {
+    app.innerHTML = `
     <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
     <section class="hero plan-simple">
       <h1>📋 המלצות ליום ${escapeHtml(day)}</h1>
       <p>${recs.length} מניות: <b>${escapeHtml(symbols)}</b></p>
-      <p class="plan-simple-sub">לחיצה מאשרת ומחלקת את ההון — הקנייה בפתיחת השוק.</p>
-      <button type="button" class="btn btn-start plan-cta" id="planStartBtn">אשר והתחל</button>
+      <p class="plan-simple-sub">אישור = הזמנה לפתיחת השוק. הקנייה במחיר פתיחה.</p>
+      <button type="button" class="btn btn-start plan-cta" id="planStartBtn">אשר הזמנה</button>
     </section>
     <details class="plan-details" open>
       <summary>מה בחרנו?</summary>
@@ -735,11 +744,20 @@ async function renderActivePlan() {
     </details>
     <p id="planStatus" class="plan-status-msg"></p>`;
 
-  const container = document.getElementById("planRecs");
-  recs.forEach((rec, i) => {
-    container.insertAdjacentHTML("beforeend", renderPlanRecCard(rec, i + 1));
-  });
-  document.getElementById("planStartBtn")?.addEventListener("click", startInvesting);
+    const container = document.getElementById("planRecs");
+    recs.forEach((rec, i) => {
+      container.insertAdjacentHTML("beforeend", renderPlanRecCard(rec, i + 1));
+    });
+    document.getElementById("planStartBtn")?.addEventListener("click", startInvesting);
+    return;
+  }
+
+  app.innerHTML = `
+    <a href="#/" style="color:var(--cyan);text-decoration:none;font-weight:600;">← חזרה לדשבורד</a>
+    <section class="hero plan-simple">
+      <h1>📋 אין המלצות פעילות</h1>
+      <p>ממתין לסריקת ערב (~23:15) או שלח <code>תוכנית עכשיו</code> בטלגרם.</p>
+    </section>`;
 }
 
 function renderPortfolio(data) {

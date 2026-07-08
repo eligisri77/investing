@@ -231,6 +231,77 @@ def _score_map(universe: pd.DataFrame) -> dict[str, dict[str, Any]]:
     return rows
 
 
+SELL_STRONG_DROP_PCT = -7.0
+
+
+def _is_rising(cfg: Any, data: dict[str, Any]) -> bool:
+    return (
+        float(data.get("ret_5d_pct", 0)) > 2
+        or bool(data.get("volume_ok"))
+        or float(data.get("vol_ratio", 0)) >= float(getattr(cfg, "min_volume_ratio", 1.0))
+    )
+
+
+def _top_candidate(
+    cfg: Any,
+    scores: dict[str, dict[str, Any]],
+    skip: set[str] | frozenset[str],
+) -> tuple[str, dict[str, Any]] | None:
+    """Best rising, high-scored symbol not already held/pending."""
+    candidates = [
+        (sym, data)
+        for sym, data in scores.items()
+        if sym not in skip and float(data.get("score", 0)) >= MIN_CANDIDATE_SCORE
+    ]
+    candidates.sort(key=lambda x: -x[1]["score"])
+    for sym, data in candidates:
+        if _is_rising(cfg, data):
+            return sym, data
+    return None
+
+
+def _sell_recommendations(
+    cfg: Any,
+    holdings: list[dict[str, Any]],
+    quotes: dict[str, dict[str, float]],
+    alerts_by_symbol: dict[str, list[PositionAlert]],
+    scores: dict[str, dict[str, Any]],
+    skip: set[str] | frozenset[str],
+) -> list[TradeSuggestion]:
+    """Explicit 'sell now' advice when a holding is crashing, incl. what to do
+    with the freed-up cash (rotate into a strong pick, or hold cash)."""
+    out: list[TradeSuggestion] = []
+    for h in holdings:
+        sym = str(h["symbol"])
+        h_alerts = alerts_by_symbol.get(sym, [])
+        kinds = {a.kind for a in h_alerts}
+        day_pct = float(quotes.get(sym, {}).get("change_pct", 0))
+        crashing = bool(kinds & {"near_stop", "heavy_loss", "floor_breach"}) or (
+            "intraday_drop" in kinds and day_pct <= SELL_STRONG_DROP_PCT
+        )
+        if not crashing:
+            continue
+        entry = float(h.get("entry_price") or h.get("entry_ref_price") or 0)
+        last = float(quotes.get(sym, {}).get("last", 0))
+        pnl_pct = (last / entry - 1) * 100 if entry > 0 and last > 0 else 0
+        pnl_txt = f"{pnl_pct:+.1f}% מהכניסה · " if entry > 0 and last > 0 else ""
+
+        replacement = _top_candidate(cfg, scores, set(skip) | {sym})
+        if replacement is not None:
+            to_sym, to_data = replacement
+            action = (
+                f"ירידה חדה · {pnl_txt}מומלץ להחליף ל-{to_sym} "
+                f"(ציון {float(to_data.get('score', 0)):.1f}) · שלח החלף {sym} {to_sym}"
+            )
+        else:
+            action = (
+                f"ירידה חדה · {pnl_txt}שלח מכור {sym} — "
+                f"אין מועמדת חזקה, השאר במזומן עד הזדמנות"
+            )
+        out.append(TradeSuggestion(kind="sell", symbol=sym, message=action))
+    return out
+
+
 def build_suggestions(
     cfg: Any,
     holdings: list[dict[str, Any]],
@@ -242,30 +313,22 @@ def build_suggestions(
 ) -> list[TradeSuggestion]:
     held = {str(h["symbol"]) for h in holdings}
     skip = held | set(exclude_symbols or ())
-    if not scores:
-        return []
 
-    candidates = [
-        (sym, data)
-        for sym, data in scores.items()
-        if sym not in skip and float(data.get("score", 0)) >= MIN_CANDIDATE_SCORE
-    ]
-    candidates.sort(key=lambda x: -x[1]["score"])
-    if not candidates:
-        return []
+    suggestions: list[TradeSuggestion] = _sell_recommendations(
+        cfg, holdings, quotes, alerts_by_symbol, scores, skip
+    )
+    sell_symbols = {s.symbol for s in suggestions}
+
+    if not scores:
+        return suggestions
+
+    top = _top_candidate(cfg, scores, skip)
+    if top is None:
+        return suggestions
+    best_sym, best = top
 
     max_open = int(getattr(cfg, "max_open_positions", 4))
     open_slots = max(0, max_open - len(holdings))
-    suggestions: list[TradeSuggestion] = []
-
-    best_sym, best = candidates[0]
-    rising = (
-        float(best.get("ret_5d_pct", 0)) > 2
-        or bool(best.get("volume_ok"))
-        or float(best.get("vol_ratio", 0)) >= float(getattr(cfg, "min_volume_ratio", 1.0))
-    )
-    if not rising:
-        return suggestions
 
     if open_slots > 0:
         suggestions.append(
@@ -289,6 +352,7 @@ def build_suggestions(
             alerts_by_symbol.get(str(h["symbol"]), []),
         )
         for h in holdings
+        if str(h["symbol"]) not in sell_symbols
     ]
     if not held_scores:
         return suggestions

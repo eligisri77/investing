@@ -150,16 +150,23 @@ def test_load_config_keeps_max_trades_from_file(tmp_path, monkeypatch):
 
 def test_plan_is_protected_when_allocated():
     plan = {
-        "status": "approved",
+        "for_trading_day": "2026-07-02",
+        "status": "confirmed",
         "recommendations": [{"symbol": "LABU", "approved": True}],
         "allocation": {"status": "applied", "amounts": {"LABU": 1000.0}},
     }
-    assert plan_is_protected(plan) is True
+    state = {"equity": 1000, "open_positions": []}
+    with patch("trading_pulse.agent.trading_flow.before_market_entry", return_value=True):
+        assert plan_is_protected(plan, state=state, as_of=date(2026, 7, 1)) is True
 
 
 def test_plan_is_protected_when_approved_only():
-    plan = {"status": "pending_approval", "recommendations": [{"symbol": "NVDA", "approved": True}]}
-    assert plan_is_protected(plan) is True
+    plan = {
+        "for_trading_day": "2026-07-02",
+        "status": "draft",
+        "recommendations": [{"symbol": "NVDA", "approved": True}],
+    }
+    assert plan_is_protected(plan, state={"open_positions": []}, as_of=date(2026, 7, 1)) is False
 
 
 def test_plan_is_not_protected_when_pending():
@@ -167,7 +174,7 @@ def test_plan_is_not_protected_when_pending():
     assert plan_is_protected(plan) is False
 
 
-def test_generate_plan_skips_protected_plan(tmp_path, monkeypatch):
+def test_generate_plan_skips_locked_plan(tmp_path, monkeypatch):
     from trading_pulse.core.app_paths import PLANS_DIR
 
     plans_dir = tmp_path / "plans"
@@ -177,17 +184,18 @@ def test_generate_plan_skips_protected_plan(tmp_path, monkeypatch):
 
     protected = {
         "for_trading_day": "2026-07-02",
-        "status": "approved",
+        "status": "confirmed",
         "recommendations": [{"symbol": "LABU", "approved": True}],
         "allocation": {"status": "applied", "amounts": {"LABU": 1000.0}},
     }
     save_json(plans_dir / "plan_2026-07-02.json", protected)
 
     cfg = AgentConfig(tickers=["LABU"])
-    state = {"equity": 1000.0}
+    state = {"equity": 1000.0, "open_positions": []}
     with patch("trading_pulse.agent.dryrun_agent.get_next_us_trading_day", return_value=date(2026, 7, 2)):
-        with patch("trading_pulse.agent.dryrun_agent.fetch_signal_universe") as mock_fetch:
-            plan = generate_plan(cfg, state, date(2026, 7, 1))
+        with patch("trading_pulse.agent.trading_flow.before_market_entry", return_value=True):
+            with patch("trading_pulse.agent.dryrun_agent.fetch_signal_universe") as mock_fetch:
+                plan = generate_plan(cfg, state, date(2026, 7, 1))
     assert plan["_regeneration_skipped"] is True
     assert plan["recommendations"][0]["symbol"] == "LABU"
     mock_fetch.assert_not_called()

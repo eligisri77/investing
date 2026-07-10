@@ -945,9 +945,8 @@ function renderMessages(data) {
             ${
               m.metadata?.image_id
                 ? `<img class="msg-image" src="/api/telegram/images/${encodeURIComponent(m.metadata.image_id)}" alt="" loading="lazy" />`
-                : ""
+                : `<pre class="msg-body">${escapeHtml(preview)}</pre>`
             }
-            <pre class="msg-body">${escapeHtml(preview)}</pre>
           </div>`;
       })
       .join("");

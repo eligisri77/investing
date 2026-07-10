@@ -121,10 +121,11 @@ def render_reply_card(
         h += 8
         h += 18  # label
         h += len(_wrap(draw, value, font_value, content_w - 8)) * 22 + 10
-    for chip in chips or []:
-        h += 34
     for bullet in bullets or []:
         h += len(_wrap(draw, f"• {bullet}", font_body, content_w)) * 20 + 4
+    # Chips last (above footer) so command hints aren't stuck mid-card.
+    for chip in chips or []:
+        h += 34
     if footer:
         h += 10 + len(_wrap(draw, footer, font_foot, content_w)) * 17
     h += PAD + 8
@@ -176,6 +177,12 @@ def render_reply_card(
             cy += 22
         y = cy + 10
 
+    for bullet in bullets or []:
+        for line in _wrap(draw, f"• {bullet}", font_body, content_w):
+            _rtl(draw, x_right, y, line, font_body, TEXT)
+            y += 20
+        y += 4
+
     for chip in chips or []:
         chip_w = min(content_w, _text_width(draw, _pil_hebrew(chip), font_chip) + 18)
         draw.rounded_rectangle(
@@ -186,12 +193,6 @@ def render_reply_card(
         )
         _rtl(draw, x_right - 8, y + 6, chip, font_chip, PINK)
         y += 34
-
-    for bullet in bullets or []:
-        for line in _wrap(draw, f"• {bullet}", font_body, content_w):
-            _rtl(draw, x_right, y, line, font_body, TEXT)
-            y += 20
-        y += 4
 
     if footer:
         y += 6
@@ -373,52 +374,141 @@ def card_entry(entries: list[dict[str, Any]], *, trading_day: str) -> bytes:
 
 
 def card_portfolio(data: dict[str, Any]) -> bytes:
-    """Narrow portfolio card — all details in the image (mobile-friendly)."""
+    """Portfolio card: clear per-stock blocks, chips at bottom, no caption needed."""
     from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
     from trading_pulse.core.schedule_tz import format_local_entry_moment
+    from trading_pulse.telegram.telegram_images import _pnl_color
 
     data = attach_slots_to_portfolio(data)
     equity = float(data.get("equity", 0))
     marked = float(data.get("open_marked_usd", data.get("open_capital_usd", 0)))
     unrealized = float(data.get("unrealized_pnl_usd", 0))
-    ur_sign = "+" if unrealized >= 0 else ""
+    realized = float(data.get("total_realized_pnl", 0))
     positions = data.get("open_positions") or []
     holding = [p for p in positions if p.get("status") == "holding"]
     pending = [p for p in positions if p.get("status") == "pending_market_entry"]
 
-    rows: list[tuple[str, str]] = [
-        ("הון", f"${equity:.2f}"),
-        ("שווי פתוח", f"${marked:.0f}"),
-        ("רווח פתוח", f"{ur_sign}${unrealized:.0f}"),
-    ]
-    bullets: list[str] = []
-    for p in holding:
-        slot = p.get("slot", "—")
-        sym = str(p["symbol"])
-        cap = float(p.get("capital_usd", 0))
-        ep = float(p.get("entry_price") or 0)
-        mv = float(p.get("marked_value_usd", cap))
-        ur = float(p.get("unrealized_pnl_usd", 0))
-        ur_s = "+" if ur >= 0 else ""
-        when = format_local_entry_moment(p.get("entry_at"))
-        bullets.append(f"#{slot} {sym}  ${cap:.0f} @ ${ep:.2f}")
-        bullets.append(f"    → שווי ${mv:.0f}  ({ur_s}${ur:.0f})  · {when}")
-    for p in pending:
-        sym = str(p["symbol"])
-        cap = float(p.get("capital_usd", 0))
-        when = str(p.get("scheduled_entry", "פתיחה"))
-        bullets.append(f"⏳ {sym}  ${cap:.0f}  · כניסה {when}")
-    if not bullets:
-        bullets.append("אין פוזיציות פתוחות")
+    font_title = _load_font(24, bold=True)
+    font_section = _load_font(16, bold=True)
+    font_label = _load_font(14)
+    font_value = _load_font(18, bold=True)
+    font_sym = _load_font(19, bold=True)
+    font_line = _load_font(16)
+    font_line_b = _load_font(16, bold=True)
+    font_chip = _load_font(14, bold=True)
+    font_foot = _load_font(13)
 
-    return render_reply_card(
-        "תיק השקעות",
-        accent="cyan",
-        rows=rows,
-        bullets=bullets,
-        chips=["מכור 1", "מכור 2 20$", "תקנה 1 $20"],
-        footer="מספרים (#1 #2…) לפי סדר בתיק",
+    chips = ["מכור 1", "מכור 2 20$", "תקנה 1 $20"]
+    content_w = CARD_W - PAD * 2 - INNER * 2
+    x0 = PAD + 4
+    x1 = CARD_W - PAD - 4
+    x_right = CARD_W - PAD - INNER
+
+    h = PAD + 50
+    h += 4 * 52  # summary stats
+    h += 14
+    if pending:
+        h += 28 + len(pending) * 58 + 8
+    if holding:
+        h += 28 + len(holding) * 108 + 8
+    elif not pending:
+        h += 36
+    h += 36 + len(chips) * 36 + 28 + PAD
+
+    img = Image.new("RGB", (CARD_W, h), BG)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        (8, 8, CARD_W - 8, h - 8),
+        radius=18,
+        fill=SURFACE,
+        outline=BORDER,
+        width=2,
     )
+
+    y = PAD + 14
+    draw.rounded_rectangle((x_right - 3, y, x_right + 1, y + 28), radius=3, fill=CYAN)
+    _rtl(draw, x_right - 12, y, "תיק השקעות", font_title, TEXT)
+    y += 40
+
+    def _stat(label: str, value: str, value_color: tuple[int, int, int] = TEXT) -> None:
+        nonlocal y
+        draw.rounded_rectangle((x0, y, x1, y + 46), radius=12, fill=ROW_BG, outline=BORDER)
+        _rtl(draw, x_right - 8, y + 6, label, font_label, MUTED)
+        _rtl(draw, x_right - 8, y + 22, value, font_value, value_color)
+        y += 52
+
+    ur_sign = "+" if unrealized > 0 else ("-" if unrealized < 0 else "")
+    rz_sign = "+" if realized > 0 else ("-" if realized < 0 else "")
+    _stat("הון", f"${equity:.2f}")
+    _stat("שווי פתוח", f"${marked:.0f}")
+    _stat("רווח פתוח", f"{ur_sign}${abs(unrealized):.0f}", _pnl_color(unrealized))
+    _stat("רווח ממומש", f"{rz_sign}${abs(realized):.2f}", _pnl_color(realized))
+    y += 6
+
+    def _section(title: str) -> None:
+        nonlocal y
+        _rtl(draw, x_right, y, title, font_section, CYAN)
+        y += 26
+
+    if pending:
+        _section("⏳ מאושר — ממתין לפתיחה")
+        for p in pending:
+            sym = str(p["symbol"])
+            cap = float(p.get("capital_usd", 0))
+            when = str(p.get("scheduled_entry", "פתיחת השוק"))
+            box_h = 50
+            draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=CHIP_BORDER)
+            _rtl(draw, x_right - 10, y + 8, f"{sym}  ${cap:.0f}", font_sym, PINK)
+            _rtl(draw, x_right - 10, y + 30, f"כניסה {when}", font_line, MUTED)
+            y += box_h + 8
+        y += 4
+
+    if holding:
+        _section("📌 בתיק עכשיו")
+        for i, p in enumerate(holding):
+            slot = p.get("slot", "—")
+            sym = str(p["symbol"])
+            cap = float(p.get("capital_usd", 0))
+            ep = float(p.get("entry_price") or 0)
+            mv = float(p.get("marked_value_usd", cap))
+            ur = float(p.get("unrealized_pnl_usd", 0))
+            ur_s = "+" if ur > 0 else ("-" if ur < 0 else "")
+            when = format_local_entry_moment(p.get("entry_at"))
+            box_h = 92
+            draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=BORDER)
+            _rtl(draw, x_right - 10, y + 10, f"#{slot}  {sym}", font_sym, CYAN)
+            _rtl(draw, x_right - 10, y + 36, f"${cap:.0f}  @  ${ep:.2f}", font_line_b, TEXT)
+            _rtl(draw, x_right - 10, y + 56, f"שווי ${mv:.0f}", font_line_b, TEXT)
+            pnl_txt = f"{ur_s}${abs(ur):.0f}"
+            draw.text((x0 + 14, y + 56), pnl_txt, fill=_pnl_color(ur), font=font_line_b)
+            _rtl(draw, x_right - 10, y + 74, when, font_foot, MUTED)
+            y += box_h + 14
+            if i < len(holding) - 1:
+                draw.line((x0 + 28, y - 7, x1 - 28, y - 7), fill=(60, 60, 95), width=2)
+    elif not pending:
+        _rtl(draw, x_right, y, "אין פוזיציות פתוחות", font_line, MUTED)
+        y += 28
+
+    y += 16
+    _rtl(draw, x_right, y, "דוגמאות", font_section, MUTED)
+    y += 24
+    for chip in chips:
+        chip_w = min(content_w, _text_width(draw, _pil_hebrew(chip), font_chip) + 20)
+        draw.rounded_rectangle(
+            (x_right - chip_w, y, x_right, y + 30),
+            radius=8,
+            fill=CHIP_BG,
+            outline=CHIP_BORDER,
+        )
+        _rtl(draw, x_right - 10, y + 6, chip, font_chip, PINK)
+        y += 36
+
+    y += 4
+    _rtl(draw, x_right, y, "מספרים (#1 #2…) לפי סדר בתיק", font_foot, MUTED)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 def card_from_plan_summary(plan: dict[str, Any]) -> bytes:

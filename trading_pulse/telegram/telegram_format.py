@@ -863,7 +863,9 @@ def format_portfolio(data: dict[str, Any]) -> str:
             )
     if holding:
         lines.extend(["", "<b>📌 בתיק עכשיו</b>"])
-        for p in holding:
+        for i, p in enumerate(holding):
+            if i:
+                lines.append("")  # blank line between stocks
             sym = escape_html(p["symbol"])
             slot = p.get("slot")
             prefix = f"<b>#{slot}</b> " if slot else ""
@@ -873,11 +875,10 @@ def format_portfolio(data: dict[str, Any]) -> str:
             marked_val = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
             ur = float(p.get("unrealized_pnl_usd", 0))
             ur_s = "+" if ur >= 0 else ""
+            lines.append(f"{prefix}<b>{sym}</b> ${p['capital_usd']:.0f}{price_bit}")
             lines.append(
-                f"• {prefix}<b>{sym}</b> ${p['capital_usd']:.0f}{price_bit} → שווי <b>${marked_val:.0f}</b> "
-                f"({ur_s}${ur:.0f}) · {escape_html(when)}"
+                f"→ שווי <b>${marked_val:.0f}</b> ({ur_s}${ur:.0f}) · {escape_html(when)}"
             )
-        lines.append("<i>מכור 1 · מכור 2 $200 · מכור 1 תקנה BEAM $200</i>")
     elif not pending:
         lines.append("\n📌 אין פוזיציות פתוחות")
 
@@ -891,6 +892,9 @@ def format_portfolio(data: dict[str, Any]) -> str:
                 f"{s['trade_count']} עסק · {ps}${s['total_pnl_usd']:.2f}"
                 f" · win {s['win_rate_pct']:.0f}%"
             )
+
+    if holding:
+        lines.extend(["", "<i>דוגמאות: מכור 1 · מכור 2 $20 · תקנה 1 $20</i>"])
 
     return finalize("\n".join(lines))
 

@@ -1352,10 +1352,8 @@ def send_plan_portfolio_image(cfg: AgentConfig) -> None:
         if not holding:
             return
         img = card_portfolio(pdata)
-        inbox = "\n".join(
-            f"#{p['slot']} {p['symbol']} — ${float(p['capital_usd']):.0f}" for p in holding
-        )
-        send_telegram_photo(cfg, img, "💼 תיק", context="plan:portfolio", inbox_text=inbox)
+        # No caption — details are in the image (mobile Telegram scrambles long captions).
+        send_telegram_photo(cfg, img, "", context="plan:portfolio", inbox_text="תיק")
     except Exception as ex:
         logging.warning("Plan portfolio image failed: %s", ex)
 
@@ -2852,13 +2850,13 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 text_reply = format_portfolio(pdata)
                 try:
                     img = card_portfolio(pdata)
-                    # Short caption only — full details are inside the image (mobile-safe).
+                    # No caption — full details live in the image (mobile-safe).
                     send_telegram_photo(
                         cfg,
                         img,
-                        "💼 תיק",
+                        "",
                         context="reply:portfolio",
-                        inbox_text=re.sub(r"<[^>]+>", "", text_reply),
+                        inbox_text="תיק",
                     )
                 except Exception as ex:
                     logging.warning("Portfolio image failed, sending text: %s", ex)

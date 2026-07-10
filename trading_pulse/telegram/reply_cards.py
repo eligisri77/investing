@@ -46,6 +46,11 @@ def _strip_html(text: str) -> str:
     t = re.sub(r"<[^>]+>", "", t)
     t = t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     t = t.replace("&quot;", '"').replace("&#39;", "'")
+    # PIL fonts can't draw most emoji / box-drawing — replace with plain text.
+    t = t.replace("─", "-").replace("━", "-").replace("—", "-").replace("–", "-")
+    t = re.sub(r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]", "", t)
+    t = re.sub(r"[✅❌⏳📌📋💼📊🌟💰🔄🚀⭐❗❓]", "", t)
+    t = re.sub(r"-{4,}", "---", t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
@@ -334,8 +339,8 @@ def card_help() -> bytes:
             "בבוקר — כניסה במחיר פתיחה",
             "בערב — דוח יומי",
         ],
-        chips=["תיק", "מכור 2 20$", "תקנה 1 $20", "מדריך"],
-        footer="אין מזומן? מכור חלק ואז קנה / החלף",
+        chips=["מכור 1 $100", "מניה NVDA", "תקנה 1 $20", "תיק"],
+        footer="מכור 1 = הכל · מכור 1 $100 = רק חלק · מניה X = ניתוח+גרף",
     )
 
 
@@ -387,6 +392,8 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
     positions = data.get("open_positions") or []
     holding = [p for p in positions if p.get("status") == "holding"]
     pending = [p for p in positions if p.get("status") == "pending_market_entry"]
+    holding_cap = sum(float(p.get("capital_usd", 0)) for p in holding)
+    cash = float(data.get("cash_usd", max(0.0, equity - holding_cap)))
 
     font_title = _load_font(24, bold=True)
     font_section = _load_font(16, bold=True)
@@ -398,14 +405,14 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
     font_chip = _load_font(14, bold=True)
     font_foot = _load_font(13)
 
-    chips = ["מכור 1", "מכור 2 20$", "תקנה 1 $20"]
+    chips = ["מכור 1 $100", "מכור 1 200$ קנה 2 100$", "תקנה 1 $20"]
     content_w = CARD_W - PAD * 2 - INNER * 2
     x0 = PAD + 4
     x1 = CARD_W - PAD - 4
     x_right = CARD_W - PAD - INNER
 
     h = PAD + 50
-    h += 4 * 52  # summary stats
+    h += 5 * 52  # summary stats (incl. cash)
     h += 14
     if pending:
         h += 28 + len(pending) * 58 + 8
@@ -440,6 +447,7 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
     ur_sign = "+" if unrealized > 0 else ("-" if unrealized < 0 else "")
     rz_sign = "+" if realized > 0 else ("-" if realized < 0 else "")
     _stat("הון", f"${equity:.2f}")
+    _stat("מזומן פנוי", f"${cash:.0f}", CYAN if cash >= 1 else MUTED)
     _stat("שווי פתוח", f"${marked:.0f}")
     _stat("רווח פתוח", f"{ur_sign}${abs(unrealized):.0f}", _pnl_color(unrealized))
     _stat("רווח ממומש", f"{rz_sign}${abs(realized):.2f}", _pnl_color(realized))
@@ -451,7 +459,7 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
         y += 26
 
     if pending:
-        _section("⏳ מאושר — ממתין לפתיחה")
+        _section("מאושר — ממתין לפתיחה")
         for p in pending:
             sym = str(p["symbol"])
             cap = float(p.get("capital_usd", 0))
@@ -464,7 +472,7 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
         y += 4
 
     if holding:
-        _section("📌 בתיק עכשיו")
+        _section("בתיק עכשיו")
         for i, p in enumerate(holding):
             slot = p.get("slot", "—")
             sym = str(p["symbol"])
@@ -535,3 +543,91 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
         chips=["הכל"] if recs else ["תיק"],
         footer="פרטים בטבלה ובגרפים למטה" if recs else "אין צורך באישור",
     )
+
+
+def card_stock_detail(detail: dict[str, Any]) -> bytes:
+    """Decision metrics card for one symbol (watchlist or not)."""
+    from trading_pulse.agent.signal_sources import SOURCE_LABELS
+
+    rec = detail.get("rec") or {}
+    sym = str(detail.get("symbol") or rec.get("symbol") or "?")
+    score = float(rec.get("score", 0))
+    on_list = bool(detail.get("on_watchlist"))
+    would = bool(detail.get("would_pick"))
+    speculative = bool(detail.get("speculative"))
+
+    rows: list[tuple[str, str]] = [
+        ("ציון סופי", f"{score:.1f}"),
+        ("ציון טכני", f"{float(rec.get('score_technical', score)):.1f}"),
+        ("מחיר", f"${float(rec.get('entry_ref_price', 0)):.2f}"),
+        ("5 ימים", f"{float(rec.get('ret_5d_pct', 0)):+.1f}%"),
+        ("נפח", f"{float(rec.get('vol_ratio', 0)):.2f}x"),
+        ("ATR", f"{float(rec.get('atr_pct', 0)):.1f}%"),
+    ]
+    if speculative:
+        rows.append(
+            (
+                "פריצה 20י",
+                "כן" if rec.get("breakout_ok") else f"{float(rec.get('near_high_pct', 0)):+.1f}%",
+            )
+        )
+    else:
+        rows.append(
+            (
+                "מול MA20",
+                "מעל" if rec.get("momentum_ok") else f"{float(rec.get('above_ma20_pct', 0)):+.1f}%",
+            )
+        )
+    rows.append(
+        (
+            "SL / TP",
+            f"${float(rec.get('stop_loss_price', 0)):.2f} / ${float(rec.get('take_profit_price', 0)):.2f}",
+        )
+    )
+
+    source_scores = rec.get("source_scores") or {}
+    if source_scores:
+        parts = [
+            f"{SOURCE_LABELS.get(k, k)} {float(v):.1f}"
+            for k, v in sorted(source_scores.items(), key=lambda x: -float(x[1]))
+        ]
+        rows.append(("מקורות", " · ".join(parts[:6])))
+
+    if rec.get("source_disagreement"):
+        rows.append(
+            (
+                "אי-הסכמה",
+                f"std {float(rec.get('source_score_std', 0)):.1f} · פער {float(rec.get('source_score_spread', 0)):.1f}",
+            )
+        )
+
+    sent = float(rec.get("sentiment_adjustment", 0) or 0)
+    if sent:
+        rows.append(("חדשות", f"{rec.get('sentiment_tone', '')} {sent:+.1f}"))
+
+    bt = rec.get("backtest") or {}
+    if bt.get("summary"):
+        rows.append(("Backtest", str(bt.get("summary"))))
+
+    bullets: list[str] = [
+        "ברשימה" if on_list else "לא ברשימת הסריקה",
+        "עובר סינון כניסה" if would else "לא עובר סינון כניסה כרגע",
+    ]
+    for name, ok, detail_txt in detail.get("gates") or []:
+        mark = "OK" if ok else "לא"
+        bullets.append(f"{mark} · {name}: {detail_txt}")
+
+    expl = str(rec.get("explanation") or "").strip()
+    if expl:
+        bullets.append(expl[:180] + ("…" if len(expl) > 180 else ""))
+
+    return render_reply_card(
+        f"ניתוח {sym}",
+        accent="green" if would else "pink",
+        subtitle=f"ציון {score:.1f} · {'ברשימה' if on_list else 'מחוץ לרשימה'}",
+        rows=rows,
+        bullets=bullets,
+        chips=[f"הוסף {sym}"] if not on_list else [f"הסר {sym}", "תיק"],
+        footer="גרף מחיר נשלח בהודעה הבאה",
+    )
+

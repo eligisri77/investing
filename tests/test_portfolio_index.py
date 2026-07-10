@@ -61,12 +61,37 @@ def test_parse_swap_with_amount():
     assert parsed["from_ref"] == "4"
     assert parsed["to_ref"] == "BEAM"
     assert parsed["buy_usd"] == 200.0
+    assert parsed["sell_usd"] == 200.0
+
+    slot_swap = parse_telegram_user_command("מכור 1 תקנה 2 $100")
+    assert slot_swap["kind"] == "swap"
+    assert slot_swap["from_ref"] == "1"
+    assert slot_swap["to_ref"] == "2"
+    assert slot_swap["sell_usd"] == 100.0
+    assert slot_swap["buy_usd"] == 100.0
+
+    two_amt = parse_telegram_user_command("מכור 1 200$ קנה 2 100$")
+    assert two_amt == {
+        "kind": "swap",
+        "from_ref": "1",
+        "to_ref": "2",
+        "sell_usd": 200.0,
+        "buy_usd": 100.0,
+    }
+    assert parse_telegram_user_command("מכור 1 $200 תקנה 2 $100")["sell_usd"] == 200.0
+
+    sell_then = parse_telegram_user_command("מכור 1 $100 תקנה 2")
+    assert sell_then["kind"] == "swap"
+    assert sell_then["from_ref"] == "1"
+    assert sell_then["to_ref"] == "2"
+    assert sell_then["sell_usd"] == 100.0
 
     nl = parse_telegram_user_command("למכור SOXL ולקנות HOOD $150")
     assert nl["kind"] == "swap"
     assert nl["from_ref"] == "SOXL"
     assert nl["to_ref"] == "HOOD"
     assert nl["buy_usd"] == 150.0
+    assert nl["sell_usd"] == 150.0
 
 
 def test_parse_buy_by_slot_and_symbol():

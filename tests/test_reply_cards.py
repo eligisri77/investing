@@ -58,8 +58,10 @@ def test_portfolio_card():
     png = card_portfolio(
         {
             "equity": 986.68,
+            "cash_usd": 20,
             "open_marked_usd": 1021,
             "unrealized_pnl_usd": 34,
+            "total_realized_pnl": -13.32,
             "open_positions": [
                 {
                     "symbol": "LABD",

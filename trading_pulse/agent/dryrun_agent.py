@@ -1308,6 +1308,72 @@ def send_plan_stock_charts(cfg: AgentConfig, plan: dict[str, Any]) -> None:
             logging.warning("Plan chart for %s failed: %s", rec.get("symbol"), ex)
 
 
+def send_stock_detail(cfg: AgentConfig, symbol: str) -> None:
+    """Analyze any symbol (on or off watchlist): metrics card + price chart."""
+    from trading_pulse.agent.stock_detail import analyze_symbol
+    from trading_pulse.telegram.reply_cards import card_stock_detail
+    from trading_pulse.telegram.telegram_images import render_recommendation_chart
+
+    try:
+        fresh = load_config()
+        detail = analyze_symbol(fresh, symbol)
+    except ValueError as ex:
+        send_telegram_message(cfg, f"⚠️ <b>{ex}</b>", context="reply:stock_detail", parse_mode="HTML")
+        return
+    except Exception as ex:
+        logging.warning("Stock detail failed for %s: %s", symbol, ex)
+        send_telegram_message(
+            cfg,
+            f"❌ <b>ניתוח נכשל</b> — {escape_html(str(ex)[:120])}",
+            context="reply:stock_detail",
+            parse_mode="HTML",
+        )
+        return
+
+    sym = str(detail.get("symbol", symbol)).upper()
+    if not detail.get("ok"):
+        send_telegram_message(
+            cfg,
+            f"❌ <b>{escape_html(sym)}</b> — {escape_html(str(detail.get('error', 'אין נתונים')))}",
+            context="reply:stock_detail",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        card = card_stock_detail(detail)
+        send_telegram_photo(
+            cfg,
+            card,
+            f"ניתוח {sym}",
+            context=f"reply:stock:{sym}",
+            inbox_text=f"ניתוח {sym}",
+        )
+    except Exception as ex:
+        logging.warning("Stock detail card failed for %s: %s", sym, ex)
+        send_telegram_message(
+            cfg,
+            f"📊 <b>{escape_html(sym)}</b> · ציון {float((detail.get('rec') or {}).get('score', 0)):.1f}",
+            context=f"reply:stock:{sym}",
+            parse_mode="HTML",
+        )
+
+    rec = detail.get("rec") or {}
+    day = str(detail.get("trading_day") or date.today().isoformat())
+    try:
+        chart = render_recommendation_chart(rec, 1, day)
+        if chart:
+            send_telegram_photo(
+                cfg,
+                chart,
+                f"{sym} · גרף",
+                context=f"reply:stock_chart:{sym}",
+                inbox_text=f"גרף {sym}",
+            )
+    except Exception as ex:
+        logging.warning("Stock detail chart failed for %s: %s", sym, ex)
+
+
 def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
     """Summary card, summary table, then per-stock chart messages."""
     from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications, uses_telegram_notifications
@@ -1832,6 +1898,11 @@ def execute_swap_command(
         return "❌ <b>אותה מניה</b> — ציין שני סימבולים שונים"
 
     state = load_state(cfg)
+    # If user named a buy amount but not a sell amount, sell only that much
+    # (e.g. "מכור 1 תקנה 2 $100" → sell $100 of #1, not the whole position).
+    if sell_usd is None and buy_usd is not None and sell_fraction >= 1.0:
+        sell_usd = float(buy_usd)
+
     if sell_usd is not None:
         trade = partial_sell_usd(cfg, state, from_symbol, sell_usd)
     else:
@@ -2278,9 +2349,32 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     if remove_match:
         return {"kind": "ticker_remove", "symbol": remove_match.group(1).upper()}
 
+    stock_detail = re.fullmatch(
+        r"(?:מניה|ציון|ניתוח|score|stock|analyze|analysis)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if stock_detail:
+        return {"kind": "stock_detail", "symbol": stock_detail.group(1).upper()}
+
     _sym = r"[A-Za-z][A-Za-z0-9.\-^]{0,9}"
     _buy = r"(?:ו)?(?:ת)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)"
     _amt = r"\$?(\d+(?:\.\d+)?)\$?"
+
+    # Two amounts: מכור 1 200$ קנה 2 100$  (sell $200 of #1, buy $100 of #2)
+    swap_two_amt = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+|{_sym})\s+{_amt}\s+{_buy}\s+(\d+|{_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_two_amt:
+        return {
+            "kind": "swap",
+            "from_ref": swap_two_amt.group(1),
+            "to_ref": swap_two_amt.group(3),
+            "sell_usd": float(swap_two_amt.group(2)),
+            "buy_usd": float(swap_two_amt.group(4)),
+        }
 
     swap_slot_usd = re.fullmatch(
         rf"(?:מכור|sell)\s+(\d+)\s+{_buy}\s+(\d+|{_sym})\s+{_amt}\s*$",
@@ -2294,6 +2388,7 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "from_ref": swap_slot_usd.group(1),
             "to_ref": swap_slot_usd.group(2),
             "buy_usd": buy_usd,
+            "sell_usd": buy_usd,
         }
 
     swap_ref = re.fullmatch(
@@ -2302,11 +2397,29 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         flags=re.IGNORECASE,
     )
     if swap_ref:
+        buy_usd = float(swap_ref.group(3))
         return {
             "kind": "swap",
             "from_ref": swap_ref.group(1),
             "to_ref": swap_ref.group(2),
-            "buy_usd": float(swap_ref.group(3)),
+            "buy_usd": buy_usd,
+            "sell_usd": buy_usd,
+        }
+
+    # Partial sell then swap: מכור 1 $100 תקנה 2
+    swap_sell_amt = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+|{_sym})\s+{_amt}\s+{_buy}\s+(\d+|{_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_sell_amt:
+        amt = float(swap_sell_amt.group(2))
+        return {
+            "kind": "swap",
+            "from_ref": swap_sell_amt.group(1),
+            "to_ref": swap_sell_amt.group(3),
+            "sell_usd": amt,
+            "buy_usd": amt,
         }
 
     swap_full = re.fullmatch(
@@ -2426,7 +2539,9 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "to_ref": nl_swap.group(2),
         }
         if nl_swap.group(3):
-            cmd["buy_usd"] = float(nl_swap.group(3))
+            amt = float(nl_swap.group(3))
+            cmd["buy_usd"] = amt
+            cmd["sell_usd"] = amt
         return cmd
 
     plan_now_phrases = {
@@ -2950,6 +3065,10 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                     reply = f"⚠️ <b>{ex}</b>"
                 reply_context = "reply:ticker_remove"
                 send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "stock_detail":
+                send_stock_detail(cfg, str(parsed.get("symbol", "")))
                 handled += 1
                 continue
             elif kind == "tickers_discover":

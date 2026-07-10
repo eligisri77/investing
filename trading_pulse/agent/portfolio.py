@@ -195,9 +195,16 @@ def build_portfolio() -> dict[str, Any]:
         sum(float(p.get("marked_value_usd", p.get("capital_usd", 0))) for p in open_positions),
         2,
     )
+    equity = round(float(state.get("equity", cfg.initial_capital)), 2)
+    holding_cap = round(
+        sum(float(p.get("capital_usd", 0)) for p in open_positions if p.get("status") == "holding"),
+        2,
+    )
+    cash_usd = max(0.0, round(equity - holding_cap, 2))
 
     return {
-        "equity": round(float(state.get("equity", cfg.initial_capital)), 2),
+        "equity": equity,
+        "cash_usd": cash_usd,
         "initial_capital": float(cfg.initial_capital),
         "open_positions": open_positions,
         "open_capital_usd": open_total,

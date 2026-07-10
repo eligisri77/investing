@@ -119,6 +119,65 @@ def test_swap_buys_intraday_target_not_in_plan(tmp_path, monkeypatch):
     assert labd["approved"] is False
 
 
+def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
+    """מכור X תקנה Y $100 should sell only $100, not the whole position."""
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 333.0,
+                "entry_price": 7.0,
+                "entry_day": "2026-07-08",
+                "stop_loss_pct": 0.12,
+                "take_profit_pct": 0.25,
+            }
+        ],
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+    _plan(tmp_path)
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: "2026-07-08")
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: __import__("json").loads(state_path.read_text()))
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(__import__("json").dumps(data), encoding="utf-8"),
+    )
+    sold_amounts: list[float] = []
+
+    def _fake_sell_usd(_cfg, st, sym, usd, **kw):
+        sold_amounts.append(float(usd))
+        for p in st.get("open_positions", []):
+            if p["symbol"] == sym.upper():
+                p["capital_usd"] = round(float(p["capital_usd"]) - float(usd), 2)
+                break
+        return {"symbol": sym, "pnl_usd": 0.0, "capital_usd": float(usd)}
+
+    def _fake_sell_full(*_a, **_k):
+        raise AssertionError("full sell should not be used when buy_usd is set")
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_usd", _fake_sell_usd)
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell_full)
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: True,
+    )
+    monkeypatch.setattr(
+        agent,
+        "set_plan_status",
+        lambda *a, **k: "תוכנית מאושרת",
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "LABD", "RIVN", buy_usd=100.0)
+    assert sold_amounts == [100.0]
+    assert "100" in reply
+    assert "333" not in reply.split("מכרת")[1].split("\n")[0]
+
+
 def test_swap_rejects_same_symbol():
     reply = agent.execute_swap_command(Cfg(), "BEAM", "BEAM")
     assert reply.startswith("❌")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-SEP = "────────────────"
+SEP = "--------------------"
 
 TELEGRAM_MAX_HEADLINES = 1
 TELEGRAM_HTML_MAX_LEN = 3800
@@ -91,9 +91,11 @@ def user_guide_full() -> str:
             "1️⃣ <code>התחל</code> — קונה 3 מניות ומחלק את $1,000",
             "2️⃣ בערב — דוח יומי על הרווח/הפסד",
             "",
-            "אין מזומן? <code>מכור 2 20$</code> · <code>החלף X Y</code>",
+            "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
             "קנייה ממזומן: <code>תקנה 1 $20</code> · <code>קנה BEAM $50</code>",
-            "החלפה: <code>מכור 1 תקנה BEAM $200</code>",
+            "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
+            "שני סכומים: <code>מכור 1 200$ קנה 2 100$</code>",
+            "ניתוח מניה: <code>מניה NVDA</code> · <code>ציון AAPL</code>",
             "",
             "<code>תיק</code> · <code>סטטוס</code> · <code>מדריך</code>",
         ]
@@ -845,6 +847,7 @@ def format_portfolio(data: dict[str, Any]) -> str:
         "<b>💼 תיק השקעות</b>",
         SEP,
         f"הון: <b>${data['equity']:.2f}</b>",
+        f"מזומן פנוי: <b>${float(data.get('cash_usd', 0)):.0f}</b>",
         f"שווי פתוח: <b>${marked:.0f}</b> · רווח פתוח: <b>{ur_sign}${unrealized:.2f}</b>",
         f"רווח ממומש: <b>{sign}${pnl:.2f}</b>",
     ]
@@ -894,7 +897,9 @@ def format_portfolio(data: dict[str, Any]) -> str:
             )
 
     if holding:
-        lines.extend(["", "<i>דוגמאות: מכור 1 · מכור 2 $20 · תקנה 1 $20</i>"])
+        lines.extend(
+            ["", "<i>דוגמאות: מכור 1 $100 · מכור 1 200$ קנה 2 100$ · תקנה 1 $20</i>"]
+        )
 
     return finalize("\n".join(lines))
 

@@ -851,6 +851,15 @@ body {
   padding: 0;
 }
 
+.msg-image {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  border-radius: 12px;
+  margin: 0.5rem 0 0.65rem;
+  border: 1px solid var(--border);
+}
+
 .settings-meta {
   display: flex;
   flex-wrap: wrap;

@@ -68,8 +68,9 @@ Flow helpers: `trading_flow.py` (`plan_intent`, `auto_allocate_equal`, `funding_
 
 - **All user-facing Telegram text**: HTML via `parse_mode="HTML"`.
 - Escape dynamic text with `telegram_format.escape_html()`.
-- Photo captions: HTML + fallback strip tags in `send_telegram_photo()`.
-- App inbox (`notification_mode=app|both`): strip HTML for `app_notify` log.
+- Photo captions: keep **short** (title only, ≤80 chars). Full details go **inside** the PNG card — long RTL captions scramble on mobile Telegram.
+- App inbox (`notification_mode=app|both`): strip HTML for `app_notify` log; photos save under `instance/data/telegram/images/` and attach `metadata.image_id` for `#/messages`.
+- Dashboard: `GET /api/telegram/images/{id}` serves PNGs; `app.js` renders `.msg-image` when `image_id` is present.
 
 ### Plan notifications bundle
 

@@ -372,6 +372,55 @@ def card_entry(entries: list[dict[str, Any]], *, trading_day: str) -> bytes:
     )
 
 
+def card_portfolio(data: dict[str, Any]) -> bytes:
+    """Narrow portfolio card — all details in the image (mobile-friendly)."""
+    from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
+    from trading_pulse.core.schedule_tz import format_local_entry_moment
+
+    data = attach_slots_to_portfolio(data)
+    equity = float(data.get("equity", 0))
+    marked = float(data.get("open_marked_usd", data.get("open_capital_usd", 0)))
+    unrealized = float(data.get("unrealized_pnl_usd", 0))
+    ur_sign = "+" if unrealized >= 0 else ""
+    positions = data.get("open_positions") or []
+    holding = [p for p in positions if p.get("status") == "holding"]
+    pending = [p for p in positions if p.get("status") == "pending_market_entry"]
+
+    rows: list[tuple[str, str]] = [
+        ("הון", f"${equity:.2f}"),
+        ("שווי פתוח", f"${marked:.0f}"),
+        ("רווח פתוח", f"{ur_sign}${unrealized:.0f}"),
+    ]
+    bullets: list[str] = []
+    for p in holding:
+        slot = p.get("slot", "—")
+        sym = str(p["symbol"])
+        cap = float(p.get("capital_usd", 0))
+        ep = float(p.get("entry_price") or 0)
+        mv = float(p.get("marked_value_usd", cap))
+        ur = float(p.get("unrealized_pnl_usd", 0))
+        ur_s = "+" if ur >= 0 else ""
+        when = format_local_entry_moment(p.get("entry_at"))
+        bullets.append(f"#{slot} {sym}  ${cap:.0f} @ ${ep:.2f}")
+        bullets.append(f"    → שווי ${mv:.0f}  ({ur_s}${ur:.0f})  · {when}")
+    for p in pending:
+        sym = str(p["symbol"])
+        cap = float(p.get("capital_usd", 0))
+        when = str(p.get("scheduled_entry", "פתיחה"))
+        bullets.append(f"⏳ {sym}  ${cap:.0f}  · כניסה {when}")
+    if not bullets:
+        bullets.append("אין פוזיציות פתוחות")
+
+    return render_reply_card(
+        "תיק השקעות",
+        accent="cyan",
+        rows=rows,
+        bullets=bullets,
+        chips=["מכור 1", "מכור 2 20$", "תקנה 1 $20"],
+        footer="מספרים (#1 #2…) לפי סדר בתיק",
+    )
+
+
 def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
     """Compact plan overview card (details still in table/charts)."""
     day = str(plan.get("for_trading_day", ""))

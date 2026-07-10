@@ -651,6 +651,19 @@ def api_telegram_messages() -> dict[str, Any]:
     }
 
 
+@app.get("/api/telegram/images/{image_id}")
+def api_telegram_image(image_id: str) -> FileResponse:
+    from fastapi import HTTPException
+
+    from trading_pulse.core.app_paths import TELEGRAM_DIR
+
+    safe = "".join(c for c in image_id if c.isalnum())
+    path = TELEGRAM_DIR / "images" / f"{safe}.png"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    return FileResponse(path, media_type="image/png")
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_STATIC_DIR / "index.html")

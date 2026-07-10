@@ -1156,44 +1156,97 @@ def send_telegram_photo(
     caption: str,
     context: str = "photo",
     parse_mode: str | None = "HTML",
+    *,
+    inbox_text: str | None = None,
+    log_inbox: bool = True,
 ) -> bool:
+    """Send photo to Telegram. Caption should be short — details belong in the image.
+
+    When called after notify_user already logged the same context (e.g. card
+    replies), pass log_inbox=False so the app inbox is not duplicated — only
+    the existing row is tagged with image_id.
+    """
+    from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
+
     token = str(cfg.telegram_bot_token).strip()
     chat_id = str(cfg.telegram_chat_id).strip()
+    # Keep captions tiny — long RTL captions break on mobile Telegram.
+    cap = re.sub(r"<[^>]+>", "", caption or "").strip()[:80]
+    image_id = _save_telegram_image(image_bytes)
+
+    if uses_app_notifications(cfg):
+        if log_inbox:
+            plain = inbox_text or cap or context
+            notify_user(
+                cfg,
+                plain,
+                context,
+                parse_mode=None,
+                telegram_sender=False,
+            )
+        _tag_last_message_image(context, image_id)
+
     if not token or not chat_id:
         logging.warning("Telegram photo skip (%s): missing token or chat_id", context)
-        return False
+        return bool(image_id)
+
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
-    cap = caption[:1024]
 
     def _post(data: dict[str, Any]) -> requests.Response:
         files = {"photo": ("chart.png", image_bytes, "image/png")}
         return requests.post(url, data=data, files=files, timeout=30)
 
-    data: dict[str, Any] = {"chat_id": chat_id, "caption": cap}
-    if parse_mode:
-        data["parse_mode"] = parse_mode
+    data: dict[str, Any] = {"chat_id": chat_id}
+    if cap:
+        data["caption"] = cap
     try:
         res = _post(data)
-        if parse_mode and res.status_code >= 400:
-            logging.warning("Telegram photo HTML caption failed (%s), retrying plain", context)
-            plain = re.sub(r"<[^>]+>", "", cap)
-            res = _post({"chat_id": chat_id, "caption": plain})
         res.raise_for_status()
         body = res.json()
         if not body.get("ok"):
             raise RuntimeError(f"Telegram API error: {body}")
         logging.info("Telegram photo sent (%s)", context)
-        log_telegram_message(
-            "out",
-            context,
-            f"[image] {re.sub(r'<[^>]+>', '', cap)[:200]}",
-            parse_mode=None,
-            metadata={"image": True},
-        )
+        if not uses_app_notifications(cfg):
+            log_telegram_message(
+                "out",
+                context,
+                inbox_text or cap or context,
+                parse_mode=None,
+                metadata={"image": True, "image_id": image_id},
+            )
         return True
     except Exception as ex:
         logging.warning("Telegram photo send failed (%s): %s", context, ex)
         return False
+
+
+def _save_telegram_image(image_bytes: bytes) -> str:
+    from uuid import uuid4
+
+    from trading_pulse.core.app_paths import TELEGRAM_DIR
+
+    img_dir = TELEGRAM_DIR / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    image_id = uuid4().hex[:16]
+    (img_dir / f"{image_id}.png").write_bytes(image_bytes)
+    return image_id
+
+
+def _tag_last_message_image(context: str, image_id: str) -> None:
+    try:
+        from trading_pulse.telegram.telegram_store import load_messages, save_messages
+
+        messages = load_messages()
+        for msg in messages:
+            if msg.get("direction") == "out" and msg.get("context") == context:
+                meta = dict(msg.get("metadata") or {})
+                meta["image"] = True
+                meta["image_id"] = image_id
+                msg["metadata"] = meta
+                save_messages(messages)
+                return
+    except Exception as ex:
+        logging.debug("Could not tag message image: %s", ex)
 
 
 def send_telegram_table_image(
@@ -1292,20 +1345,17 @@ def send_plan_portfolio_image(cfg: AgentConfig) -> None:
     try:
         from trading_pulse.agent.portfolio import build_portfolio
         from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
-        from trading_pulse.telegram.telegram_images import render_portfolio_image
+        from trading_pulse.telegram.reply_cards import card_portfolio
 
         pdata = attach_slots_to_portfolio(build_portfolio())
         holding = [p for p in pdata.get("open_positions", []) if p.get("status") == "holding"]
         if not holding:
             return
-        img = render_portfolio_image(pdata)
-        lines = ["<b>💼 התיק שלך (לפי מספר)</b>"]
-        for p in holding:
-            lines.append(
-                f"<b>#{p['slot']}</b> {p['symbol']} — <b>${float(p['capital_usd']):.0f}</b>"
-            )
-        lines.append("<i>מכור 1 · מכור 2 $200 · מכור 1 תקנה SYMBOL $200</i>")
-        send_telegram_photo(cfg, img, "\n".join(lines), context="plan:portfolio", parse_mode="HTML")
+        img = card_portfolio(pdata)
+        inbox = "\n".join(
+            f"#{p['slot']} {p['symbol']} — ${float(p['capital_usd']):.0f}" for p in holding
+        )
+        send_telegram_photo(cfg, img, "💼 תיק", context="plan:portfolio", inbox_text=inbox)
     except Exception as ex:
         logging.warning("Plan portfolio image failed: %s", ex)
 
@@ -1318,7 +1368,7 @@ def send_report_table_image(cfg: AgentConfig, report: dict[str, Any]) -> None:
         day = report.get("trading_day", "")
         pnl = float(report.get("pnl_usd", 0))
         sign = "+" if pnl >= 0 else ""
-        send_telegram_table_image(cfg, img, f"<b>📊 דוח {day}</b> · P/L <b>{sign}${pnl:.2f}</b>", "report")
+        send_telegram_table_image(cfg, img, f"📊 דוח {day}", "report")
     except Exception as ex:
         logging.warning("Report table image failed: %s", ex)
 
@@ -1366,8 +1416,15 @@ def _send_telegram_as_card(
             accent = "pink"
         png = render_html_message_card(text, accent=accent)
         caption = _telegram_card_caption(text, context)
+        # Inbox already logged by notify_user — only attach image_id.
         return send_telegram_photo(
-            cfg, png, caption, context=context, parse_mode="HTML"
+            cfg,
+            png,
+            caption,
+            context=context,
+            parse_mode="HTML",
+            inbox_text=re.sub(r"<[^>]+>", "", text),
+            log_inbox=False,
         )
     except Exception as ex:
         logging.warning("Card render failed (%s), sending HTML text: %s", context, ex)
@@ -1380,16 +1437,49 @@ def send_telegram_message(
     context: str = "message",
     parse_mode: str | None = None,
 ) -> bool:
-    """User-facing Telegram reply — card image + app inbox when configured."""
-    from trading_pulse.telegram.app_notify import notify_user
-
-    return notify_user(
-        cfg,
-        text,
-        context,
-        parse_mode=parse_mode,
-        telegram_sender=_send_telegram_as_card,
+    """User-facing reply — card image on Telegram + image in app inbox when configured."""
+    from trading_pulse.telegram.app_notify import (
+        notify_user,
+        uses_app_notifications,
+        uses_telegram_notifications,
     )
+
+    if uses_telegram_notifications(cfg):
+        return notify_user(
+            cfg,
+            text,
+            context,
+            parse_mode=parse_mode,
+            telegram_sender=_send_telegram_as_card,
+        )
+
+    # App-only: still render a card so #/messages can show the image.
+    ok = notify_user(cfg, text, context, parse_mode=parse_mode, telegram_sender=False)
+    if uses_app_notifications(cfg):
+        _attach_reply_card_image(text, context)
+    return ok
+
+
+def _attach_reply_card_image(text: str, context: str) -> None:
+    """Save a reply card PNG and tag the latest inbox row (app-only path)."""
+    try:
+        from trading_pulse.telegram.reply_cards import render_html_message_card
+
+        accent = "cyan"
+        ctx = context.lower()
+        if any(k in ctx for k in ("error", "cancel", "reject")):
+            accent = "red"
+        elif "sell" in ctx:
+            accent = "green"
+        elif "buy" in ctx or "entry" in ctx or "approve" in ctx:
+            accent = "green"
+        elif "swap" in ctx or "funding" in ctx:
+            accent = "pink"
+        png = render_html_message_card(text, accent=accent)
+        image_id = _save_telegram_image(png)
+        _tag_last_message_image(context, image_id)
+    except Exception as ex:
+        logging.debug("App card image skipped (%s): %s", context, ex)
 
 
 def _telegram_card_caption(text: str, context: str) -> str:
@@ -2755,63 +2845,21 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
             elif kind == "portfolio":
                 from trading_pulse.agent.portfolio import build_portfolio
                 from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
+                from trading_pulse.telegram.reply_cards import card_portfolio
                 from trading_pulse.telegram.telegram_format import format_portfolio
-                from trading_pulse.telegram.telegram_images import render_portfolio_image
 
                 pdata = attach_slots_to_portfolio(build_portfolio())
                 text_reply = format_portfolio(pdata)
-                from trading_pulse.core.schedule_tz import format_local_entry_moment
-
-                sign = "+" if pdata["total_realized_pnl"] >= 0 else ""
-                ur = float(pdata.get("unrealized_pnl_usd", 0))
-                ur_sign = "+" if ur >= 0 else ""
-                holdings = [
-                    p for p in pdata.get("open_positions", []) if p.get("status") == "holding"
-                ]
-                pending = [
-                    p for p in pdata.get("open_positions", []) if p.get("status") == "pending_market_entry"
-                ]
-                if holdings:
-                    lines = [
-                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
-                        f"שווי <b>${float(pdata.get('open_marked_usd', 0)):.0f}</b> · "
-                        f"פתוח <b>{ur_sign}${ur:.0f}</b>"
-                    ]
-                    for p in holdings:
-                        ep = float(p.get("entry_price") or 0)
-                        when = format_local_entry_moment(p.get("entry_at"))
-                        mv = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
-                        row_ur = float(p.get("unrealized_pnl_usd", 0))
-                        row_ur_s = "+" if row_ur >= 0 else ""
-                        slot = p.get("slot")
-                        prefix = f"<b>#{slot}</b> " if slot else ""
-                        lines.append(
-                            f"• {prefix}<b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} "
-                            f"@ <b>${ep:.2f}</b> → ${mv:.0f} ({row_ur_s}${row_ur:.0f}) · {when}"
-                        )
-                    lines.append("<i>מכור 1 · מכור 2 20$ · מכור 1 תקנה BEAM $200</i>")
-                    caption = "\n".join(lines)
-                elif pending:
-                    lines = [
-                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
-                        f"<b>ממתין לפתיחת השוק</b>"
-                    ]
-                    for p in pending:
-                        approved = format_local_entry_moment(p.get("approved_at"))
-                        entry_when = str(p.get("scheduled_entry", "פתיחה"))
-                        lines.append(
-                            f"• <b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} · "
-                            f"אושר {approved} → כניסה {entry_when}"
-                        )
-                    caption = "\n".join(lines)
-                else:
-                    caption = (
-                        f"💼 <b>תיק</b> · הון <b>${pdata['equity']:.2f}</b> · "
-                        f"P/L <b>{sign}${pdata['total_realized_pnl']:.2f}</b>"
-                    )
                 try:
-                    img = render_portfolio_image(pdata)
-                    send_telegram_photo(cfg, img, caption, context="reply:portfolio", parse_mode="HTML")
+                    img = card_portfolio(pdata)
+                    # Short caption only — full details are inside the image (mobile-safe).
+                    send_telegram_photo(
+                        cfg,
+                        img,
+                        "💼 תיק",
+                        context="reply:portfolio",
+                        inbox_text=re.sub(r"<[^>]+>", "", text_reply),
+                    )
                 except Exception as ex:
                     logging.warning("Portfolio image failed, sending text: %s", ex)
                     send_telegram_message(

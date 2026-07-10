@@ -52,6 +52,39 @@ def test_trade_cards():
     ).startswith(b"\x89PNG")
 
 
+def test_portfolio_card():
+    from trading_pulse.telegram.reply_cards import card_portfolio
+
+    png = card_portfolio(
+        {
+            "equity": 986.68,
+            "open_marked_usd": 1021,
+            "unrealized_pnl_usd": 34,
+            "open_positions": [
+                {
+                    "symbol": "LABD",
+                    "status": "holding",
+                    "capital_usd": 333,
+                    "entry_price": 7.1,
+                    "marked_value_usd": 322,
+                    "unrealized_pnl_usd": -11,
+                    "entry_at": "2026-07-08T17:20:00+00:00",
+                },
+                {
+                    "symbol": "RIVN",
+                    "status": "holding",
+                    "capital_usd": 333,
+                    "entry_price": 15.66,
+                    "marked_value_usd": 386,
+                    "unrealized_pnl_usd": 52,
+                    "entry_at": "2026-07-08T17:20:00+00:00",
+                },
+            ],
+        }
+    )
+    assert png.startswith(b"\x89PNG")
+
+
 def test_plan_summary_card():
     plan = {
         "for_trading_day": "2026-07-10",

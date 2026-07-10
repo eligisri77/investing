@@ -25,7 +25,7 @@
   "intraday_check_interval_minutes": 60,
   "intraday_alert_cooldown_minutes": 120,
   "send_heartbeat_on_startup": true,
-  "telegram_poll_interval_sec": 600,
+  "telegram_poll_interval_sec": 10,
   "telegram_bot_token": "",
   "telegram_chat_id": "",
   "min_price_usd": 5.0,

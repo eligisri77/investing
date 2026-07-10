@@ -564,6 +564,16 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
         ("נפח", f"{float(rec.get('vol_ratio', 0)):.2f}x"),
         ("ATR", f"{float(rec.get('atr_pct', 0)):.1f}%"),
     ]
+    live = detail.get("live_quote") or {}
+    if live:
+        last = float(live.get("last", 0))
+        day_chg = float(live.get("day_change_pct", 0))
+        sign = "+" if day_chg >= 0 else ""
+        high = float(live.get("high", last))
+        low = float(live.get("low", last))
+        rows.insert(0, ("מחיר עכשיו", f"${last:.2f}"))
+        rows.insert(1, ("שינוי היום", f"{sign}{day_chg:.2f}%"))
+        rows.insert(2, ("טווח היום", f"${low:.2f} – ${high:.2f}"))
     if speculative:
         rows.append(
             (
@@ -621,13 +631,22 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
     if expl:
         bullets.append(expl[:180] + ("…" if len(expl) > 180 else ""))
 
+    title = f"מעקב {sym}" if detail.get("watch_mode") else f"ניתוח {sym}"
+    interval = int(detail.get("watch_interval_min") or 0)
+    if detail.get("watch_mode") and interval:
+        footer = f"עדכון כל {interval} דק׳ בזמן מסחר · הפסק מעקב {sym}"
+    else:
+        footer = "גרף מחיר נשלח בהודעה הבאה"
+
     return render_reply_card(
-        f"ניתוח {sym}",
+        title,
         accent="green" if would else "pink",
         subtitle=f"ציון {score:.1f} · {'ברשימה' if on_list else 'מחוץ לרשימה'}",
         rows=rows,
         bullets=bullets,
-        chips=[f"הוסף {sym}"] if not on_list else [f"הסר {sym}", "תיק"],
-        footer="גרף מחיר נשלח בהודעה הבאה",
+        chips=[f"הפסק מעקב {sym}"] if detail.get("watch_mode") else (
+            [f"הוסף {sym}"] if not on_list else [f"הסר {sym}", "תיק"]
+        ),
+        footer=footer,
     )
 

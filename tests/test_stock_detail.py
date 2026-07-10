@@ -19,31 +19,41 @@ def test_parse_stock_detail():
     assert parse_telegram_user_command("ציון aapl")["symbol"] == "AAPL"
     assert parse_telegram_user_command("score TSLA")["kind"] == "stock_detail"
     assert parse_telegram_user_command("ניתוח BEAM")["symbol"] == "BEAM"
+    # RTL order from Hebrew Telegram keyboard
+    assert parse_telegram_user_command("AAPL ציון") == {
+        "kind": "stock_detail",
+        "symbol": "AAPL",
+    }
+    assert parse_telegram_user_command("NVDA מניה")["symbol"] == "NVDA"
 
 
-def test_card_stock_detail_png():
+def test_card_stock_detail_watch_mode():
+    from trading_pulse.telegram.reply_cards import card_stock_detail
+
     png = card_stock_detail(
         {
             "ok": True,
-            "symbol": "NVDA",
-            "on_watchlist": False,
-            "would_pick": True,
+            "symbol": "AAPL",
+            "on_watchlist": True,
+            "would_pick": False,
             "speculative": True,
-            "gates": [("מקורות", True, "3/3"), ("ציון כניסה", True, "9.0 (סף 7.0)")],
+            "watch_mode": True,
+            "watch_interval_min": 60,
+            "live_quote": {"last": 313.81, "day_change_pct": 0.0, "high": 316.39, "low": 312.17},
+            "gates": [],
             "rec": {
-                "symbol": "NVDA",
-                "score": 9.2,
-                "score_technical": 8.8,
-                "entry_ref_price": 120.5,
-                "ret_5d_pct": 4.2,
-                "vol_ratio": 1.5,
-                "atr_pct": 3.1,
-                "breakout_ok": True,
-                "near_high_pct": -0.5,
-                "stop_loss_price": 106.0,
-                "take_profit_price": 150.0,
-                "source_scores": {"yahoo": 9.0, "finviz": 8.5},
-                "explanation": "NVDA: דירוג בדיקה.",
+                "symbol": "AAPL",
+                "score": 3.1,
+                "score_technical": 3.0,
+                "entry_ref_price": 313.0,
+                "ret_5d_pct": 1.7,
+                "vol_ratio": 0.17,
+                "atr_pct": 2.8,
+                "breakout_ok": False,
+                "near_high_pct": -1.0,
+                "stop_loss_price": 275.0,
+                "take_profit_price": 390.0,
+                "source_scores": {"yahoo": 3.1},
             },
         }
     )

@@ -124,7 +124,7 @@ Nav links in `renderNav()` in `app.js`. Reuse `.guide-*` CSS classes.
 ## Runtime notes
 
 - Restart app after code changes: `.\scripts\run_app.ps1` (quit tray first)
-- `telegram_poll_interval_sec` reloads from config within ~1 min (no restart)
+- `telegram_poll_interval_sec` (default **10**) reloads from config on the next scheduler loop (no restart)
 - Schedule times (`plan_reminder_time`, etc.) need restart
 - `notification_mode`: `app` | `telegram` | `both`
 - Single instance lock — don't run duplicate schedulers

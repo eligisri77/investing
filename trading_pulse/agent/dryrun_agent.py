@@ -139,7 +139,7 @@ class AgentConfig:
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
-    telegram_poll_interval_sec: int = 60
+    telegram_poll_interval_sec: int = 10
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     min_volume_ratio: float = 1.2
@@ -2349,15 +2349,61 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     if remove_match:
         return {"kind": "ticker_remove", "symbol": remove_match.group(1).upper()}
 
+    _sym = r"[A-Za-z][A-Za-z0-9.\-^]{0,9}"
+
+    # Hourly price watch: ציון שעתי AAPL / AAPL ציון שעתי / מעקב AAPL
+    watch_add = re.fullmatch(
+        rf"(?:ציון\s+שעתי|מעקב(?:\s+שעתי)?|watch(?:\s+hourly)?)\s+({_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if watch_add:
+        return {"kind": "price_watch_add", "symbol": watch_add.group(1).upper()}
+
+    watch_add_rtl = re.fullmatch(
+        rf"({_sym})\s+(?:ציון\s+שעתי|מעקב(?:\s+שעתי)?|watch(?:\s+hourly)?)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if watch_add_rtl:
+        return {"kind": "price_watch_add", "symbol": watch_add_rtl.group(1).upper()}
+
+    watch_rm = re.fullmatch(
+        rf"(?:הפסק\s+מעקב|בטל\s+מעקב|unwatch|stop\s+watch)\s+({_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if watch_rm:
+        return {"kind": "price_watch_remove", "symbol": watch_rm.group(1).upper()}
+
+    watch_rm_rtl = re.fullmatch(
+        rf"({_sym})\s+(?:הפסק\s+מעקב|בטל\s+מעקב|unwatch)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if watch_rm_rtl:
+        return {"kind": "price_watch_remove", "symbol": watch_rm_rtl.group(1).upper()}
+
+    if lower in {"מעקבים", "מעקב", "watches", "price watches"}:
+        return {"kind": "price_watch_list"}
+
     stock_detail = re.fullmatch(
-        r"(?:מניה|ציון|ניתוח|score|stock|analyze|analysis)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s*$",
+        rf"(?:מניה|ציון|ניתוח|score|stock|analyze|analysis)\s+({_sym})\s*$",
         raw.strip(),
         flags=re.IGNORECASE,
     )
     if stock_detail:
         return {"kind": "stock_detail", "symbol": stock_detail.group(1).upper()}
 
-    _sym = r"[A-Za-z][A-Za-z0-9.\-^]{0,9}"
+    # RTL typing often yields "AAPL ציון" instead of "ציון AAPL"
+    stock_detail_rtl = re.fullmatch(
+        rf"({_sym})\s+(?:מניה|ציון|ניתוח|score|stock|analyze|analysis)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if stock_detail_rtl:
+        return {"kind": "stock_detail", "symbol": stock_detail_rtl.group(1).upper()}
+
     _buy = r"(?:ו)?(?:ת)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)"
     _amt = r"\$?(\d+(?:\.\d+)?)\$?"
 
@@ -3069,6 +3115,49 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 continue
             elif kind == "stock_detail":
                 send_stock_detail(cfg, str(parsed.get("symbol", "")))
+                handled += 1
+                continue
+            elif kind == "price_watch_add":
+                from trading_pulse.agent.price_watch import (
+                    add_price_watch,
+                    format_watch_added,
+                    send_price_watch_snapshot,
+                )
+
+                state = load_state(cfg)
+                try:
+                    result = add_price_watch(state, str(parsed.get("symbol", "")))
+                    save_json(STATE_FILE, state)
+                    reply = format_watch_added(cfg, result)
+                    send_telegram_message(cfg, reply, context="reply:price_watch_add", parse_mode="HTML")
+                    if result.get("added"):
+                        # Full analysis + chart once at start (any time of day).
+                        send_price_watch_snapshot(cfg, result["symbol"])
+                except ValueError as ex:
+                    send_telegram_message(
+                        cfg, f"⚠️ <b>{ex}</b>", context="reply:price_watch_add", parse_mode="HTML"
+                    )
+                handled += 1
+                continue
+            elif kind == "price_watch_remove":
+                from trading_pulse.agent.price_watch import format_watch_removed, remove_price_watch
+
+                state = load_state(cfg)
+                try:
+                    result = remove_price_watch(state, str(parsed.get("symbol", "")))
+                    save_json(STATE_FILE, state)
+                    reply = format_watch_removed(result)
+                except ValueError as ex:
+                    reply = f"⚠️ <b>{ex}</b>"
+                send_telegram_message(cfg, reply, context="reply:price_watch_remove", parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "price_watch_list":
+                from trading_pulse.agent.price_watch import format_watches_list
+
+                state = load_state(cfg)
+                reply = format_watches_list(cfg, state)
+                send_telegram_message(cfg, reply, context="reply:price_watch_list", parse_mode="HTML")
                 handled += 1
                 continue
             elif kind == "tickers_discover":
@@ -4026,6 +4115,23 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("entry", "failed", str(ex))
             logging.exception("JOB FAILED: market entry: %s", ex)
 
+    def _clear_price_watches_eod() -> None:
+        """Drop hourly watches at end of the trading-day job."""
+        from trading_pulse.agent.price_watch import clear_all_price_watches, format_watches_cleared
+
+        try:
+            state = load_state(cfg)
+            cleared = clear_all_price_watches(state)
+            if not cleared:
+                return
+            save_json(STATE_FILE, state)
+            msg = format_watches_cleared(cleared)
+            if msg:
+                send_user_notification(cfg, msg, context="price_watch:eod_clear", parse_mode="HTML")
+            logging.info("Cleared %d price watch(es) at EOD: %s", len(cleared), ", ".join(cleared))
+        except Exception as ex:
+            logging.warning("EOD price-watch clear failed: %s", ex)
+
     def run_sim_job() -> None:
         today = date.today()
         if not should_run_simulation_today(today):
@@ -4034,6 +4140,8 @@ def run_scheduler_loop(service: bool = True) -> None:
                 "JOB SKIP: daily simulation (market closed or no plan; today=%s)",
                 today.isoformat(),
             )
+            # Still clear leftover watches on non-session days.
+            _clear_price_watches_eod()
             return
         logging.info("JOB START: daily simulation")
         try:
@@ -4042,6 +4150,7 @@ def run_scheduler_loop(service: bool = True) -> None:
             if report.get("_skipped"):
                 record_job("simulation", "skipped", f"already done; day={today.isoformat()}")
                 logging.info("JOB SKIP: daily simulation (already completed for %s)", today)
+                _clear_price_watches_eod()
                 return
             logging.info(
                 "Simulation done for %s | PnL $%s | equity $%s -> $%s",
@@ -4057,6 +4166,8 @@ def run_scheduler_loop(service: bool = True) -> None:
         except Exception as ex:
             record_job("simulation", "failed", str(ex))
             logging.exception("JOB FAILED: daily simulation: %s", ex)
+        finally:
+            _clear_price_watches_eod()
 
     def run_heartbeat_job() -> None:
         logging.info("JOB START: heartbeat")
@@ -4085,6 +4196,7 @@ def run_scheduler_loop(service: bool = True) -> None:
 
     def run_intraday_check_job() -> None:
         from trading_pulse.agent.intraday_monitor import run_intraday_check
+        from trading_pulse.agent.price_watch import send_price_watch_updates
 
         active_cfg = load_config()
         if not active_cfg.intraday_check_enabled:
@@ -4096,9 +4208,18 @@ def run_scheduler_loop(service: bool = True) -> None:
         try:
             state = load_state(active_cfg)
             sent = run_intraday_check(active_cfg, state)
-            if sent:
-                record_job("intraday_check", "ok", f"day={today.isoformat()}")
-                logging.info("JOB END: intraday check (alert sent)")
+            watch_sent = send_price_watch_updates(active_cfg, state)
+            if sent or watch_sent:
+                record_job(
+                    "intraday_check",
+                    "ok",
+                    f"day={today.isoformat()} watches={watch_sent}",
+                )
+                logging.info(
+                    "JOB END: intraday check (alerts=%s watches=%s)",
+                    bool(sent),
+                    watch_sent,
+                )
             else:
                 record_job("intraday_check", "skipped", "nothing noteworthy")
                 logging.info("JOB END: intraday check (quiet)")

@@ -410,6 +410,32 @@ def partial_sell_position(
     return None
 
 
+def partial_sell_usd(
+    cfg: Any,
+    state: dict[str, Any],
+    symbol: str,
+    amount_usd: float,
+    *,
+    trading_day: date | None = None,
+    reason: str = "user_sell",
+) -> dict[str, Any] | None:
+    """Sell a fixed USD amount from an open position."""
+    ensure_open_positions(state)
+    symbol = symbol.upper()
+    amount_usd = max(1.0, float(amount_usd))
+    for pos in state.get("open_positions", []):
+        if str(pos.get("symbol")) != symbol:
+            continue
+        cap = float(pos.get("capital_usd", 0))
+        if cap <= 0:
+            return None
+        fraction = min(1.0, amount_usd / cap)
+        return partial_sell_position(
+            cfg, state, symbol, fraction, trading_day=trading_day, reason=reason
+        )
+    return None
+
+
 def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
     ensure_open_positions(state)
     entry_at_fallback = _plan_entry_executed_at()

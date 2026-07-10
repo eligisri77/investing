@@ -1256,7 +1256,7 @@ def send_plan_stock_charts(cfg: AgentConfig, plan: dict[str, Any]) -> None:
 
 
 def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
-    """Summary text, summary table, then per-stock chart messages."""
+    """Summary card, summary table, then per-stock chart messages."""
     from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications, uses_telegram_notifications
 
     if uses_app_notifications(cfg):
@@ -1268,9 +1268,46 @@ def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
             telegram_sender=False,
         )
     if uses_telegram_notifications(cfg):
-        _send_telegram_api(cfg, format_plan_message(plan), context="plan", parse_mode="HTML")
+        try:
+            from trading_pulse.telegram.reply_cards import card_from_plan_summary
+
+            day = str(plan.get("for_trading_day", ""))
+            send_telegram_photo(
+                cfg,
+                card_from_plan_summary(plan),
+                f"📋 תוכנית {day}",
+                context="plan",
+                parse_mode="HTML",
+            )
+        except Exception as ex:
+            logging.warning("Plan summary card failed, HTML fallback: %s", ex)
+            _send_telegram_api(cfg, format_plan_message(plan), context="plan", parse_mode="HTML")
+    send_plan_portfolio_image(cfg)
     send_plan_table_image(cfg, plan)
     send_plan_stock_charts(cfg, plan)
+
+
+def send_plan_portfolio_image(cfg: AgentConfig) -> None:
+    """Numbered holdings snapshot before evening recommendations."""
+    try:
+        from trading_pulse.agent.portfolio import build_portfolio
+        from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
+        from trading_pulse.telegram.telegram_images import render_portfolio_image
+
+        pdata = attach_slots_to_portfolio(build_portfolio())
+        holding = [p for p in pdata.get("open_positions", []) if p.get("status") == "holding"]
+        if not holding:
+            return
+        img = render_portfolio_image(pdata)
+        lines = ["<b>💼 התיק שלך (לפי מספר)</b>"]
+        for p in holding:
+            lines.append(
+                f"<b>#{p['slot']}</b> {p['symbol']} — <b>${float(p['capital_usd']):.0f}</b>"
+            )
+        lines.append("<i>מכור 1 · מכור 2 $200 · מכור 1 תקנה SYMBOL $200</i>")
+        send_telegram_photo(cfg, img, "\n".join(lines), context="plan:portfolio", parse_mode="HTML")
+    except Exception as ex:
+        logging.warning("Plan portfolio image failed: %s", ex)
 
 
 def send_report_table_image(cfg: AgentConfig, report: dict[str, Any]) -> None:
@@ -1301,8 +1338,40 @@ def send_user_notification(
         context,
         parse_mode=parse_mode,
         plan=plan,
-        telegram_sender=_send_telegram_api,
+        telegram_sender=_send_telegram_as_card,
     )
+
+
+def _send_telegram_as_card(
+    cfg: AgentConfig,
+    text: str,
+    context: str = "message",
+    parse_mode: str | None = None,
+) -> bool:
+    """Render HTML/text reply as a narrow card image for Telegram."""
+    if not text or not str(text).strip():
+        return False
+    try:
+        from trading_pulse.telegram.reply_cards import render_html_message_card
+
+        accent = "cyan"
+        ctx = context.lower()
+        if any(k in ctx for k in ("error", "cancel", "reject")):
+            accent = "red"
+        elif "sell" in ctx:
+            accent = "green"
+        elif "buy" in ctx or "entry" in ctx or "approve" in ctx:
+            accent = "green"
+        elif "swap" in ctx or "funding" in ctx:
+            accent = "pink"
+        png = render_html_message_card(text, accent=accent)
+        caption = _telegram_card_caption(text, context)
+        return send_telegram_photo(
+            cfg, png, caption, context=context, parse_mode="HTML"
+        )
+    except Exception as ex:
+        logging.warning("Card render failed (%s), sending HTML text: %s", context, ex)
+        return _send_telegram_api(cfg, text, context=context, parse_mode=parse_mode)
 
 
 def send_telegram_message(
@@ -1311,7 +1380,34 @@ def send_telegram_message(
     context: str = "message",
     parse_mode: str | None = None,
 ) -> bool:
-    return send_user_notification(cfg, text, context, parse_mode=parse_mode)
+    """User-facing Telegram reply — card image + app inbox when configured."""
+    from trading_pulse.telegram.app_notify import notify_user
+
+    return notify_user(
+        cfg,
+        text,
+        context,
+        parse_mode=parse_mode,
+        telegram_sender=_send_telegram_as_card,
+    )
+
+
+def _telegram_card_caption(text: str, context: str) -> str:
+    from trading_pulse.telegram.reply_cards import _strip_html
+
+    plain = _strip_html(text)
+    first = next((ln.strip() for ln in plain.splitlines() if ln.strip()), context)
+    return first[:80]
+
+
+def send_telegram_card(
+    cfg: AgentConfig,
+    png: bytes,
+    caption: str,
+    context: str,
+) -> bool:
+    return send_telegram_photo(cfg, png, caption[:100], context=context, parse_mode="HTML")
+
 
 
 def parse_indices(raw: str, total: int) -> list[int]:
@@ -1328,24 +1424,273 @@ def parse_indices(raw: str, total: int) -> list[int]:
     return sorted(set(picked))
 
 
-def execute_sell_command(cfg: AgentConfig, symbol: str, fraction: float = 1.0) -> str:
-    from trading_pulse.agent.positions import partial_sell_position
+def _build_swap_target_rec(cfg: AgentConfig, symbol: str, capital_usd: float) -> dict[str, Any]:
+    """Recommendation stub for an intraday swap target not in the evening plan."""
+    symbol = symbol.upper()
+    sl = float(getattr(cfg, "stop_loss_pct", 0.12))
+    tp = float(getattr(cfg, "take_profit_pct", 0.25))
+    score = 0.0
+    ref = 0.0
+
+    universe = fetch_signal_universe([symbol], cfg)
+    if not universe.empty:
+        row = universe.iloc[0]
+        ref = float(row.get("close") or 0)
+        score = float(row.get("score") or 0)
+        if row.get("stop_loss_pct") is not None:
+            sl = float(row["stop_loss_pct"])
+        if row.get("take_profit_pct") is not None:
+            tp = float(row["take_profit_pct"])
+
+    if ref <= 0:
+        from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
+
+        quote = fetch_intraday_quote(symbol)
+        if quote:
+            ref = float(quote["last"])
+
+    if ref <= 0:
+        ref = 1.0
+
+    floor = round(ref * (1 - sl), 4)
+    return {
+        "symbol": symbol,
+        "side": "LONG",
+        "capital_usd": round(capital_usd, 2),
+        "entry_ref_price": round(ref, 4),
+        "stop_loss_pct": sl,
+        "take_profit_pct": tp,
+        "stop_loss_price": floor,
+        "floor_price": floor,
+        "take_profit_price": round(ref * (1 + tp), 4),
+        "approved": True,
+        "score": score,
+        "intraday_swap": True,
+    }
+
+
+def _open_position_now(
+    cfg: AgentConfig,
+    state: dict[str, Any],
+    rec: dict[str, Any],
+    trading_day: date,
+) -> dict[str, Any] | None:
+    """Open a position at the current intraday price (after morning entry)."""
+    from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
+    from trading_pulse.agent.positions import fetch_day_ohlc, held_symbols, new_position_from_rec
+
+    symbol = str(rec["symbol"]).upper()
+    if symbol in held_symbols(state):
+        return None
+    if len(state.get("open_positions", [])) >= int(getattr(cfg, "max_open_positions", 4)):
+        return None
+
+    bar = fetch_day_ohlc(symbol, trading_day)
+    price = float(bar["close"]) if bar else 0.0
+    if price <= 0:
+        quote = fetch_intraday_quote(symbol)
+        if not quote:
+            return None
+        price = float(quote["last"])
+    if price <= 0:
+        return None
+
+    pos = new_position_from_rec(rec, price, trading_day.isoformat())
+    state.setdefault("open_positions", []).append(pos)
+    commission = float(getattr(cfg, "commission_per_side_usd", 0.0))
+    if commission > 0:
+        state["equity"] = round(float(state["equity"]) - commission, 2)
+    return pos
+
+
+def resolve_sell_target(ref: str) -> str | None:
+    """Slot number or held ticker → symbol for sell commands."""
+    from trading_pulse.agent.portfolio_index import list_numbered_holdings, slot_to_symbol
+
+    ref = ref.strip()
+    if ref.isdigit():
+        return slot_to_symbol(int(ref))
+    sym = ref.upper()
+    held = {str(h["symbol"]) for h in list_numbered_holdings()}
+    return sym if sym in held else None
+
+
+def resolve_buy_target(ref: str) -> str:
+    """Slot number or ticker → symbol for buy leg of a swap."""
+    from trading_pulse.agent.portfolio_index import slot_to_symbol
+
+    ref = ref.strip()
+    if ref.isdigit():
+        sym = slot_to_symbol(int(ref))
+        if sym:
+            return sym
+    return ref.upper()
+
+
+def _buy_symbol_usd(
+    cfg: AgentConfig,
+    state: dict[str, Any],
+    to_symbol: str,
+    amount_usd: float,
+    trading_day: date,
+    *,
+    rec: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    from trading_pulse.agent.positions import free_cash, held_symbols
+
+    amount_usd = round(min(float(amount_usd), free_cash(state, cfg)), 2)
+    if amount_usd < 1:
+        return None
+    to_symbol = to_symbol.upper()
+    if to_symbol in held_symbols(state):
+        for pos in state.get("open_positions", []):
+            if str(pos.get("symbol")) == to_symbol:
+                pos["capital_usd"] = round(float(pos["capital_usd"]) + amount_usd, 2)
+                return pos
+        return None
+    stub = dict(rec) if rec else _build_swap_target_rec(cfg, to_symbol, amount_usd)
+    stub["capital_usd"] = amount_usd
+    stub["symbol"] = to_symbol
+    return _open_position_now(cfg, state, stub, trading_day)
+
+
+def execute_buy_command(
+    cfg: AgentConfig,
+    symbol: str,
+    buy_usd: float,
+) -> str:
+    """Buy (or add to) a symbol using free cash."""
+    from trading_pulse.agent.positions import free_cash, held_symbols
+    from trading_pulse.telegram.reply_cards import card_buy, card_error
+    from trading_pulse.telegram.telegram_format import format_buy_reply
+
+    symbol = symbol.upper()
+    buy_usd = float(buy_usd)
+    if buy_usd < 1:
+        return "❌ <b>סכום קטן מדי</b> — מינימום $1"
 
     state = load_state(cfg)
-    trade = partial_sell_position(cfg, state, symbol, fraction)
-    if trade is None:
-        return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
-    save_json(STATE_FILE, state)
-    from trading_pulse.agent.positions import free_cash
+    cash = free_cash(state, cfg)
+    if cash < 1:
+        html = (
+            "❌ <b>אין מזומן פנוי</b>\n"
+            "קודם מכור חלק: <code>מכור 2 20$</code>\n"
+            "או החלף: <code>מכור 2 תקנה 1 $20</code>"
+        )
+        try:
+            send_telegram_card(
+                cfg,
+                card_error(
+                    "אין מזומן פנוי",
+                    "קודם מכור חלק מהתיק, ואז קנה",
+                    chips=["מכור 2 20$", "מכור 2 תקנה 1 $20"],
+                ),
+                "❌ אין מזומן",
+                "reply:buy",
+            )
+            return ""
+        except Exception:
+            return html
+    if buy_usd > cash:
+        return (
+            f"❌ <b>אין מספיק מזומן</b> — פנוי <b>${cash:.0f}</b>, ביקשת ${buy_usd:.0f}\n"
+            f"נסה: <code>תקנה {symbol} ${cash:.0f}</code>"
+        )
 
-    cash = free_cash(state)
-    sign = "+" if float(trade["pnl_usd"]) >= 0 else ""
-    pct = int(round(fraction * 100))
-    return (
-        f"✅ <b>מכרת {symbol}</b> ({pct}%)\n"
-        f"רווח/הפסד ממומש: <b>{sign}${float(trade['pnl_usd']):.2f}</b>\n"
-        f"מזומן פנוי: <b>${cash:.0f}</b> — שלח <code>הכל</code> לאישור"
+    trading_day = date.fromisoformat(resolve_trading_day(None))
+    already_held = symbol in held_symbols(state)
+    pos = _buy_symbol_usd(cfg, state, symbol, buy_usd, trading_day)
+    if pos is None:
+        return f"❌ <b>לא הצלחתי לקנות {symbol}</b> — נסה שוב או בדוק מחיר"
+    save_json(STATE_FILE, state)
+    cash_after = free_cash(state, cfg)
+    html = format_buy_reply(
+        symbol,
+        bought_usd=buy_usd,
+        entry_price=float(pos.get("entry_price") or pos.get("mark_price") or 0),
+        cash=cash_after,
+        added_to_existing=already_held,
     )
+    try:
+        send_telegram_card(
+            cfg,
+            card_buy(
+                symbol,
+                bought_usd=buy_usd,
+                entry_price=float(pos.get("entry_price") or pos.get("mark_price") or 0),
+                cash=cash_after,
+                added_to_existing=already_held,
+            ),
+            f"✅ {symbol}",
+            "reply:buy",
+        )
+        from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
+
+        if uses_app_notifications(cfg):
+            notify_user(cfg, html, "reply:buy", parse_mode="HTML", telegram_sender=False)
+        return ""
+    except Exception:
+        return html
+
+
+
+def execute_sell_command(
+    cfg: AgentConfig,
+    symbol: str,
+    fraction: float = 1.0,
+    *,
+    sell_usd: float | None = None,
+) -> str:
+    from trading_pulse.agent.positions import free_cash, partial_sell_position, partial_sell_usd
+    from trading_pulse.telegram.reply_cards import card_sell
+    from trading_pulse.telegram.telegram_format import format_sell_reply
+
+    state = load_state(cfg)
+    if sell_usd is not None:
+        cap_before = 0.0
+        for pos in state.get("open_positions", []):
+            if str(pos.get("symbol")) == symbol.upper():
+                cap_before = float(pos.get("capital_usd", 0))
+                break
+        trade = partial_sell_usd(cfg, state, symbol, sell_usd)
+        if trade is None:
+            return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
+        sold_usd = float(trade.get("capital_usd", 0))
+        fraction = min(1.0, sold_usd / cap_before) if cap_before else 1.0
+    else:
+        trade = partial_sell_position(cfg, state, symbol, fraction)
+        if trade is None:
+            return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
+        sold_usd = float(trade.get("capital_usd", 0))
+    save_json(STATE_FILE, state)
+    cash = free_cash(state)
+    html = format_sell_reply(
+        symbol,
+        fraction=fraction,
+        pnl_usd=float(trade["pnl_usd"]),
+        cash=cash,
+        target_usd=sold_usd,
+    )
+    try:
+        send_telegram_card(
+            cfg,
+            card_sell(
+                symbol,
+                fraction=fraction,
+                pnl_usd=float(trade["pnl_usd"]),
+                cash=cash,
+                sold_usd=sold_usd,
+            ),
+            f"✅ מכרת {symbol}",
+            "reply:sell",
+        )
+        from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
+
+        if uses_app_notifications(cfg):
+            notify_user(cfg, html, "reply:sell", parse_mode="HTML", telegram_sender=False)
+        return ""
+    except Exception:
+        return html
 
 
 def execute_buys_for_plan(
@@ -1380,21 +1725,109 @@ def execute_buys_for_plan(
     return entries
 
 
-def execute_swap_command(cfg: AgentConfig, from_symbol: str, to_symbol: str) -> str:
-    sell_reply = execute_sell_command(cfg, from_symbol, 1.0)
-    if sell_reply.startswith("❌"):
-        return sell_reply
+def execute_swap_command(
+    cfg: AgentConfig,
+    from_symbol: str,
+    to_symbol: str,
+    *,
+    sell_fraction: float = 1.0,
+    sell_usd: float | None = None,
+    buy_usd: float | None = None,
+) -> str:
+    from trading_pulse.agent.positions import free_cash, partial_sell_position, partial_sell_usd
+    from trading_pulse.agent.trading_flow import before_market_entry
+    from trading_pulse.telegram.telegram_format import format_swap_completed
+
+    from_symbol = from_symbol.upper()
+    to_symbol = to_symbol.upper()
+    if from_symbol == to_symbol:
+        return "❌ <b>אותה מניה</b> — ציין שני סימבולים שונים"
+
+    state = load_state(cfg)
+    if sell_usd is not None:
+        trade = partial_sell_usd(cfg, state, from_symbol, sell_usd)
+    else:
+        trade = partial_sell_position(cfg, state, from_symbol, sell_fraction)
+    if trade is None:
+        return f"❌ <b>אין פוזיציה ב-{from_symbol}</b>"
+    sold_usd = float(trade.get("capital_usd", 0))
+    save_json(STATE_FILE, state)
+
     trading_day = resolve_trading_day(None)
-    path = plan_path(date.fromisoformat(trading_day))
+    td = date.fromisoformat(trading_day)
+    path = plan_path(td)
+    cash = free_cash(state, cfg)
+    purchase_usd = round(min(buy_usd if buy_usd is not None else cash, cash), 2)
+
+    if purchase_usd < 1:
+        return (
+            f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+            f"❌ אין מספיק מזומן לקנות {to_symbol} (${cash:.0f})"
+        )
+
     if not path.exists():
-        return sell_reply + f"\n\n❌ אין תוכנית ל-{trading_day}"
+        if not before_market_entry(cfg, td):
+            pos = _buy_symbol_usd(cfg, state, to_symbol, purchase_usd, td)
+            if pos is None:
+                return (
+                    f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+                    f"❌ לא הצלחתי לקנות {to_symbol}"
+                )
+            save_json(STATE_FILE, state)
+            return format_swap_completed(
+                from_symbol=from_symbol,
+                to_symbol=to_symbol,
+                sold_usd=sold_usd,
+                entry_price=float(pos.get("entry_price", 0)),
+                bought_usd=purchase_usd,
+                cash=free_cash(state, cfg),
+            )
+        return (
+            f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+            f"❌ אין תוכנית ל-{trading_day} — לא ניתן לקנות {to_symbol}"
+        )
+
     plan = read_json(path)
-    recs = plan.get("recommendations", [])
-    indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol.upper()]
-    if not indices:
-        return sell_reply + f"\n\n❌ {to_symbol} לא בתוכנית ל-{trading_day}"
+    recs = plan.setdefault("recommendations", [])
+
+    for rec in recs:
+        if str(rec.get("symbol")) == from_symbol:
+            rec["approved"] = False
+
+    target_rec = next((r for r in recs if str(r.get("symbol")) == to_symbol), None)
+    if target_rec is None:
+        target_rec = _build_swap_target_rec(cfg, to_symbol, purchase_usd)
+        recs.append(target_rec)
+    target_rec["capital_usd"] = purchase_usd
+    target_rec["approved"] = True
+
+    if not before_market_entry(cfg, td):
+        pos = _buy_symbol_usd(cfg, state, to_symbol, purchase_usd, td, rec=target_rec)
+        if pos is None:
+            save_json(STATE_FILE, state)
+            save_json(path, plan)
+            return (
+                f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+                f"❌ לא הצלחתי לקנות {to_symbol} — נסה שוב"
+            )
+        save_json(STATE_FILE, state)
+        save_json(path, plan)
+        return format_swap_completed(
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
+            sold_usd=sold_usd,
+            entry_price=float(pos.get("entry_price", 0)),
+            bought_usd=purchase_usd,
+            cash=free_cash(state, cfg),
+        )
+
+    indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol]
+    save_json(path, plan)
     approve_reply = set_plan_status(trading_day, "APPROVE", indices, cfg=cfg)
-    return sell_reply + "\n\n" + approve_reply
+    return (
+        f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f} · קניית <b>{to_symbol}</b> ${purchase_usd:.0f}\n\n"
+        f"{approve_reply}"
+    )
 
 
 def set_plan_status(
@@ -1494,6 +1927,7 @@ def set_plan_status(
         funding_sent=funding_sent,
         cfg=cfg_obj,
         trading_day_date=date.fromisoformat(trading_day),
+        plan=plan,
     )
 
 
@@ -1756,6 +2190,117 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
     if remove_match:
         return {"kind": "ticker_remove", "symbol": remove_match.group(1).upper()}
 
+    _sym = r"[A-Za-z][A-Za-z0-9.\-^]{0,9}"
+    _buy = r"(?:ו)?(?:ת)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)"
+    _amt = r"\$?(\d+(?:\.\d+)?)\$?"
+
+    swap_slot_usd = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+)\s+{_buy}\s+(\d+|{_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_slot_usd:
+        buy_usd = float(swap_slot_usd.group(3))
+        return {
+            "kind": "swap",
+            "from_ref": swap_slot_usd.group(1),
+            "to_ref": swap_slot_usd.group(2),
+            "buy_usd": buy_usd,
+        }
+
+    swap_ref = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+|{_sym})\s+{_buy}\s+(\d+|{_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_ref:
+        return {
+            "kind": "swap",
+            "from_ref": swap_ref.group(1),
+            "to_ref": swap_ref.group(2),
+            "buy_usd": float(swap_ref.group(3)),
+        }
+
+    swap_full = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+)\s+{_buy}\s+(\d+|{_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if swap_full:
+        return {
+            "kind": "swap",
+            "from_ref": swap_full.group(1),
+            "to_ref": swap_full.group(2),
+        }
+
+    sell_usd_slot = re.fullmatch(
+        rf"(?:מכור|sell)\s+(\d+)\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_usd_slot:
+        return {
+            "kind": "sell",
+            "slot": int(sell_usd_slot.group(1)),
+            "sell_usd": float(sell_usd_slot.group(2)),
+        }
+
+    sell_usd_slot_rev = re.fullmatch(
+        rf"(?:מכור|sell)\s+{_amt}\s+(\d+)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_usd_slot_rev:
+        return {
+            "kind": "sell",
+            "slot": int(sell_usd_slot_rev.group(2)),
+            "sell_usd": float(sell_usd_slot_rev.group(1)),
+        }
+
+    sell_pct_slot = re.fullmatch(
+        r"(?:מכור|sell)\s+(\d+(?:\.\d+)?)%\s+(\d+)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_pct_slot:
+        return {
+            "kind": "sell",
+            "slot": int(sell_pct_slot.group(2)),
+            "fraction": float(sell_pct_slot.group(1)) / 100.0,
+        }
+
+    sell_pct_slot_rev = re.fullmatch(
+        r"(?:מכור|sell)\s+(\d+)\s+(\d+(?:\.\d+)?)%\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_pct_slot_rev:
+        return {
+            "kind": "sell",
+            "slot": int(sell_pct_slot_rev.group(1)),
+            "fraction": float(sell_pct_slot_rev.group(2)) / 100.0,
+        }
+
+    sell_slot = re.fullmatch(
+        r"(?:מכור|sell)\s+(\d+)\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_slot:
+        return {"kind": "sell", "slot": int(sell_slot.group(1)), "fraction": 1.0}
+
+    buy_cmd = re.fullmatch(
+        rf"(?:תקנה|קנה|לקנות|buy)\s+(\d+|{_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if buy_cmd:
+        return {
+            "kind": "buy",
+            "to_ref": buy_cmd.group(1),
+            "buy_usd": float(buy_cmd.group(2)),
+        }
+
     sell_match = re.fullmatch(
         r"(?:מכור|sell)\s+(?:(\d+(?:\.\d+)?)%\s+)?([A-Za-z][A-Za-z0-9.\-^]{0,9})",
         raw.strip(),
@@ -1779,18 +2324,22 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         }
 
     nl_swap = re.search(
-        r"(?:ל)?מכור\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s+"
-        r"(?:ו|ו)?(?:ל)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)\s+"
-        r"([A-Za-z][A-Za-z0-9.\-^]{0,9})",
+        rf"(?:ל)?מכור\s+(\d+|{_sym})\s+"
+        rf"(?:ו|ו)?(?:ל)?(?:קנ(?:ה|ות|י)|לקנ(?:ות|ה|י)|buy)\s+"
+        rf"(\d+|{_sym})"
+        rf"(?:\s+{_amt})?",
         raw.strip(),
         flags=re.IGNORECASE,
     )
     if nl_swap:
-        return {
+        cmd: dict[str, Any] = {
             "kind": "swap",
-            "from_symbol": nl_swap.group(1).upper(),
-            "to_symbol": nl_swap.group(2).upper(),
+            "from_ref": nl_swap.group(1),
+            "to_ref": nl_swap.group(2),
         }
+        if nl_swap.group(3):
+            cmd["buy_usd"] = float(nl_swap.group(3))
+        return cmd
 
     plan_now_phrases = {
         "תוכנית עכשיו",
@@ -2155,12 +2704,26 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 handled += 1
                 continue
             elif kind == "guide_telegram":
-                from trading_pulse.telegram.telegram_guide import format_telegram_guide_messages
+                from trading_pulse.telegram.telegram_guide import (
+                    format_telegram_guide_messages,
+                    render_telegram_guide_images,
+                )
 
-                for i, msg in enumerate(format_telegram_guide_messages()):
-                    send_telegram_message(
-                        cfg, msg, context=f"reply:guide_telegram:{i}", parse_mode="HTML"
-                    )
+                images = render_telegram_guide_images()
+                if images:
+                    for i, (png, caption) in enumerate(images):
+                        send_telegram_photo(
+                            cfg,
+                            png,
+                            caption,
+                            context=f"reply:guide_telegram:img:{i}",
+                            parse_mode="HTML",
+                        )
+                else:
+                    for i, msg in enumerate(format_telegram_guide_messages()):
+                        send_telegram_message(
+                            cfg, msg, context=f"reply:guide_telegram:{i}", parse_mode="HTML"
+                        )
                 handled += 1
                 continue
             elif kind == "guide_selection":
@@ -2191,10 +2754,11 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 continue
             elif kind == "portfolio":
                 from trading_pulse.agent.portfolio import build_portfolio
+                from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
                 from trading_pulse.telegram.telegram_format import format_portfolio
                 from trading_pulse.telegram.telegram_images import render_portfolio_image
 
-                pdata = build_portfolio()
+                pdata = attach_slots_to_portfolio(build_portfolio())
                 text_reply = format_portfolio(pdata)
                 from trading_pulse.core.schedule_tz import format_local_entry_moment
 
@@ -2219,10 +2783,13 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                         mv = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
                         row_ur = float(p.get("unrealized_pnl_usd", 0))
                         row_ur_s = "+" if row_ur >= 0 else ""
+                        slot = p.get("slot")
+                        prefix = f"<b>#{slot}</b> " if slot else ""
                         lines.append(
-                            f"• <b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} "
+                            f"• {prefix}<b>{p['symbol']}</b> ${float(p['capital_usd']):.0f} "
                             f"@ <b>${ep:.2f}</b> → ${mv:.0f} ({row_ur_s}${row_ur:.0f}) · {when}"
                         )
+                    lines.append("<i>מכור 1 · מכור 2 20$ · מכור 1 תקנה BEAM $200</i>")
                     caption = "\n".join(lines)
                 elif pending:
                     lines = [
@@ -2385,21 +2952,56 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 handled += 1
                 continue
             elif kind == "sell":
-                reply = execute_sell_command(
-                    cfg,
-                    str(parsed.get("symbol", "")),
-                    float(parsed.get("fraction", 1.0)),
-                )
-                send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
+                symbol = parsed.get("symbol")
+                if parsed.get("slot") is not None:
+                    symbol = resolve_sell_target(str(parsed["slot"]))
+                elif symbol:
+                    symbol = resolve_sell_target(str(symbol)) or str(symbol).upper()
+                if not symbol:
+                    reply = "❌ <b>מספר מניה לא תקין</b> — שלח <code>תיק</code> לרשימה"
+                else:
+                    reply = execute_sell_command(
+                        cfg,
+                        symbol,
+                        float(parsed.get("fraction", 1.0)),
+                        sell_usd=parsed.get("sell_usd"),
+                    )
+                if reply:
+                    send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
+                handled += 1
+                continue
+            elif kind == "buy":
+                to_ref = str(parsed.get("to_ref") or parsed.get("symbol", ""))
+                to_sym = resolve_buy_target(to_ref)
+                if not to_sym:
+                    reply = "❌ <b>מספר/מניה לא תקינים</b> — שלח <code>תיק</code>"
+                else:
+                    reply = execute_buy_command(
+                        cfg,
+                        to_sym,
+                        float(parsed.get("buy_usd", 0)),
+                    )
+                if reply:
+                    send_telegram_message(cfg, reply, context="reply:buy", parse_mode="HTML")
                 handled += 1
                 continue
             elif kind == "swap":
-                reply = execute_swap_command(
-                    cfg,
-                    str(parsed.get("from_symbol", "")),
-                    str(parsed.get("to_symbol", "")),
-                )
-                send_telegram_message(cfg, reply, context="reply:swap", parse_mode="HTML")
+                from_sym = resolve_sell_target(str(parsed.get("from_ref") or parsed.get("from_symbol", "")))
+                to_ref = str(parsed.get("to_ref") or parsed.get("to_symbol", ""))
+                to_sym = resolve_buy_target(to_ref)
+                if not from_sym:
+                    reply = "❌ <b>מספר/מניה למכירה לא תקינים</b> — שלח <code>תיק</code>"
+                else:
+                    reply = execute_swap_command(
+                        cfg,
+                        from_sym,
+                        to_sym,
+                        sell_fraction=float(parsed.get("sell_fraction", 1.0)),
+                        sell_usd=parsed.get("sell_usd"),
+                        buy_usd=parsed.get("buy_usd"),
+                    )
+                if reply:
+                    send_telegram_message(cfg, reply, context="reply:swap", parse_mode="HTML")
                 handled += 1
                 continue
             elif kind == "allocation_pick":
@@ -2450,6 +3052,8 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
         send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
         handled += 1
 
+    # Reload — sell/buy/swap already saved a fresh state; don't overwrite with stale snapshot.
+    state = load_state(cfg)
     state["telegram_last_update_id"] = last_id
     save_json(STATE_FILE, state)
     logging.info("Telegram poll done: handled %d command(s)", handled)
@@ -2831,10 +3435,11 @@ def run_entry_simulation(
             new_entries.append(pos)
 
     if new_entries:
-        from trading_pulse.agent.plan_engine import mark_executed
+        from trading_pulse.agent.plan_engine import mark_executed, refresh_stale_draft_plan
 
         mark_executed(plan, trading_day, cfg=cfg)
         save_json(path, plan)
+        refresh_stale_draft_plan(cfg, state, trading_day)
     return new_entries
 
 

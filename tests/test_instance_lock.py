@@ -11,6 +11,8 @@ def _use_temp_lock(tmp_path, monkeypatch):
     lock = tmp_path / "trading_pulse.lock"
     monkeypatch.setattr(il, "LOCK_FILE", lock)
     monkeypatch.setattr(il, "_lock_held", False)
+    monkeypatch.setattr(il, "_win_mutex", None)
+    monkeypatch.setattr(il, "_acquire_windows_mutex", lambda: True)
     return lock
 
 
@@ -42,3 +44,9 @@ def test_refuses_when_our_process_alive(tmp_path, monkeypatch):
     monkeypatch.setattr(il, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(il, "_process_image_name", lambda pid: r"D:\venv\Scripts\pythonw.exe")
     assert il.acquire_instance_lock("app") is False
+
+
+def test_second_acquire_in_same_process_is_idempotent(tmp_path, monkeypatch):
+    _use_temp_lock(tmp_path, monkeypatch)
+    assert il.acquire_instance_lock("app") is True
+    assert il.acquire_instance_lock("app") is True

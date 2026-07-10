@@ -289,9 +289,10 @@ def _sell_recommendations(
         replacement = _top_candidate(cfg, scores, set(skip) | {sym})
         if replacement is not None:
             to_sym, to_data = replacement
+            sold_usd = float(h.get("capital_usd", 0))
             action = (
-                f"ירידה חדה · {pnl_txt}מומלץ להחליף ל-{to_sym} "
-                f"(ציון {float(to_data.get('score', 0)):.1f}) · שלח החלף {sym} {to_sym}"
+                f"ירידה חדה · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
+                f"(ציון {float(to_data.get('score', 0)):.1f}) · שלח: החלף {sym} {to_sym}"
             )
         else:
             action = (
@@ -310,6 +311,7 @@ def build_suggestions(
     alerts_by_symbol: dict[str, list[PositionAlert]],
     *,
     exclude_symbols: set[str] | frozenset[str] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> list[TradeSuggestion]:
     held = {str(h["symbol"]) for h in holdings}
     skip = held | set(exclude_symbols or ())
@@ -331,6 +333,15 @@ def build_suggestions(
     open_slots = max(0, max_open - len(holdings))
 
     if open_slots > 0:
+        from trading_pulse.agent.positions import available_capital
+
+        state_obj = state or {"equity": 0, "open_positions": holdings}
+        cash = available_capital(cfg, state_obj)
+        equity = float(state_obj.get("equity", 0)) or cash + sum(
+            float(p.get("capital_usd", 0)) for p in holdings
+        )
+        pos_pct = float(getattr(cfg, "max_position_pct", 0.34))
+        buy_usd = round(min(max(cash, 0), equity * pos_pct), 0) if cash > 0 else round(equity * pos_pct, 0)
         suggestions.append(
             TradeSuggestion(
                 kind="buy",
@@ -338,7 +349,8 @@ def build_suggestions(
                 score=float(best["score"]),
                 message=(
                     f"ציון {best['score']:.1f} · 5י {best.get('ret_5d_pct', 0):+.1f}% · "
-                    f"נפח {best.get('vol_ratio', 0):.2f}x"
+                    f"נפח {best.get('vol_ratio', 0):.2f}x · "
+                    f"מומלץ ~${buy_usd:.0f} · שלח: החלף SYMBOL {best_sym} (או מכור מניה חלשה קודם)"
                 ),
             )
         )
@@ -538,6 +550,7 @@ def build_intraday_report(cfg: Any, state: dict[str, Any]) -> IntradayReport:
                 "symbol": sym,
                 "last": last,
                 "entry": entry,
+                "capital_usd": float(pos.get("capital_usd", 0)),
                 "floor_price": floor,
                 "pnl_pct": round((last / entry - 1) * 100, 2) if entry > 0 else 0,
                 "day_change_pct": quote.get("change_pct", 0),
@@ -565,6 +578,7 @@ def build_intraday_report(cfg: Any, state: dict[str, Any]) -> IntradayReport:
         quotes,
         alerts_by_symbol,
         exclude_symbols=pending_entries,
+        state=state,
     )
     return report
 

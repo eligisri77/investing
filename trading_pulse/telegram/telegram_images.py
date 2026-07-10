@@ -143,8 +143,10 @@ def _shares_count(capital_usd: float, entry_price: float | None) -> str:
 
 
 def render_portfolio_image(data: dict[str, Any]) -> bytes:
+    from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
     from trading_pulse.core.schedule_tz import format_local_entry_moment
 
+    data = attach_slots_to_portfolio(data)
     equity = float(data.get("equity", 0))
     invested = float(data.get("open_capital_usd", 0))
     marked = float(data.get("open_marked_usd", invested))
@@ -173,6 +175,7 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
         )
 
     headers = [
+        _pil_hebrew("#"),
         _pil_hebrew("מניה"),
         _pil_hebrew("סכום"),
         _pil_hebrew("@מחיר"),
@@ -193,6 +196,7 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
             entry_when = str(p.get("scheduled_entry", "פתיחה"))
             rows.append(
                 [
+                    "—",
                     f"{symbol} *",
                     f"${capital:.0f}",
                     f"~${entry_f:.2f}" if entry_f > 0 else "—",
@@ -201,7 +205,7 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
                     _pil_hebrew(f"{approved} → {entry_when}"),
                 ]
             )
-            colors.append([PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
+            colors.append([MUTED, PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
             continue
         when = format_local_entry_moment(p.get("entry_at"))
         if p.get("status") == "holding":
@@ -209,8 +213,10 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
             ur = float(p.get("unrealized_pnl_usd", 0))
             ur_pct = float(p.get("unrealized_pnl_pct", 0))
             ur_sign_row = "+" if ur >= 0 else ""
+            slot = str(p.get("slot", "—"))
             rows.append(
                 [
+                    slot,
                     symbol,
                     f"${capital:.0f}",
                     f"${entry_f:.2f}" if entry_f > 0 else "—",
@@ -219,11 +225,12 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
                     when,
                 ]
             )
-            colors.append([CYAN, TEXT, GREEN, TEXT, _pnl_color(ur), MUTED])
+            colors.append([CYAN, CYAN, TEXT, GREEN, TEXT, _pnl_color(ur), MUTED])
         else:
             ref = float(p.get("entry_ref_price", 0) or 0)
             rows.append(
                 [
+                    "—",
                     f"{symbol} *",
                     f"${capital:.0f}",
                     f"~${ref:.2f}" if ref > 0 else "—",
@@ -232,14 +239,14 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
                     _pil_hebrew("ממתין"),
                 ]
             )
-            colors.append([PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
+            colors.append([MUTED, PINK, TEXT, MUTED, MUTED, MUTED, MUTED])
 
     if not rows:
-        rows = [[_pil_hebrew("אין מניות"), "—", "—", "—", "—", "—"]]
-        colors = [[MUTED] * 6]
+        rows = [[_pil_hebrew("—"), _pil_hebrew("אין מניות"), "—", "—", "—", "—", "—"]]
+        colors = [[MUTED] * 7]
 
     footnote = _pil_hebrew(
-        "סימולציה dry-run — אושר = רגע האישור; כניסה = מחיר פתיחת השוק (~16:35 ישראל)"
+        "מכור 1 · מכור 2 $200 · מכור 1 תקנה SYMBOL $200 · סימולציה dry-run"
     )
 
     return _render_portfolio_holdings(
@@ -255,7 +262,9 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
 
 def _portfolio_column_widths(col_count: int, usable: int) -> list[int]:
     """Wider columns for P/L and time."""
-    if col_count == 6:
+    if col_count == 7:
+        ratios = [0.05, 0.10, 0.11, 0.12, 0.12, 0.26, 0.24]
+    elif col_count == 6:
         ratios = [0.11, 0.12, 0.13, 0.12, 0.28, 0.24]
         widths = [max(56, int(usable * r)) for r in ratios]
         widths[-1] += usable - sum(widths)

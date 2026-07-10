@@ -23,7 +23,7 @@ from trading_pulse.agent.dryrun_agent import parse_telegram_user_command
         ("בטל תוכנית", "plan_cancel", {}),
         ("ביטול תוכנית", "plan_cancel", {}),
         ("החלף LABU HOOD", "swap", {"from_symbol": "LABU", "to_symbol": "HOOD"}),
-        ("למכור SOXL ולקנות HOOD", "swap", {"from_symbol": "SOXL", "to_symbol": "HOOD"}),
+        ("למכור SOXL ולקנות HOOD", "swap", {"from_ref": "SOXL", "to_ref": "HOOD"}),
         ("תוכל לשלוח לי פקודה מלאה?", "help", {}),
         ("1,2,3", "approve", {"indices_raw": "1,2,3"}),
         ("ח1", "allocation_pick", {"option_id": 1}),

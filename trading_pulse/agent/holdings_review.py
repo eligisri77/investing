@@ -30,6 +30,7 @@ class HoldingReview:
     days_held: int
     score: float
     reason: str
+    capital_usd: float = 0.0
     swap_to: str | None = None
     swap_to_score: float | None = None
     last_price: float | None = None
@@ -42,6 +43,7 @@ class HoldingReview:
             "days_held": self.days_held,
             "score": round(self.score, 2),
             "reason": self.reason,
+            "capital_usd": round(self.capital_usd, 2),
             "swap_to": self.swap_to,
             "swap_to_score": round(self.swap_to_score, 2) if self.swap_to_score is not None else None,
             "last_price": round(self.last_price, 2) if self.last_price is not None else None,
@@ -74,6 +76,7 @@ def review_holding(
     recommendations: list[dict[str, Any]],
 ) -> HoldingReview:
     symbol = str(holding["symbol"])
+    capital_usd = float(holding.get("capital_usd", 0))
     entry = float(holding.get("entry_price") or 0)
     floor = float(holding.get("floor_price") or 0)
     days_held = int(holding.get("days_held", 0))
@@ -91,6 +94,7 @@ def review_holding(
             days_held=days_held,
             score=my_score,
             reason="אין נתוני מחיר עדכניים — המשך להחזיק",
+            capital_usd=capital_usd,
             last_price=last or None,
         )
 
@@ -101,6 +105,7 @@ def review_holding(
         return HoldingReview(
             symbol, "sell", pnl_pct, days_held, my_score,
             reason=f"קרוב לרצפת ההגנה (${floor:.2f}) · שקול למכור",
+            capital_usd=capital_usd,
             last_price=last,
         )
 
@@ -108,6 +113,7 @@ def review_holding(
         return HoldingReview(
             symbol, "take_profit", pnl_pct, days_held, my_score,
             reason=f"רווח {pnl_pct:+.1f}% · שקול לממש חלק/הכל",
+            capital_usd=capital_usd,
             last_price=last,
         )
 
@@ -115,6 +121,7 @@ def review_holding(
         return HoldingReview(
             symbol, "sell", pnl_pct, days_held, my_score,
             reason=f"מוחזק {days_held} ימים (מקס {max_days}) · ייסגר בקרוב",
+            capital_usd=capital_usd,
             last_price=last,
         )
 
@@ -125,12 +132,14 @@ def review_holding(
             return HoldingReview(
                 symbol, "swap", pnl_pct, days_held, my_score,
                 reason=f"מחר יש מניה חזקה יותר ({to_sym} ציון {to_score:.1f} מול {my_score:.1f})",
+                capital_usd=capital_usd,
                 swap_to=to_sym, swap_to_score=to_score, last_price=last,
             )
 
     return HoldingReview(
         symbol, "hold", pnl_pct, days_held, my_score,
         reason=f"מגמה תקינה ({pnl_pct:+.1f}%, ציון {my_score:.1f}) · המשך להחזיק",
+        capital_usd=capital_usd,
         last_price=last,
     )
 

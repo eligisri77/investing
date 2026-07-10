@@ -6,11 +6,13 @@ import atexit
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from trading_pulse.core.app_paths import LOCK_FILE
 
 _lock_held = False
+_win_mutex = None
 
 
 def _process_image_name(pid: int) -> str | None:
@@ -81,29 +83,49 @@ def _read_lock() -> tuple[int, str] | None:
     return None
 
 
-def release_instance_lock() -> None:
-    global _lock_held
-    if not _lock_held:
+def _acquire_windows_mutex() -> bool:
+    """Atomic single-instance guard (Windows). Returns False if another instance holds it."""
+    global _win_mutex
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    ERROR_ALREADY_EXISTS = 183
+    handle = kernel32.CreateMutexW(None, False, "Local\\TradingPulse.SingleInstance")
+    if not handle:
+        logging.error("Could not create single-instance mutex")
+        return False
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return False
+    _win_mutex = handle
+    return True
+
+
+def _release_windows_mutex() -> None:
+    global _win_mutex
+    if _win_mutex is None:
         return
-    try:
-        current = _read_lock()
-        if current and current[0] == os.getpid() and LOCK_FILE.exists():
-            LOCK_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass
-    _lock_held = False
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(_win_mutex)
+    _win_mutex = None
 
 
-def acquire_instance_lock(role: str = "app") -> bool:
-    """Return True if this process owns the lock."""
-    global _lock_held
+def _try_claim_lock_file(role: str) -> bool:
+    """Atomically create the lock file (O_EXCL). Returns False if another live instance owns it."""
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    existing = _read_lock()
-    if existing:
+    payload = f"{os.getpid()} {role}\n".encode("utf-8")
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        existing = _read_lock()
+        if not existing:
+            return False
         pid, existing_role = existing
         if pid == os.getpid():
-            _lock_held = True
             return True
         if _is_our_process(pid):
             logging.error(
@@ -117,16 +139,57 @@ def acquire_instance_lock(role: str = "app") -> bool:
             pid,
             existing_role,
         )
-
-    try:
-        LOCK_FILE.write_text(f"{os.getpid()} {role}\n", encoding="utf-8")
+        try:
+            LOCK_FILE.unlink(missing_ok=True)
+        except OSError:
+            return False
+        return False
     except OSError as ex:
-        logging.error("Could not write instance lock: %s", ex)
+        logging.error("Could not create instance lock: %s", ex)
         return False
 
-    _lock_held = True
-    atexit.register(release_instance_lock)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
     return True
+
+
+def release_instance_lock() -> None:
+    global _lock_held
+    if not _lock_held:
+        return
+    try:
+        current = _read_lock()
+        if current and current[0] == os.getpid() and LOCK_FILE.exists():
+            LOCK_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    _release_windows_mutex()
+    _lock_held = False
+
+
+def acquire_instance_lock(role: str = "app") -> bool:
+    """Return True if this process owns the lock."""
+    global _lock_held
+    if _lock_held:
+        return True
+
+    if not _acquire_windows_mutex():
+        logging.error("Another Trading Pulse instance is already running (mutex). Exiting.")
+        return False
+
+    for attempt in range(3):
+        if _try_claim_lock_file(role):
+            _lock_held = True
+            atexit.register(release_instance_lock)
+            return True
+        if attempt < 2:
+            time.sleep(0.05)
+
+    _release_windows_mutex()
+    logging.error("Could not acquire instance lock after retries.")
+    return False
 
 
 def lock_status() -> dict:

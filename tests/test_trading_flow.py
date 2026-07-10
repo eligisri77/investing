@@ -15,8 +15,8 @@ def test_parse_sell_and_swap():
     assert swap["to_symbol"] == "HOOD"
     nl = parse_telegram_user_command("למכור SOXL ולקנות HOOD")
     assert nl["kind"] == "swap"
-    assert nl["from_symbol"] == "SOXL"
-    assert nl["to_symbol"] == "HOOD"
+    assert nl["from_ref"] == "SOXL"
+    assert nl["to_ref"] == "HOOD"
 
 
 def test_first_investment_intent():

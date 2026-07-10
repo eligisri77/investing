@@ -93,6 +93,115 @@ def test_format_scan_summary_funnel():
     assert "LABU (6.8)" in text
 
 
+def test_format_plan_with_holdings_explains_new_vs_held():
+    plan = {
+        "for_trading_day": "2026-07-09",
+        "equity_snapshot": 1000,
+        "available_capital_usd": 320,
+        "deployed_capital_usd": 666,
+        "flow_intent": "add_with_cash",
+        "holdings": [
+            {"symbol": "LABD", "capital_usd": 333, "days_held": 1, "entry_price": 7.1},
+            {"symbol": "RIVN", "capital_usd": 333, "days_held": 1, "entry_price": 15.6},
+        ],
+        "holding_actions": [
+            {
+                "symbol": "LABD",
+                "verdict": "hold",
+                "pnl_pct": 2.3,
+                "capital_usd": 333,
+                "reason": "מגמה תקינה",
+            },
+            {
+                "symbol": "RIVN",
+                "verdict": "swap",
+                "pnl_pct": 5.6,
+                "capital_usd": 333,
+                "swap_to": "BEAM",
+                "reason": "מחר יש מניה חזקה יותר",
+            },
+        ],
+        "recommendations": [
+            {"symbol": "BEAM", "capital_usd": 320, "entry_ref_price": 36.5},
+            {"symbol": "RIVN", "capital_usd": 333, "entry_ref_price": 16.5},
+        ],
+    }
+    text = format_plan(plan, rec_formatter=lambda r, i, p: "")
+    assert "התיק שלך עכשיו" in text
+    assert "LABD" in text and "מושקע" in text
+    assert "קניות חדשות" in text
+    assert "BEAM" in text
+    assert "כבר בתיק" in text
+    assert "RIVN" in text
+    assert "מה קורה בלחיצת" in text
+    assert "נשאר ללא שינוי" in text
+
+
+def test_format_approval_reply_new_vs_held():
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {"symbol": "RIVN", "approved": True, "capital_usd": 333},
+            {"symbol": "LABD", "approved": True, "capital_usd": 333},
+            {"symbol": "BEAM", "approved": True, "capital_usd": 320},
+        ],
+        "holdings": [],
+        "allocation": {
+            "status": "applied",
+            "amounts": {"BEAM": 320.02},
+            "holdings": [
+                {"symbol": "LABD", "capital_usd": 333.33},
+                {"symbol": "RIVN", "capital_usd": 333.33},
+            ],
+        },
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-09",
+        picked_symbols=["RIVN", "LABD", "BEAM"],
+        all_approved_symbols=["RIVN", "LABD", "BEAM"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "תוכנית מאושרת" in text
+    assert "קניות מחר בפתיחה" in text
+    assert "BEAM" in text
+    assert "נשאר בתיק" in text
+    assert "LABD" in text and "RIVN" in text
+    assert "מאושר — RIVN, LABD, BEAM" not in text
+    assert "לא נקנה שוב" in text
+
+
+def test_apply_confirm_syncs_holdings_from_state():
+    from trading_pulse.agent.plan_engine import apply_confirm
+
+    state = {
+        "equity": 986.68,
+        "open_positions": [
+            {"symbol": "LABD", "capital_usd": 333.33, "entry_price": 7.1, "days_held": 1, "entry_day": "2026-07-08"},
+            {"symbol": "RIVN", "capital_usd": 333.33, "entry_price": 15.6, "days_held": 1, "entry_day": "2026-07-08"},
+        ],
+    }
+    plan = {
+        "equity_snapshot": 1000,
+        "deployed_capital_usd": 0,
+        "available_capital_usd": 1000,
+        "holdings": [],
+        "flow_intent": "first_investment",
+        "recommendations": [
+            {"symbol": "BEAM", "approved": False, "capital_usd": 333},
+            {"symbol": "RIVN", "approved": False, "capital_usd": 333},
+        ],
+    }
+    cfg = AgentConfig()
+    result = apply_confirm(plan, state, cfg)
+    assert len(result["holdings"]) == 2
+    assert result["flow_intent"] == "add_with_cash"
+    assert result["deployed_capital_usd"] > 600
+    assert result["allocation"]["amounts"].get("BEAM") is not None
+    assert "RIVN" not in result["allocation"].get("amounts", {})
+
+
 def test_format_plan_with_recommendations_shows_approval():
     plan = {
         "for_trading_day": "2026-06-29",

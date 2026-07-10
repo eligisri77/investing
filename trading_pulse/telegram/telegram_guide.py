@@ -291,9 +291,16 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "id": "funding",
                 "title": "כשאין מזומן לקנייה חדשה",
                 "items": [
+                    {"cmd": "תיק", "desc": "תמונת תיק עם מספרים לכל מניה (#1, #2…)"},
+                    {"cmd": "מכור 1", "desc": "למכור את כל מניה מספר 1"},
+                    {"cmd": "מכור 2 $200", "desc": "למכור $200 ממניה מספר 2"},
+                    {"cmd": "מכור 50% 3", "desc": "למכור חצי ממניה מספר 3"},
+                    {"cmd": "תקנה 1 $20", "desc": "לקנות $20 ממניה #1 (ממזומן פנוי)"},
+                    {"cmd": "קנה BEAM $50", "desc": "לקנות $50 מ-BEAM ממזומן"},
+                    {"cmd": "מכור 4 תקנה BEAM $200", "desc": "החלפת $200 ממניה #4 ל-BEAM"},
                     {"cmd": "מכור LABU", "desc": "למכור את כל הפוזיציה ולפנות מזומן"},
                     {"cmd": "מכור 50% LABU", "desc": "למכור חלק מהפוזיציה"},
-                    {"cmd": "החלף LABU HOOD", "desc": "מכירה + קניית מניה אחרת"},
+                    {"cmd": "החלף LABU HOOD", "desc": "מכירה מלאה + קניית מניה אחרת"},
                 ],
             },
             {
@@ -433,3 +440,69 @@ def format_telegram_guide_messages(cfg: dict[str, Any] | None = None) -> list[st
         parts.append("\n".join(cfg_lines))
 
     return chunk_telegram_html(parts)
+
+
+def render_telegram_guide_images(
+    cfg: dict[str, Any] | None = None,
+) -> list[tuple[bytes, str]]:
+    """Guide as drawn PNG cards (PIL) — same style as portfolio/plan images."""
+    from trading_pulse.telegram import guide_images
+
+    if cfg is None:
+        try:
+            from trading_pulse.agent.dryrun_agent import load_config
+
+            cfg = load_config().__dict__
+        except ImportError:
+            cfg = {}
+
+    g = get_telegram_guide(cfg)
+    out: list[tuple[bytes, str]] = []
+
+    gs = g.get("getting_started") or []
+    if gs:
+        out.append(
+            (
+                guide_images.render_guide_start_image(
+                    "התחלה מהירה",
+                    gs,
+                    subtitle=str(g.get("subtitle") or ""),
+                ),
+                "🚀 התחלה מהירה",
+            )
+        )
+
+    flow = g.get("flow") or []
+    if flow:
+        out.append(
+            (
+                guide_images.render_guide_flow_image(
+                    "זרימת יום מסחר",
+                    flow,
+                    subtitle=str(g.get("schedule_note") or ""),
+                ),
+                "⏱ זרימת יום מסחר",
+            )
+        )
+
+    for section in g.get("commands") or []:
+        items = section.get("items") or []
+        if not items:
+            continue
+        out.append(
+            (
+                guide_images.render_guide_commands_image(
+                    str(section.get("title") or "פקודות"),
+                    items,
+                    warning=str(section.get("warning") or ""),
+                ),
+                f"⌨️ {section.get('title', 'פקודות')}",
+            )
+        )
+
+    tips = (g.get("tips") or [])[:6]
+    if tips:
+        out.append((guide_images.render_guide_tips_image("טיפים", tips), "💡 טיפים"))
+
+    return out
+

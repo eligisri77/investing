@@ -127,6 +127,51 @@ def supersede_other_plans(target_day: date) -> None:
         logging.info("Plan %s marked %s", td_str, plan["status"])
 
 
+def sync_plan_portfolio_snapshot(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict[str, Any]:
+    """Refresh holdings, cash, and flow intent from live state (plan file may be stale)."""
+    from trading_pulse.agent.positions import available_capital, deployed_capital, holdings_snapshot
+    from trading_pulse.agent.trading_flow import per_trade_cap_for_plan, plan_intent
+
+    holdings = holdings_snapshot(state)
+    plan["holdings"] = holdings
+    plan["equity_snapshot"] = round(float(state.get("equity", getattr(cfg, "initial_capital", 1000))), 2)
+    plan["deployed_capital_usd"] = deployed_capital(state)
+    plan["available_capital_usd"] = round(available_capital(cfg, state), 2)
+    plan["flow_intent"] = plan_intent(plan, state, cfg)
+
+    held_syms = {str(h["symbol"]) for h in holdings}
+    new_recs = [r for r in plan.get("recommendations", []) or [] if str(r["symbol"]) not in held_syms]
+    if new_recs:
+        cap = per_trade_cap_for_plan(cfg, state, len(new_recs))
+        for rec in new_recs:
+            rec["capital_usd"] = cap
+    return plan
+
+
+def refresh_stale_draft_plan(cfg: Any, state: dict[str, Any], after_day: date) -> bool:
+    """After today's entries, fix tomorrow's draft if it was built before positions opened."""
+    from trading_pulse.agent.dryrun_agent import get_next_us_trading_day, plan_path, read_json, save_json
+    from trading_pulse.agent.positions import holdings_snapshot
+
+    if not holdings_snapshot(state):
+        return False
+    target = get_next_us_trading_day(after_day)
+    path = plan_path(target)
+    if not path.exists():
+        return False
+    plan = read_json(path)
+    if normalize_status(plan) != STATUS_DRAFT:
+        return False
+    held_in_plan = len(plan.get("holdings") or [])
+    deployed = float(plan.get("deployed_capital_usd", 0))
+    if held_in_plan >= len(state.get("open_positions", [])) and deployed > 0:
+        return False
+    sync_plan_portfolio_snapshot(plan, state, cfg)
+    save_json(path, plan)
+    logging.info("Refreshed stale draft plan for %s after entry on %s", target.isoformat(), after_day.isoformat())
+    return True
+
+
 def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict[str, Any]:
     """
     One-step confirm (like tapping Confirm on a broker order preview):
@@ -138,6 +183,7 @@ def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict
     if not recs:
         return plan
 
+    sync_plan_portfolio_snapshot(plan, state, cfg)
     gap = funding_gap(plan, state, cfg)
     if gap:
         plan["funding"] = gap

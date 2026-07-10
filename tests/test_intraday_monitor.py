@@ -114,7 +114,7 @@ def test_sell_recommended_on_near_stop_without_scores():
 
 def test_sell_recommendation_includes_redeploy_swap():
     cfg = FakeCfg(max_open_positions=4)
-    holdings = [{"symbol": "SOXL", "entry_price": 197.0}]
+    holdings = [{"symbol": "SOXL", "entry_price": 197.0, "capital_usd": 333.0}]
     quotes = {"SOXL": {"last": 168.0, "change_pct": -14.0}}
     alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "x", severity=2)]}
     scores = {"NVDA": {"score": 12.0, "ret_5d_pct": 8.0, "vol_ratio": 1.5, "volume_ok": True}}
@@ -122,6 +122,7 @@ def test_sell_recommendation_includes_redeploy_swap():
     sells = [s for s in suggestions if s.kind == "sell"]
     assert len(sells) == 1
     assert "החלף SOXL NVDA" in sells[0].message
+    assert "$333" in sells[0].message
 
 
 def test_sell_recommendation_holds_cash_when_no_candidate():

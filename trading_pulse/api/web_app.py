@@ -423,7 +423,7 @@ def backfill_telegram_messages() -> int:
                 "context": "plan",
                 "text": format_plan_message(plan),
                 "parse_mode": "HTML",
-                "timestamp": plan.get("generated_at") or f"{day}T21:00:00+00:00",
+                "timestamp": plan.get("generated_at") or f"{day}T20:15:00+00:00",
                 "backfilled": True,
                 "metadata": {"trading_day": day},
             }

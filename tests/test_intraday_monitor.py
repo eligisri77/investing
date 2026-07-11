@@ -21,16 +21,20 @@ class FakeCfg:
     take_profit_pct: float = 0.25
     max_open_positions: int = 4
     min_volume_ratio: float = 1.0
-    market_open_sim_time: str = "16:40"
-    market_close_sim_time: str = "23:10"
+    market_open_sim_time: str = "13:30"
+    market_close_sim_time: str = "20:20"
 
 
 def test_is_within_market_hours():
     cfg = FakeCfg()
+    # Config times are UTC (naive args treated as UTC).
     inside = datetime(2026, 6, 17, 18, 0)
     outside = datetime(2026, 6, 17, 10, 0)
     assert is_within_market_hours(cfg, now=inside) is True
     assert is_within_market_hours(cfg, now=outside) is False
+    # After configured close — still open on Israel wall clock, but closed in UTC window.
+    after_close = datetime(2026, 6, 17, 21, 0)
+    assert is_within_market_hours(cfg, now=after_close) is False
 
 
 def test_analyze_near_stop():

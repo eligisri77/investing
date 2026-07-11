@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 import pandas as pd
@@ -66,13 +66,19 @@ def parse_hhmm(hhmm: str) -> tuple[int, int]:
 
 
 def is_within_market_hours(cfg: Any, *, now: datetime | None = None) -> bool:
-    """True during configured local market window (open … close)."""
-    now = now or datetime.now()
-    open_h, open_m = parse_hhmm(str(getattr(cfg, "market_open_sim_time", "16:40")))
-    close_h, close_m = parse_hhmm(str(getattr(cfg, "market_close_sim_time", "23:10")))
-    start = now.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
-    end = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-    return start <= now <= end
+    """True during configured market window (open…close times are UTC in config)."""
+    from datetime import timezone
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now_utc = now.replace(tzinfo=timezone.utc)
+    else:
+        now_utc = now.astimezone(timezone.utc)
+    open_h, open_m = parse_hhmm(str(getattr(cfg, "market_open_sim_time", "13:30")))
+    close_h, close_m = parse_hhmm(str(getattr(cfg, "market_close_sim_time", "20:20")))
+    start = now_utc.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    end = now_utc.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+    return start <= now_utc <= end
 
 
 def _extract_series(df: pd.DataFrame, col: str) -> pd.Series:
@@ -418,7 +424,9 @@ def filter_cooled_down(
     *,
     now: datetime | None = None,
 ) -> IntradayReport:
-    now = now or datetime.now()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     cooldowns: dict[str, str] = state.setdefault("intraday_alert_cooldowns", {})
     cutoff = now - timedelta(minutes=cooldown_minutes)
 
@@ -427,7 +435,10 @@ def filter_cooled_down(
         if not ts:
             return True
         try:
-            return datetime.fromisoformat(ts) < cutoff
+            prev = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if prev.tzinfo is None:
+                prev = prev.replace(tzinfo=timezone.utc)
+            return prev < cutoff
         except ValueError:
             return True
 
@@ -443,7 +454,9 @@ def filter_cooled_down(
 
 
 def mark_cooldowns(report: IntradayReport, state: dict[str, Any], *, now: datetime | None = None) -> None:
-    now = now or datetime.now()
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     cooldowns: dict[str, str] = state.setdefault("intraday_alert_cooldowns", {})
     iso = now.isoformat()
     for alert in report.alerts:
@@ -454,7 +467,10 @@ def mark_cooldowns(report: IntradayReport, state: dict[str, Any], *, now: dateti
     stale = now - timedelta(days=2)
     for key, ts in list(cooldowns.items()):
         try:
-            if datetime.fromisoformat(ts) < stale:
+            prev = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if prev.tzinfo is None:
+                prev = prev.replace(tzinfo=timezone.utc)
+            if prev < stale:
                 del cooldowns[key]
         except ValueError:
             del cooldowns[key]
@@ -587,9 +603,10 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
     """Build report, send Telegram if noteworthy. Returns True when a message was sent."""
     from trading_pulse.agent.dryrun_agent import is_us_trading_day, save_json, send_user_notification
     from trading_pulse.core.app_paths import STATE_FILE
+    from trading_pulse.core.schedule_tz import us_trading_session_date
     from trading_pulse.telegram.telegram_format import format_intraday_monitor
 
-    today = date.today()
+    today = us_trading_session_date()
     if not is_us_trading_day(today):
         return False
     if not bool(getattr(cfg, "intraday_check_enabled", True)):

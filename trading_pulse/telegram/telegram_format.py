@@ -88,8 +88,9 @@ def user_guide_full() -> str:
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. <code>התחל</code> — קונה 3 מניות ומחלק את $1,000",
-            "2. בערב — דוח יומי על הרווח/הפסד",
+            "1. <code>התחל</code> / <code>הכל</code> — קונה עד 4 מניות ומחלק את $1,000",
+            "2. בערב — תוכנית: עד 3 לפי ציון + 1 לפי נרות (Rising Three Methods)",
+            "3. בערב אחרי סגירה — דוח יומי על הרווח/הפסד",
             "",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
             "קנייה ממזומן: <code>תקנה 1 $20</code> · <code>קנה BEAM $50</code>",
@@ -331,9 +332,14 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
         lines.extend(["", f"<b>🆕 קניות חדשות למחר ({len(new_recs)})</b>"])
         for idx, r in enumerate(new_recs, 1):
             sym = escape_html(str(r["symbol"]))
+            strat = str(r.get("strategy") or "")
+            tag = ""
+            if strat == "rising_three_methods":
+                weak = " · חלש" if r.get("pattern_weak") else ""
+                tag = f" · <i>נרות{weak}</i>"
             lines.append(
                 f"#{idx} <b>{sym}</b> — <b>${float(r['capital_usd']):.0f}</b> "
-                f"@ ~${float(r.get('entry_ref_price', 0)):.2f}"
+                f"@ ~${float(r.get('entry_ref_price', 0)):.2f}{tag}"
             )
         if held:
             lines.append("<i>לא מחליף מניות קיימות — רק מוסיף מזומן פנוי</i>")
@@ -648,6 +654,9 @@ def format_recommendation(
     lines = [
         f"<b>#{idx} {sym}</b> · יום מסחר {day}",
     ]
+    if str(rec.get("strategy") or "") == "rising_three_methods":
+        weak = " (חלש)" if rec.get("pattern_weak") else ""
+        lines.append(f"<b>נרות · Rising Three Methods{weak}</b>")
     if str(rec["symbol"]) in held:
         lines.append("<b>כבר בתיק — לא נקנה שוב</b>")
     lines.extend(
@@ -980,6 +989,8 @@ def format_intraday_monitor(report: Any) -> str:
 
 
 def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn, speculative_fn) -> str:
+    from trading_pulse.core.schedule_tz import format_dual_time
+
     equity = float(state.get("equity", cfg.initial_capital))
     lines = [
         "<b>💚 הסוכן חי</b>",
@@ -989,9 +1000,10 @@ def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn,
     ]
     if speculative_fn(cfg):
         lines.append(escape_html(truncate(monthly_fn(cfg, state), 120)))
-    lines.append(
-        f"תוכנית {cfg.planning_time} · דוח {cfg.market_close_sim_time}"
-    )
+    plan_t = format_dual_time(str(cfg.planning_time)) or str(cfg.planning_time)
+    report_t = format_dual_time(str(cfg.market_close_sim_time)) or str(cfg.market_close_sim_time)
+    lines.append(f"תוכנית {escape_html(plan_t)}")
+    lines.append(f"דוח {escape_html(report_t)}")
     return finalize("\n".join(lines))
 
 

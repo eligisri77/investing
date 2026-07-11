@@ -25,27 +25,97 @@ def clear_all_price_watches(state: dict[str, Any]) -> list[str]:
 
 
 def format_watches_cleared(cleared: list[str]) -> str:
+    """EOD notice for cleared hourly watches — not the daily P/L report."""
     from trading_pulse.telegram.telegram_format import escape_html
 
     if not cleared:
         return ""
-    syms = ", ".join(escape_html(s) for s in cleared)
-    return (
-        f"🌙 <b>סוף יום מסחר</b> — נוקו מעקבים שעתיים:\n{syms}\n"
-        f"להפעלה מחדש מחר: <code>ציון שעתי SYMBOL</code>"
+
+    lines = [
+        "🌙 <b>סיום מעקב שעתי</b>",
+        "סוף יום מסחר — המעקבים של היום נוקו.",
+        "",
+    ]
+    for symbol in cleared:
+        sym = escape_html(symbol)
+        quote = None
+        try:
+            quote = fetch_intraday_quote(symbol)
+        except Exception as ex:
+            logging.debug("EOD watch quote skip %s: %s", symbol, ex)
+        if quote:
+            last = float(quote["last"])
+            day_chg = float(quote.get("day_change_pct", 0))
+            sign = "+" if day_chg >= 0 else ""
+            high = float(quote.get("high", last))
+            low = float(quote.get("low", last))
+            lines.append(
+                f"• <b>{sym}</b>  ${last:.2f}  ·  היום {sign}{day_chg:.2f}%"
+            )
+            lines.append(f"  טווח היום ${low:.2f}–${high:.2f}")
+        else:
+            lines.append(f"• <b>{sym}</b>  (אין מחיר סגירה)")
+    lines.extend(
+        [
+            "",
+            f"נוקו <b>{len(cleared)}</b> מעקב(ים).",
+            "להפעלה מחר: <code>ציון שעתי SYMBOL</code>",
+        ]
     )
+    return "\n".join(lines)
+
+
+def _ensure_watches_dict(state: dict[str, Any]) -> dict[str, Any]:
+    watches = state.get("price_watches")
+    if isinstance(watches, list):
+        watches = {str(s).upper(): {"added_at": datetime.now(timezone.utc).isoformat()} for s in watches}
+        state["price_watches"] = watches
+    elif not isinstance(watches, dict):
+        watches = {}
+        state["price_watches"] = watches
+    return watches
 
 
 def add_price_watch(state: dict[str, Any], symbol: str) -> dict[str, Any]:
     symbol = normalize_symbol(symbol)
-    watches = state.setdefault("price_watches", {})
-    if isinstance(watches, list):
-        watches = {s.upper(): {"added_at": datetime.now(timezone.utc).isoformat()} for s in watches}
-        state["price_watches"] = watches
+    watches = _ensure_watches_dict(state)
     if symbol in watches:
         return {"symbol": symbol, "added": False, "watches": list_price_watches(state)}
     watches[symbol] = {"added_at": datetime.now(timezone.utc).isoformat()}
     return {"symbol": symbol, "added": True, "watches": list_price_watches(state)}
+
+
+def mark_price_watch_sent(state: dict[str, Any], symbol: str) -> None:
+    """Record last update time so the next tick waits a full interval."""
+    symbol = normalize_symbol(symbol)
+    watches = _ensure_watches_dict(state)
+    entry = watches.get(symbol)
+    if not isinstance(entry, dict):
+        entry = {}
+        watches[symbol] = entry
+    entry["last_sent_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def due_for_price_tick(state: dict[str, Any], symbol: str, interval_minutes: int) -> bool:
+    """True when enough time has passed since the last snapshot/tick."""
+    symbol = normalize_symbol(symbol)
+    watches = state.get("price_watches") or {}
+    if not isinstance(watches, dict):
+        return True
+    entry = watches.get(symbol)
+    if not isinstance(entry, dict):
+        return True
+    raw = entry.get("last_sent_at")
+    if not raw:
+        return True
+    try:
+        last = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+    return elapsed >= max(1, int(interval_minutes)) * 60
 
 
 def remove_price_watch(state: dict[str, Any], symbol: str) -> dict[str, Any]:
@@ -272,10 +342,12 @@ def send_price_only_tick(cfg: Any, symbol: str) -> bool:
 
 
 def send_price_watch_updates(cfg: Any, state: dict[str, Any]) -> int:
-    """Periodic updates: price-only ticks during market hours."""
-    from trading_pulse.agent.dryrun_agent import is_us_trading_day
+    """Periodic updates: price-only ticks during market hours (at most once per interval)."""
+    from trading_pulse.agent.dryrun_agent import is_us_trading_day, save_json
+    from trading_pulse.core.app_paths import STATE_FILE
+    from trading_pulse.core.schedule_tz import us_trading_session_date
 
-    today = __import__("datetime").date.today()
+    today = us_trading_session_date()
     if not is_us_trading_day(today):
         return 0
     if not bool(getattr(cfg, "intraday_check_enabled", True)):
@@ -283,11 +355,18 @@ def send_price_watch_updates(cfg: Any, state: dict[str, Any]) -> int:
     if not is_within_market_hours(cfg):
         return 0
 
+    interval = int(getattr(cfg, "intraday_check_interval_minutes", 60))
     sent = 0
     for symbol in list_price_watches(state):
         try:
+            if not due_for_price_tick(state, symbol, interval):
+                logging.debug("Price watch %s: skipped (within %s min)", symbol, interval)
+                continue
             if send_price_only_tick(cfg, symbol):
+                mark_price_watch_sent(state, symbol)
                 sent += 1
         except Exception as ex:
             logging.warning("Price watch update failed for %s: %s", symbol, ex)
+    if sent:
+        save_json(STATE_FILE, state)
     return sent

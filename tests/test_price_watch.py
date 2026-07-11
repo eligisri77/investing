@@ -51,8 +51,19 @@ def test_clear_all_price_watches():
     cleared = clear_all_price_watches(state)
     assert set(cleared) == {"AAPL", "NVDA"}
     assert list_price_watches(state) == []
-    msg = format_watches_cleared(cleared)
+    with patch(
+        "trading_pulse.agent.price_watch.fetch_intraday_quote",
+        side_effect=lambda s: {
+            "last": 100.0 if s == "AAPL" else 200.0,
+            "day_change_pct": 1.5 if s == "AAPL" else -0.5,
+            "high": 101.0,
+            "low": 99.0,
+        },
+    ):
+        msg = format_watches_cleared(cleared)
     assert "AAPL" in msg and "NVDA" in msg
+    assert "$100.00" in msg and "$200.00" in msg
+    assert "סיום מעקב" in msg
 
 
 def test_format_watch_added_uses_interval():
@@ -61,3 +72,20 @@ def test_format_watch_added_uses_interval():
     assert "60" in text
     assert "AAPL" in text
     assert "נמחק" in text or "סוף" in text
+
+
+def test_due_for_price_tick_respects_interval():
+    from datetime import datetime, timedelta, timezone
+
+    from trading_pulse.agent.price_watch import due_for_price_tick, mark_price_watch_sent
+
+    state: dict = {}
+    add_price_watch(state, "AAPL")
+    assert due_for_price_tick(state, "AAPL", 60) is True
+    mark_price_watch_sent(state, "AAPL")
+    assert due_for_price_tick(state, "AAPL", 60) is False
+    # Simulate last send just over an hour ago
+    state["price_watches"]["AAPL"]["last_sent_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=61)
+    ).isoformat()
+    assert due_for_price_tick(state, "AAPL", 60) is True

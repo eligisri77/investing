@@ -166,6 +166,13 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "step": 1,
             },
             {
+                "key": "candle_fourth_enabled",
+                "label": "מניה רביעית לפי נרות (Rising Three)",
+                "type": "boolean",
+                "default": True,
+                "hint": "עד 3 לפי ציון מקורות + עד 1 לפי תבנית Rising Three Methods",
+            },
+            {
                 "key": "commission_per_side_usd",
                 "label": "עמלה לצד ($)",
                 "type": "number",

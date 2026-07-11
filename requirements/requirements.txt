@@ -2,6 +2,7 @@ numpy>=2.0,<2.3
 pandas>=2.2,<3
 yfinance
 schedule
+pytz
 requests
 fastapi
 uvicorn[standard]

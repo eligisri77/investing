@@ -533,7 +533,10 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
     for h in holdings[:4]:
         bullets.append(f"בתיק: {h['symbol']} ${float(h.get('capital_usd', 0)):.0f}")
     for r in new_recs[:4]:
-        bullets.append(f"חדש: {r['symbol']} ${float(r.get('capital_usd', 0)):.0f}")
+        label = str(r["symbol"])
+        if str(r.get("strategy") or "") == "rising_three_methods":
+            label = f"{label} (נרות)"
+        bullets.append(f"חדש: {label} ${float(r.get('capital_usd', 0)):.0f}")
     if not recs and not holdings:
         bullets.append("אין המלצות היום")
     return render_reply_card(

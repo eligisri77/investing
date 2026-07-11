@@ -139,11 +139,13 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             },
             {
                 "step": 6,
-                "title": "בחירת Top N",
+                "title": "בחירת Top N + מניית נרות",
                 "detail": (
-                    f"יום ראשון: עד {deploy_n} מניות (חלוקה שווה של ההון). "
-                    f"אחר כך: עד {max_trades} כניסה חדשה ליום "
-                    f"(מקסימום {cfg.get('max_open_positions', 4)} פוזיציות פתוחות)."
+                    f"יום ראשון: עד {deploy_n} מניות בחלוקה שווה "
+                    f"(עד {max(0, deploy_n - 1)} לפי ציון מקורות + עד 1 לפי Rising Three Methods). "
+                    f"אחר כך: עד {max_trades} כניסות חדשות ליום "
+                    f"(מקסימום {cfg.get('max_open_positions', 4)} פוזיציות פתוחות). "
+                    "מניית הנרות מסומנת בתוכנית; הכול כפוף לאישור שלך (הכל)."
                 ),
             },
             {

@@ -248,7 +248,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         ),
     ]
 
-    deploy_n = int(cfg.get("initial_deploy_stocks", 3))
+    deploy_n = int(cfg.get("initial_deploy_stocks", 4))
 
     return {
         "title": "מדריך טלגרם",
@@ -258,7 +258,10 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             {
                 "icon": "🚀",
                 "title": "פקודה אחת — התחל",
-                "detail": "יוצר תוכנית, מאשר, ומחלק את ההון. בלי שלבים נפרדים.",
+                "detail": (
+                    f"יוצר תוכנית (עד {deploy_n} מניות: ציון + נרות), מאשר, ומחלק את ההון. "
+                    "הכול כפוף לאישור שלך."
+                ),
                 "cmd": "התחל",
             },
             {
@@ -351,7 +354,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             {
                 "title": "יום ראשון — $1,000",
                 "steps": ["הכל"],
-                "note": "ההון מתחלק אוטומטית על ~3 מניות. למחר בפתיחה — כניסה לשוק.",
+                "note": f"ההון מתחלק אוטומטית על עד {deploy_n} מניות (כולל מניית נרות). למחר בפתיחה — כניסה לשוק.",
             },
             {
                 "title": "מניה חדשה בלי מזומן",

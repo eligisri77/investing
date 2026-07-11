@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 ReminderKind = Literal["approval", "allocation"]
 
 
 def minutes_until_local_time(hhmm: str, *, now: datetime | None = None) -> int:
-    now = now or datetime.now()
-    hour, minute = (int(x) for x in hhmm.split(":", 1))
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        return 0
-    return max(0, int((target - now).total_seconds() // 60))
+    """Deprecated alias — config times are UTC; prefer minutes_until_utc_hhmm."""
+    from trading_pulse.core.schedule_tz import minutes_until_utc_hhmm
+
+    return minutes_until_utc_hhmm(hhmm, now=now)
 
 
 def plan_reminder_kind(plan: dict[str, Any]) -> ReminderKind | None:
@@ -34,6 +32,7 @@ def plan_reminder_kind(plan: dict[str, Any]) -> ReminderKind | None:
 def send_pre_simulation_reminder(cfg: Any, trading_day: date) -> bool:
     """Send one reminder per plan if approval/allocation still pending. Returns True if sent."""
     from trading_pulse.agent.dryrun_agent import plan_path, read_json, report_path, save_json, should_run_simulation_today
+    from trading_pulse.core.schedule_tz import minutes_until_utc_hhmm
     from trading_pulse.telegram.telegram_format import format_pre_sim_reminder
 
     if not should_run_simulation_today(trading_day):
@@ -53,7 +52,7 @@ def send_pre_simulation_reminder(cfg: Any, trading_day: date) -> bool:
     if kind is None:
         return False
 
-    minutes = minutes_until_local_time(str(cfg.market_close_sim_time))
+    minutes = minutes_until_utc_hhmm(str(cfg.market_close_sim_time))
     text = format_pre_sim_reminder(minutes, kind)
     from trading_pulse.telegram.app_notify import notify_user
     from trading_pulse.agent.dryrun_agent import send_telegram_message
@@ -68,7 +67,7 @@ def send_pre_simulation_reminder(cfg: Any, trading_day: date) -> bool:
     if not sent:
         return False
 
-    plan["pre_sim_reminder_sent_at"] = datetime.now().astimezone().isoformat()
+    plan["pre_sim_reminder_sent_at"] = datetime.now(timezone.utc).isoformat()
     save_json(path, plan)
     logging.info(
         "Pre-simulation reminder sent for %s (%s, %d min to sim)",

@@ -135,7 +135,8 @@ class AgentConfig:
     heartbeat_time: str = "13:00"  # UTC ≈ 09:00 ET
     send_heartbeat_on_startup: bool = True
     plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
-    initial_deploy_stocks: int = 3  # יום ראשון — חלוקה על כמה מניות
+    initial_deploy_stocks: int = 4  # יום ראשון — חלוקה על כמה מניות (כולל מניית נרות)
+    candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
@@ -375,6 +376,16 @@ def resolve_plan_target_day(run_day: date, *, force: bool = False) -> date:
 
 def is_us_trading_day(day: date) -> bool:
     return day.weekday() < 5
+
+
+def _plan_time_hint(cfg: AgentConfig | None = None) -> str:
+    """Israel wall-clock for evening plan (config stores UTC)."""
+    from trading_pulse.core.schedule_tz import ISRAEL, utc_hhmm_to_zone
+
+    cfg = cfg or load_config()
+    hhmm = str(getattr(cfg, "planning_time", "20:15"))
+    il = utc_hhmm_to_zone(hhmm, ISRAEL)
+    return il or hhmm
 
 
 def should_send_plan_today(run_day: date) -> bool:
@@ -804,6 +815,15 @@ def build_recommendation_explanation(rec: dict[str, Any], rank: int, speculative
     ret5 = float(rec.get("ret_5d_pct", 0))
     vol_ratio = float(rec.get("vol_ratio", 0))
     volume_ok = bool(rec.get("volume_ok", False))
+
+    if str(rec.get("strategy") or "") == "rising_three_methods":
+        weak = " (חלש)" if rec.get("pattern_weak") else ""
+        parts = [
+            f"דירוג #{rank} — נרות · Rising Three Methods{weak}",
+            f"ציון תבנית {float(rec.get('pattern_score', score)):.1f}",
+            str(rec.get("reason") or ""),
+        ]
+        return ". ".join(p for p in parts if p)
 
     if speculative:
         atr_pct = float(rec.get("atr_pct", 0))
@@ -2000,7 +2020,7 @@ def set_plan_status(
     cfg_obj = cfg or load_config()
     path = plan_path(date.fromisoformat(trading_day))
     if not path.exists():
-        return f"❌ <b>אין תוכנית ל-{trading_day}</b>\nחכה לתוכנית ב-21:00."
+        return f"❌ <b>אין תוכנית ל-{trading_day}</b>\nחכה לתוכנית ב-{_plan_time_hint(cfg_obj)}."
     plan = read_json(path)
     recs = plan.get("recommendations", [])
     if not recs:
@@ -3047,7 +3067,10 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 trading_day = resolve_trading_day(parsed.get("day"))
                 path = plan_path(date.fromisoformat(trading_day))
                 if not path.exists():
-                    reply = f"❌ <b>אין תוכנית ל-{trading_day}</b>\nחכה ל-21:00 או שלח <code>תוכנית עכשיו</code>"
+                    reply = (
+                        f"❌ <b>אין תוכנית ל-{trading_day}</b>\n"
+                        f"חכה ל-{_plan_time_hint(cfg)} או שלח <code>תוכנית עכשיו</code>"
+                    )
                     reply_context = "reply:plan"
                     send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                 else:
@@ -3121,6 +3144,7 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 from trading_pulse.agent.price_watch import (
                     add_price_watch,
                     format_watch_added,
+                    mark_price_watch_sent,
                     send_price_watch_snapshot,
                 )
 
@@ -3128,11 +3152,16 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 try:
                     result = add_price_watch(state, str(parsed.get("symbol", "")))
                     save_json(STATE_FILE, state)
-                    reply = format_watch_added(cfg, result)
-                    send_telegram_message(cfg, reply, context="reply:price_watch_add", parse_mode="HTML")
                     if result.get("added"):
-                        # Full analysis + chart once at start (any time of day).
+                        # One start payload (metrics + chart). Hourly ticks wait a full interval.
                         send_price_watch_snapshot(cfg, result["symbol"])
+                        mark_price_watch_sent(state, result["symbol"])
+                        save_json(STATE_FILE, state)
+                    else:
+                        reply = format_watch_added(cfg, result)
+                        send_telegram_message(
+                            cfg, reply, context="reply:price_watch_add", parse_mode="HTML"
+                        )
                 except ValueError as ex:
                     send_telegram_message(
                         cfg, f"⚠️ <b>{ex}</b>", context="reply:price_watch_add", parse_mode="HTML"
@@ -3293,7 +3322,10 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 reply = telegram_unknown_reply()
         except ValueError as ex:
             if str(ex) == "no_active_plan":
-                reply = "📭 <b>אין תוכנית פעילה.</b>\nחכה להודעה ב-21:00 או שלח <code>סטטוס</code>."
+                reply = (
+                    f"📭 <b>אין תוכנית פעילה.</b>\n"
+                    f"חכה להודעה ב-{_plan_time_hint(cfg)} או שלח <code>סטטוס</code>."
+                )
             else:
                 reply = "⚠️ <b>תאריך לא תקין.</b>"
             reply_context = "reply:error"
@@ -3425,9 +3457,11 @@ def generate_plan(
         len(holdings),
         deployed_capital(state),
     )
-    picks = candidates.head(new_trade_slots) if new_trade_slots > 0 and not candidates.empty else pd.DataFrame()
+    candle_enabled = bool(getattr(cfg, "candle_fourth_enabled", True)) and new_trade_slots >= 2
+    score_slots = max(0, new_trade_slots - (1 if candle_enabled else 0))
+    picks = candidates.head(score_slots) if score_slots > 0 and not candidates.empty else pd.DataFrame()
     fallback_used = False
-    if picks.empty and new_trade_slots > 0 and not raw_universe.empty:
+    if picks.empty and score_slots > 0 and not raw_universe.empty:
         from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
 
         pool = raw_universe[~raw_universe["symbol"].isin(held)]
@@ -3445,7 +3479,39 @@ def generate_plan(
                 str(picks.iloc[0]["symbol"]),
                 float(picks.iloc[0]["score"]),
             )
-    n_picks = len(picks)
+
+    candle_hit = None
+    if candle_enabled:
+        from trading_pulse.agent.candlestick_patterns import scan_rising_three_methods
+        from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
+
+        picked_syms = {str(s).upper() for s in (picks["symbol"].tolist() if not picks.empty else [])}
+        exclude = set(held) | picked_syms
+        scan_pool = [
+            str(s)
+            for s in scan_tickers
+            if str(s).upper() not in exclude
+            and not is_symbol_in_cooldown(state, str(s), as_of=run_day)
+        ]
+        candle_hit = scan_rising_three_methods(scan_pool, exclude=exclude, allow_partial=True)
+        if candle_hit:
+            logging.info(
+                "Candle fourth pick: %s score=%.1f weak=%s",
+                candle_hit.symbol,
+                candle_hit.pattern_score,
+                candle_hit.pattern_weak,
+            )
+        elif not candidates.empty and len(picks) < new_trade_slots:
+            # No candle signal — fill remaining slot from score pipeline.
+            already = {str(s).upper() for s in picks["symbol"].tolist()} if not picks.empty else set()
+            extra = candidates[~candidates["symbol"].astype(str).str.upper().isin(already)]
+            need = new_trade_slots - len(picks)
+            if not extra.empty and need > 0:
+                more = extra.head(need)
+                picks = pd.concat([picks, more], ignore_index=True) if not picks.empty else more
+                logging.info("No candle pattern — filled %d extra score pick(s)", len(more))
+
+    n_picks = len(picks) + (1 if candle_hit else 0)
     per_trade_cap = per_trade_cap_for_plan(cfg, state, max(n_picks, 1))
     recommendations: list[dict[str, Any]] = []
     speculative = is_speculative(cfg)
@@ -3478,6 +3544,7 @@ def generate_plan(
             "sources_list": list(row.get("sources_list", [])),
             "approved": False,
             "below_bar": fallback_used,
+            "strategy": "score",
         }
         if speculative:
             breakout_flag = "yes" if bool(row.get("breakout_ok", False)) else "no"
@@ -3504,7 +3571,57 @@ def generate_plan(
             )
         recommendations.append(rec)
 
+    if candle_hit:
+        entry = float(candle_hit.close)
+        uni = universe_scores.get(candle_hit.symbol) or {}
+        score_fallback = float(uni.get("score", candle_hit.pattern_score) or candle_hit.pattern_score)
+        candle_rec: dict[str, Any] = {
+            "symbol": candle_hit.symbol,
+            "side": "LONG",
+            "capital_usd": round(per_trade_cap, 2),
+            "entry_ref_price": round(entry, 4),
+            "stop_loss_price": round(entry * (1 - cfg.stop_loss_pct), 4),
+            "take_profit_price": round(entry * (1 + cfg.take_profit_pct), 4),
+            "floor_price": round(entry * (1 - cfg.stop_loss_pct), 4),
+            "stop_loss_pct": cfg.stop_loss_pct,
+            "take_profit_pct": cfg.take_profit_pct,
+            "score": round(score_fallback, 4),
+            "score_technical": round(score_fallback, 4),
+            "score_simple_avg": round(score_fallback, 4),
+            "source_score_std": 0.0,
+            "source_score_spread": 0.0,
+            "source_disagreement": False,
+            "ret_5d_pct": 0.0,
+            "vol_ratio": 0.0,
+            "volume_ok": True,
+            "source_scores": {"candlestick": round(candle_hit.pattern_score, 2)},
+            "sources_used": 1,
+            "sources_list": ["candlestick"],
+            "approved": False,
+            "below_bar": bool(candle_hit.pattern_weak),
+            "strategy": candle_hit.pattern,
+            "pattern_score": candle_hit.pattern_score,
+            "pattern_weak": candle_hit.pattern_weak,
+            "reason": candle_hit.reason_he,
+        }
+        if speculative:
+            atr = float((candle_hit.details or {}).get("atr") or 0)
+            atr_pct = round((atr / entry * 100) if entry else 0, 2)
+            candle_rec["atr_pct"] = atr_pct
+            candle_rec["near_high_pct"] = 0.0
+            candle_rec["breakout_ok"] = not candle_hit.pattern_weak
+        recommendations.append(candle_rec)
+
     enrich_recommendations(recommendations, cfg, speculative=speculative)
+    # Keep Rising Three Methods as the dedicated fourth slot (after score ranking).
+    if any(str(r.get("strategy")) == "rising_three_methods" for r in recommendations):
+        score_recs = [r for r in recommendations if str(r.get("strategy")) != "rising_three_methods"]
+        candle_recs = [r for r in recommendations if str(r.get("strategy")) == "rising_three_methods"]
+        recommendations[:] = score_recs + candle_recs
+        for rank, rec in enumerate(recommendations, start=1):
+            rec["explanation"] = build_recommendation_explanation(
+                rec, rank, speculative=speculative
+            )
 
     from trading_pulse.agent.holdings_review import review_holdings
 
@@ -4047,6 +4164,11 @@ def run_scheduler_loop(service: bool = True) -> None:
     """Run the daily schedule loop (blocks until interrupted)."""
     from trading_pulse.agent.health_tracker import record_job
     from trading_pulse.core.instance_lock import acquire_instance_lock
+    from trading_pulse.core.schedule_tz import (
+        schedule_daily_at,
+        schedule_weekday_at,
+        us_trading_session_date,
+    )
 
     if not acquire_instance_lock("scheduler" if not service else "app-scheduler"):
         return
@@ -4057,7 +4179,7 @@ def run_scheduler_loop(service: bool = True) -> None:
     cfg = load_config()
 
     def run_plan_job() -> None:
-        today = date.today()
+        today = us_trading_session_date()
         if not should_send_plan_today(today):
             record_job("plan", "skipped", f"no trading day; today={today.isoformat()}")
             logging.info(
@@ -4093,7 +4215,7 @@ def run_scheduler_loop(service: bool = True) -> None:
             logging.exception("JOB FAILED: daily plan: %s", ex)
 
     def run_entry_job() -> None:
-        today = date.today()
+        today = us_trading_session_date()
         if not should_run_simulation_today(today):
             record_job("entry", "skipped", f"today={today.isoformat()}")
             return
@@ -4133,7 +4255,7 @@ def run_scheduler_loop(service: bool = True) -> None:
             logging.warning("EOD price-watch clear failed: %s", ex)
 
     def run_sim_job() -> None:
-        today = date.today()
+        today = us_trading_session_date()
         if not should_run_simulation_today(today):
             record_job("simulation", "skipped", f"today={today.isoformat()}")
             logging.info(
@@ -4182,7 +4304,7 @@ def run_scheduler_loop(service: bool = True) -> None:
     def run_plan_reminder_job() -> None:
         from trading_pulse.agent.plan_reminders import send_pre_simulation_reminder
 
-        today = date.today()
+        today = us_trading_session_date()
         active_cfg = load_config()
         try:
             if send_pre_simulation_reminder(active_cfg, today):
@@ -4201,7 +4323,7 @@ def run_scheduler_loop(service: bool = True) -> None:
         active_cfg = load_config()
         if not active_cfg.intraday_check_enabled:
             return
-        today = date.today()
+        today = us_trading_session_date()
         if not is_us_trading_day(today):
             return
         logging.info("JOB START: intraday check")
@@ -4227,10 +4349,10 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("intraday_check", "failed", str(ex))
             logging.exception("JOB FAILED: intraday check: %s", ex)
 
-    schedule.every().day.at(cfg.planning_time).do(run_plan_job)
-    schedule.every().day.at(cfg.entry_sim_time).do(run_entry_job)
-    schedule.every().day.at(cfg.market_close_sim_time).do(run_sim_job)
-    schedule.every().day.at(cfg.heartbeat_time).do(run_heartbeat_job)
+    schedule_daily_at(cfg.planning_time).do(run_plan_job)
+    schedule_daily_at(cfg.entry_sim_time).do(run_entry_job)
+    schedule_daily_at(cfg.market_close_sim_time).do(run_sim_job)
+    schedule_daily_at(cfg.heartbeat_time).do(run_heartbeat_job)
     def run_weekly_scan_job() -> None:
         active_cfg = load_config()
         if not bool(getattr(active_cfg, "weekly_scan_enabled", True)):
@@ -4253,13 +4375,13 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("weekly_scan", "failed", str(ex))
             logging.exception("JOB FAILED: weekly watchlist scan: %s", ex)
 
-    schedule.every().day.at(cfg.plan_reminder_time).do(run_plan_reminder_job)
+    schedule_daily_at(cfg.plan_reminder_time).do(run_plan_reminder_job)
     if bool(getattr(cfg, "weekly_scan_enabled", True)):
         _day = str(getattr(cfg, "weekly_scan_day", "sunday")).lower()
-        _weekly = getattr(schedule.every(), _day, None)
+        _weekly = schedule_weekday_at(_day, cfg.weekly_scan_time)
         if _weekly is not None:
-            _weekly.at(cfg.weekly_scan_time).do(run_weekly_scan_job)
-            logging.info("  weekly scan: %s at %s", _day, cfg.weekly_scan_time)
+            _weekly.do(run_weekly_scan_job)
+            logging.info("  weekly scan: %s at %s UTC", _day, cfg.weekly_scan_time)
         else:
             logging.warning("Unknown weekly_scan_day '%s' — weekly scan not scheduled", _day)
     cfg_holder: dict[str, AgentConfig] = {"cfg": cfg}
@@ -4305,12 +4427,12 @@ def run_scheduler_loop(service: bool = True) -> None:
     logging.info("Scheduler started")
     logging.info("  notification_mode: %s", cfg.notification_mode)
     logging.info("  risk profile: %s", risk_profile_summary(cfg))
-    logging.info("  heartbeat: %s", cfg.heartbeat_time)
-    logging.info("  plan: %s (UTC ~ after US close)", cfg.planning_time)
-    logging.info("  entry: %s (UTC ~ US market open)", cfg.entry_sim_time)
-    logging.info("  report: %s (UTC ~ US close)", cfg.market_close_sim_time)
-    logging.info("  plan reminder: %s", cfg.plan_reminder_time)
-    logging.info("  simulation report: %s", cfg.market_close_sim_time)
+    logging.info("  heartbeat: %s UTC", cfg.heartbeat_time)
+    logging.info("  plan: %s UTC (~ after US close)", cfg.planning_time)
+    logging.info("  entry: %s UTC (~ US market open)", cfg.entry_sim_time)
+    logging.info("  report: %s UTC (~ US close)", cfg.market_close_sim_time)
+    logging.info("  plan reminder: %s UTC", cfg.plan_reminder_time)
+    logging.info("  simulation report: %s UTC", cfg.market_close_sim_time)
     if cfg.intraday_check_enabled:
         logging.info(
             "  intraday check: every %s min (%s–%s)",

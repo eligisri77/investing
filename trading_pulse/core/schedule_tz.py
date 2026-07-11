@@ -55,6 +55,8 @@ def format_local_entry_moment(iso_ts: str | None) -> str:
         return "—"
 
 
+SCHEDULE_TZ = "UTC"
+
 SCHEDULE_TIME_KEYS = (
     "planning_time",
     "entry_sim_time",
@@ -62,7 +64,50 @@ SCHEDULE_TIME_KEYS = (
     "market_close_sim_time",
     "heartbeat_time",
     "plan_reminder_time",
+    "weekly_scan_time",
 )
+
+
+def us_trading_session_date(*, now: datetime | None = None) -> date:
+    """US equity session calendar date (America/New_York), not the PC's local date."""
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return now.astimezone(US_EASTERN).date()
+
+
+def minutes_until_utc_hhmm(hhmm: str, *, now: datetime | None = None) -> int:
+    """Minutes until HH:MM UTC today (0 if already past). Config times are UTC."""
+    if not hhmm or not TIME_RE.fullmatch(str(hhmm).strip()):
+        return 0
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    else:
+        now = now.astimezone(UTC)
+    hour, minute = (int(x) for x in str(hhmm).strip().split(":", 1))
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        return 0
+    return max(0, int((target - now).total_seconds() // 60))
+
+
+def schedule_daily_at(hhmm: str):
+    """Register a daily job at HH:MM interpreted as UTC (config convention)."""
+    import schedule
+
+    return schedule.every().day.at(str(hhmm).strip(), SCHEDULE_TZ)
+
+
+def schedule_weekday_at(day: str, hhmm: str):
+    """Register a weekly job on a named weekday at HH:MM UTC."""
+    import schedule
+
+    day = str(day).strip().lower()
+    job = getattr(schedule.every(), day, None)
+    if job is None:
+        return None
+    return job.at(str(hhmm).strip(), SCHEDULE_TZ)
 
 
 def dual_times_from_config(cfg: dict) -> dict[str, str]:

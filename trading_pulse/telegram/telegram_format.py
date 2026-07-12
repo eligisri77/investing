@@ -88,8 +88,8 @@ def user_guide_full() -> str:
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. <code>התחל</code> / <code>הכל</code> — קונה עד 4 מניות ומחלק את $1,000",
-            "2. בערב — תוכנית: עד 3 לפי ציון + 1 לפי נרות (Rising Three Methods)",
+            "1. <code>התחל</code> / <code>הכל</code> — עד 4 מניות עיקריות + שרוול שיטה 2",
+            "2. בערב — ציון + Rising Three + שיטה 2 (1/2/3) עם מעקב שעתי",
             "3. בערב אחרי סגירה — דוח יומי על הרווח/הפסד",
             "",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
@@ -334,7 +334,10 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
             sym = escape_html(str(r["symbol"]))
             strat = str(r.get("strategy") or "")
             tag = ""
-            if strat == "rising_three_methods":
+            if strat == "method2":
+                trig = escape_html(str(r.get("trigger") or ""))
+                tag = f" · <i>שיטה 2 · {trig}</i>"
+            elif strat == "rising_three_methods":
                 weak = " · חלש" if r.get("pattern_weak") else ""
                 tag = f" · <i>נרות{weak}</i>"
             lines.append(
@@ -654,7 +657,13 @@ def format_recommendation(
     lines = [
         f"<b>#{idx} {sym}</b> · יום מסחר {day}",
     ]
-    if str(rec.get("strategy") or "") == "rising_three_methods":
+    if str(rec.get("strategy") or "") == "method2":
+        trig = escape_html(str(rec.get("trigger") or ""))
+        lines.append(f"<b>שיטה 2 · טריגר {trig}</b>")
+        entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
+        stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
+        lines.append(f"כניסה ~${entry:.2f} · סטופ ~${stop:.2f} · שרוול סיכון")
+    elif str(rec.get("strategy") or "") == "rising_three_methods":
         weak = " (חלש)" if rec.get("pattern_weak") else ""
         lines.append(f"<b>נרות · Rising Three Methods{weak}</b>")
     if str(rec["symbol"]) in held:

@@ -113,7 +113,7 @@ RISK_PROFILES: dict[str, dict[str, Any]] = {
         "min_avg_volume_20d": 500_000,
         "hold_mode": "swing",
         "max_hold_days": 5,
-        "max_open_positions": 4,
+        "max_open_positions": 5,
     },
 }
 
@@ -137,6 +137,9 @@ class AgentConfig:
     plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
     initial_deploy_stocks: int = 4  # יום ראשון — חלוקה על כמה מניות (כולל מניית נרות)
     candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
+    method2_enabled: bool = True  # מניה חמישית — שיטה 2 (שרוול סיכון)
+    method2_risk_pct: float = 0.02
+    method2_max_position_pct: float = 0.15
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
@@ -163,7 +166,7 @@ class AgentConfig:
     notification_mode: str = "app"
     hold_mode: str = "swing"
     max_hold_days: int = 5
-    max_open_positions: int = 4
+    max_open_positions: int = 5
     commission_per_side_usd: float = 1.0
     weekly_scan_enabled: bool = True
     weekly_scan_day: str = "sunday"
@@ -815,6 +818,18 @@ def build_recommendation_explanation(rec: dict[str, Any], rank: int, speculative
     ret5 = float(rec.get("ret_5d_pct", 0))
     vol_ratio = float(rec.get("vol_ratio", 0))
     volume_ok = bool(rec.get("volume_ok", False))
+
+    if str(rec.get("strategy") or "") == "method2":
+        trig = escape_html(str(rec.get("trigger") or ""))
+        entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
+        stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
+        parts = [
+            f"דירוג #{rank} — שיטה 2 · טריגר {trig}",
+            f"כניסה ~${entry:.2f} · סטופ ~${stop:.2f}",
+            f"שרוול ${float(rec.get('capital_usd', 0)):.0f}",
+            str(rec.get("reason") or ""),
+        ]
+        return ". ".join(p for p in parts if p)
 
     if str(rec.get("strategy") or "") == "rising_three_methods":
         weak = " (חלש)" if rec.get("pattern_weak") else ""
@@ -3511,8 +3526,47 @@ def generate_plan(
                 picks = pd.concat([picks, more], ignore_index=True) if not picks.empty else more
                 logging.info("No candle pattern — filled %d extra score pick(s)", len(more))
 
-    n_picks = len(picks) + (1 if candle_hit else 0)
-    per_trade_cap = per_trade_cap_for_plan(cfg, state, max(n_picks, 1))
+    method2_hit = None
+    if bool(getattr(cfg, "method2_enabled", True)):
+        from trading_pulse.agent.candle_method2 import scan_method2
+        from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
+
+        picked_syms = {str(s).upper() for s in (picks["symbol"].tolist() if not picks.empty else [])}
+        if candle_hit:
+            picked_syms.add(candle_hit.symbol.upper())
+        exclude_m2 = set(held) | picked_syms
+        # Need a free open slot beyond main picks
+        main_count = len(picks) + (1 if candle_hit else 0)
+        if open_slots > main_count or (is_empty_portfolio(state) and main_count < int(cfg.max_open_positions)):
+            scan_pool_m2 = [
+                str(s)
+                for s in scan_tickers
+                if str(s).upper() not in exclude_m2
+                and not is_symbol_in_cooldown(state, str(s), as_of=run_day)
+            ]
+            method2_hit = scan_method2(
+                scan_pool_m2,
+                exclude=exclude_m2,
+                equity=capital,
+                risk_pct=float(getattr(cfg, "method2_risk_pct", 0.02)),
+                max_position_pct=float(getattr(cfg, "method2_max_position_pct", 0.15)),
+                min_avg_volume=float(getattr(cfg, "min_avg_volume_20d", 1_000_000)),
+            )
+            if method2_hit:
+                logging.info(
+                    "Method2 fifth pick: %s trigger=%s capital=$%.0f",
+                    method2_hit.symbol,
+                    method2_hit.trigger,
+                    method2_hit.capital_usd,
+                )
+
+    m2_capital = float(method2_hit.capital_usd) if method2_hit else 0.0
+    main_n = len(picks) + (1 if candle_hit else 0)
+    main_budget = max(0.0, float(deployable) - m2_capital)
+    if main_n > 0:
+        per_trade_cap = round(main_budget / main_n, 2)
+    else:
+        per_trade_cap = per_trade_cap_for_plan(cfg, state, 1)
     recommendations: list[dict[str, Any]] = []
     speculative = is_speculative(cfg)
 
@@ -3612,12 +3666,56 @@ def generate_plan(
             candle_rec["breakout_ok"] = not candle_hit.pattern_weak
         recommendations.append(candle_rec)
 
+    if method2_hit:
+        entry = float(method2_hit.entry_ref)
+        stop = float(method2_hit.stop_ref)
+        stop_pct = abs(entry - stop) / entry if entry else cfg.stop_loss_pct
+        method2_rec: dict[str, Any] = {
+            "symbol": method2_hit.symbol,
+            "side": "LONG",
+            "capital_usd": round(float(method2_hit.capital_usd), 2),
+            "entry_ref_price": round(entry, 4),
+            "stop_loss_price": round(stop, 4),
+            "take_profit_price": round(entry * (1 + cfg.take_profit_pct), 4),
+            "floor_price": round(stop, 4),
+            "stop_loss_pct": round(stop_pct, 4),
+            "take_profit_pct": cfg.take_profit_pct,
+            "score": round(float(method2_hit.pattern_score), 4),
+            "score_technical": round(float(method2_hit.pattern_score), 4),
+            "score_simple_avg": round(float(method2_hit.pattern_score), 4),
+            "source_score_std": 0.0,
+            "source_score_spread": 0.0,
+            "source_disagreement": False,
+            "ret_5d_pct": 0.0,
+            "vol_ratio": 0.0,
+            "volume_ok": True,
+            "source_scores": {"method2": round(method2_hit.pattern_score, 2)},
+            "sources_used": 1,
+            "sources_list": ["method2"],
+            "approved": False,
+            "below_bar": False,
+            "strategy": "method2",
+            "trigger": method2_hit.trigger,
+            "method2_entry_ref": round(entry, 4),
+            "method2_stop_ref": round(stop, 4),
+            "pattern_score": method2_hit.pattern_score,
+            "reason": method2_hit.reason_he,
+            "sleeve": True,
+        }
+        if speculative:
+            method2_rec["atr_pct"] = float((method2_hit.details or {}).get("atr_pct") or 0)
+            method2_rec["near_high_pct"] = 0.0
+            method2_rec["breakout_ok"] = True
+        recommendations.append(method2_rec)
+
     enrich_recommendations(recommendations, cfg, speculative=speculative)
-    # Keep Rising Three Methods as the dedicated fourth slot (after score ranking).
-    if any(str(r.get("strategy")) == "rising_three_methods" for r in recommendations):
-        score_recs = [r for r in recommendations if str(r.get("strategy")) != "rising_three_methods"]
-        candle_recs = [r for r in recommendations if str(r.get("strategy")) == "rising_three_methods"]
-        recommendations[:] = score_recs + candle_recs
+    # Order: score picks → Rising Three → שיטה 2 (dedicated slots).
+    special_order = ("rising_three_methods", "method2")
+    if any(str(r.get("strategy")) in special_order for r in recommendations):
+        score_recs = [r for r in recommendations if str(r.get("strategy")) not in special_order]
+        rising = [r for r in recommendations if str(r.get("strategy")) == "rising_three_methods"]
+        m2 = [r for r in recommendations if str(r.get("strategy")) == "method2"]
+        recommendations[:] = score_recs + rising + m2
         for rank, rec in enumerate(recommendations, start=1):
             rec["explanation"] = build_recommendation_explanation(
                 rec, rank, speculative=speculative

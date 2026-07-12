@@ -197,12 +197,21 @@ def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict
     plan["allocation"] = {"status": "pending"}
     chosen = auto_allocate_equal(cfg, plan, state)
     if chosen is None:
-        n = len(recs)
         cash = float(plan.get("available_capital_usd", state.get("equity", 0)))
-        each = round(cash / max(n, 1), 2)
-        diff = round(cash - each * n, 2)
-        for i, rec in enumerate(recs):
-            rec["capital_usd"] = each + (diff if i == 0 else 0)
+        from trading_pulse.agent.capital_allocation import _sleeve_aware_equal_amounts
+
+        amounts = _sleeve_aware_equal_amounts(recs, cash)
+        if not amounts:
+            n = len(recs)
+            each = round(cash / max(n, 1), 2)
+            diff = round(cash - each * n, 2)
+            amounts = [each + (diff if i == 0 else 0) for i in range(n)]
+        else:
+            amounts = __import__(
+                "trading_pulse.agent.capital_allocation", fromlist=["_round_amounts"]
+            )._round_amounts(amounts, cash)
+        for rec, amt in zip(recs, amounts, strict=False):
+            rec["capital_usd"] = round(float(amt), 2)
         plan["allocation"] = {
             "status": "applied",
             "auto": True,
@@ -213,7 +222,35 @@ def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict
     else:
         plan.setdefault("allocation", {})["status"] = "applied"
         plan["allocation"]["auto"] = True
+
+    _auto_watch_method2(plan, state, cfg)
     return plan
+
+
+def _auto_watch_method2(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> None:
+    """Attach hourly price watch for approved שיטה 2 picks."""
+    from trading_pulse.agent.dryrun_agent import STATE_FILE, save_json
+    from trading_pulse.agent.price_watch import add_price_watch, mark_price_watch_sent
+
+    watched = False
+    for rec in plan.get("recommendations") or []:
+        if not rec.get("approved"):
+            continue
+        if str(rec.get("strategy") or "") != "method2" and not rec.get("sleeve"):
+            continue
+        sym = str(rec.get("symbol") or "").upper()
+        if not sym:
+            continue
+        result = add_price_watch(state, sym)
+        meta = (state.get("price_watches") or {}).get(sym)
+        if isinstance(meta, dict):
+            meta["label"] = "שיטה 2"
+            meta["trigger"] = rec.get("trigger")
+        mark_price_watch_sent(state, sym)
+        watched = True
+        logging.info("Method2 auto price-watch: %s (added=%s)", sym, result.get("added"))
+    if watched:
+        save_json(STATE_FILE, state)
 
 
 def cancel_plan(*, as_of: date | None = None) -> dict[str, Any]:

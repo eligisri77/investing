@@ -71,6 +71,37 @@ def _portfolio_totals(
     }
 
 
+def _is_method2_rec(rec: dict[str, Any]) -> bool:
+    return str(rec.get("strategy") or "") == "method2" or bool(rec.get("sleeve"))
+
+
+def _sleeve_aware_equal_amounts(
+    approved_new: list[dict[str, Any]],
+    deployable: float,
+) -> list[float]:
+    """Keep שיטה 2 planned capital; split the rest equally across main picks."""
+    if not approved_new:
+        return []
+    sleeve_idxs = [i for i, r in enumerate(approved_new) if _is_method2_rec(r)]
+    main_idxs = [i for i, r in enumerate(approved_new) if not _is_method2_rec(r)]
+    amounts = [0.0] * len(approved_new)
+    sleeve_total = 0.0
+    for i in sleeve_idxs:
+        amt = float(approved_new[i].get("capital_usd") or 0)
+        amounts[i] = amt
+        sleeve_total += amt
+    main_budget = max(0.0, float(deployable) - sleeve_total)
+    if main_idxs:
+        each = main_budget / len(main_idxs)
+        for i in main_idxs:
+            amounts[i] = each
+    elif sleeve_idxs and sleeve_total <= 0:
+        # Only sleeve picks with no capital — fall back to equal
+        each = deployable / len(approved_new)
+        return [each] * len(approved_new)
+    return amounts
+
+
 def compute_allocation_options(
     cfg: Any,
     plan: dict[str, Any],
@@ -96,10 +127,14 @@ def compute_allocation_options(
     original_cap = planned_per_trade_cap(plan)
     tomorrow_slots = estimate_tomorrow_slots(cfg, state, n)
 
-    equal_each = deployable / n if n else 0.0
-    equal_amounts = [equal_each] * n
+    equal_amounts = _sleeve_aware_equal_amounts(approved_new, deployable)
 
-    original_amounts = [min(original_cap, max_pos) for _ in approved_new]
+    original_amounts = []
+    for r in approved_new:
+        if _is_method2_rec(r):
+            original_amounts.append(float(r.get("capital_usd") or 0))
+        else:
+            original_amounts.append(min(original_cap, max_pos))
     reserve_original = max(0.0, deployable - sum(original_amounts))
 
     rank_weights = _rank_weights(n)
@@ -163,7 +198,11 @@ def compute_allocation_options(
         pack(
             1,
             "שווה — השקעה מלאה",
-            f"כל ההון הפנוי (${deployable:.0f}) מתחלק שווה בין הכניסות החדשות.",
+            (
+                f"שרוול שיטה 2 נשמר; יתרת הפנוי (${deployable:.0f}) מתחלקת שווה בין שאר הכניסות."
+                if any(_is_method2_rec(r) for r in approved_new)
+                else f"כל ההון הפנוי (${deployable:.0f}) מתחלק שווה בין הכניסות החדשות."
+            ),
             equal_amounts,
             full_invest=True,
             reserve_note="כל הפנוי מנוצל",

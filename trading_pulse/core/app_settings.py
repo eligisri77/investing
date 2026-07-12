@@ -166,11 +166,20 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "step": 1,
             },
             {
-                "key": "candle_fourth_enabled",
-                "label": "מניה רביעית לפי נרות (Rising Three)",
+                "key": "method2_enabled",
+                "label": "מניה חמישית — שיטה 2",
                 "type": "boolean",
                 "default": True,
-                "hint": "עד 3 לפי ציון מקורות + עד 1 לפי תבנית Rising Three Methods",
+                "hint": "טריגרי 1/2/3 + שרוול סיכון 1–2% + מעקב שעתי אחרי אישור",
+            },
+            {
+                "key": "method2_risk_pct",
+                "label": "שיטה 2 — אחוז סיכון מהתיק",
+                "type": "number",
+                "min": 0.005,
+                "max": 0.05,
+                "step": 0.005,
+                "hint": "ברירת מחדל 0.02 = 2%",
             },
             {
                 "key": "commission_per_side_usd",

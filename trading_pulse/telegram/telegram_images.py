@@ -462,8 +462,174 @@ def _fetch_recent_closes(symbol: str, days: int = 35) -> tuple[list[str], list[f
     return labels, closes
 
 
+def _fetch_recent_ohlc(symbol: str, days: int = 40) -> list[dict[str, Any]]:
+    """Daily OHLC bars newest-last for candlestick charts."""
+    import yfinance as yf
+
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(days=days + 15)
+    df = yf.download(
+        symbol,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+        threads=False,
+    ).dropna()
+    if df is None or df.empty:
+        return []
+    if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+        df = df.copy()
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+    bars: list[dict[str, Any]] = []
+    for idx in df.index:
+        try:
+            o = float(df.loc[idx, "Open"])
+            h = float(df.loc[idx, "High"])
+            l = float(df.loc[idx, "Low"])
+            c = float(df.loc[idx, "Close"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        label = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
+        bars.append({"date": label, "open": o, "high": h, "low": l, "close": c})
+    if len(bars) > days:
+        bars = bars[-days:]
+    return bars
+
+
+def render_japanese_candlestick_chart(rec: dict[str, Any], idx: int, trading_day: str) -> bytes | None:
+    """Japanese candlestick chart for Rising Three / שיטה 2 picks."""
+    symbol = str(rec.get("symbol", "")).upper()
+    bars = _fetch_recent_ohlc(symbol, days=40)
+    if len(bars) < 5:
+        logging.warning("Candlestick skip %s: not enough OHLC", symbol)
+        return None
+
+    width, height = 960, 560
+    pad_l, pad_r, pad_t, pad_b = 58, 30, 86, 56
+    chart_l, chart_r = pad_l, width - pad_r
+    chart_t, chart_b = pad_t, height - pad_b
+
+    img = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        (10, 10, width - 10, height - 10),
+        radius=16,
+        fill=SURFACE,
+        outline=BORDER,
+        width=2,
+    )
+
+    font_title = _load_font(24, bold=True)
+    font_sub = _load_font(14)
+    font_axis = _load_font(12)
+    font_lbl = _load_font(13, bold=True)
+
+    strategy = str(rec.get("strategy") or "")
+    price = float(rec.get("entry_ref_price", bars[-1]["close"]))
+    sl_price = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or price * 0.88)
+    tp_price = float(rec.get("take_profit_price") or price * 1.12)
+    entry_ref = float(rec.get("method2_entry_ref") or price)
+
+    if strategy == "method2":
+        strat_label = f"שיטה 2 · {rec.get('trigger') or ''}"
+        highlight_n = 3
+    elif strategy == "rising_three_methods":
+        weak = " · חלש" if rec.get("pattern_weak") else ""
+        strat_label = f"Rising Three Methods{weak}"
+        highlight_n = 5
+    else:
+        strat_label = "נרות יפניים"
+        highlight_n = 0
+
+    title = f"#{idx} {symbol} · נרות יפניים"
+    subtitle = (
+        f"{strat_label} · Ref ${price:.2f} · Day {trading_day} · "
+        f"SL ${sl_price:.2f} · TP ${tp_price:.2f}"
+    )
+    draw.text((pad_l, 22), title, fill=CYAN, font=font_title)
+    draw.text((pad_l, 52), subtitle, fill=MUTED, font=font_sub)
+
+    lows = [b["low"] for b in bars] + [sl_price]
+    highs = [b["high"] for b in bars] + [tp_price, entry_ref]
+    y_min = min(lows) * 0.985
+    y_max = max(highs) * 1.015
+    if y_max <= y_min:
+        y_max = y_min + 1.0
+
+    def y_map(val: float) -> int:
+        ratio = (val - y_min) / (y_max - y_min)
+        return int(chart_b - ratio * (chart_b - chart_t))
+
+    for i in range(5):
+        y = chart_t + int((chart_b - chart_t) * i / 4)
+        draw.line((chart_l, y, chart_r, y), fill=BORDER, width=1)
+        val = y_max - (y_max - y_min) * i / 4
+        draw.text((8, y - 7), f"${val:.1f}", fill=MUTED, font=font_axis)
+
+    # Guides
+    for val, color, label in (
+        (sl_price, RED, "Stop"),
+        (tp_price, GREEN, "Target"),
+    ):
+        y = y_map(val)
+        draw.line((chart_l, y, chart_r, y), fill=color, width=2)
+        draw.text((chart_r - 72, y - 16), label, fill=color, font=font_lbl)
+    if strategy == "method2":
+        ey = y_map(entry_ref)
+        draw.line((chart_l, ey, chart_r, ey), fill=PINK, width=2)
+        draw.text((chart_r - 78, ey - 16), "Entry", fill=PINK, font=font_lbl)
+
+    n = len(bars)
+    slot = max(4, (chart_r - chart_l) // max(n, 1))
+    body_w = max(3, min(14, slot - 2))
+
+    for i, bar in enumerate(bars):
+        x_center = chart_l + int((chart_r - chart_l) * (i + 0.5) / n)
+        o, h, l, c = bar["open"], bar["high"], bar["low"], bar["close"]
+        y_o, y_c = y_map(o), y_map(c)
+        y_h, y_l = y_map(h), y_map(l)
+        bull = c >= o
+        color = GREEN if bull else RED
+        # Wick
+        draw.line((x_center, y_h, x_center, y_l), fill=color, width=2)
+        # Body
+        top, bot = min(y_o, y_c), max(y_o, y_c)
+        if bot - top < 2:
+            bot = top + 2
+        left, right = x_center - body_w // 2, x_center + body_w // 2
+        draw.rectangle((left, top, right, bot), fill=color, outline=color)
+
+        # Highlight pattern window (last N bars)
+        if highlight_n and i >= n - highlight_n:
+            draw.rectangle(
+                (left - 2, min(y_h, top) - 2, right + 2, max(y_l, bot) + 2),
+                outline=CYAN,
+                width=2,
+            )
+
+    footer = f"Last ${bars[-1]['close']:.2f} · {bars[0]['date']} → {bars[-1]['date']}"
+    if strategy == "rising_three_methods":
+        footer += " · מסומנים 5 הנרות של התבנית"
+    elif strategy == "method2":
+        footer += " · מסומנים נרות הטריגר"
+    draw.text((pad_l, height - 36), footer, fill=TEXT, font=font_sub)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def render_recommendation_chart(rec: dict[str, Any], idx: int, trading_day: str) -> bytes | None:
     """Mini price chart with stop/target lines for one recommendation."""
+    strategy = str(rec.get("strategy") or "")
+    if strategy in {"rising_three_methods", "method2"}:
+        candle = render_japanese_candlestick_chart(rec, idx, trading_day)
+        if candle:
+            return candle
+        # Fall through to line chart if OHLC missing.
+
     symbol = str(rec.get("symbol", "")).upper()
     labels, closes = _fetch_recent_closes(symbol)
     if len(closes) < 3:

@@ -532,9 +532,12 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
     bullets = [f"מזומן ${free:.0f} · מושקע ${invested:.0f} · סה\"כ ${equity:.0f}"]
     for h in holdings[:4]:
         bullets.append(f"בתיק: {h['symbol']} ${float(h.get('capital_usd', 0)):.0f}")
-    for r in new_recs[:4]:
+    for r in new_recs[:5]:
         label = str(r["symbol"])
-        if str(r.get("strategy") or "") == "rising_three_methods":
+        strat = str(r.get("strategy") or "")
+        if strat == "method2":
+            label = f"{label} (שיטה 2)"
+        elif strat == "rising_three_methods":
             label = f"{label} (נרות)"
         bullets.append(f"חדש: {label} ${float(r.get('capital_usd', 0)):.0f}")
     if not recs and not holdings:

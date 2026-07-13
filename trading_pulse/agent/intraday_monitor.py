@@ -601,10 +601,19 @@ def build_intraday_report(cfg: Any, state: dict[str, Any]) -> IntradayReport:
 
 def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
     """Build report, send Telegram if noteworthy. Returns True when a message was sent."""
-    from trading_pulse.agent.dryrun_agent import is_us_trading_day, save_json, send_user_notification
+    from trading_pulse.agent.dryrun_agent import (
+        is_us_trading_day,
+        plan_path,
+        read_json,
+        save_json,
+        send_user_notification,
+    )
     from trading_pulse.core.app_paths import STATE_FILE
     from trading_pulse.core.schedule_tz import us_trading_session_date
-    from trading_pulse.telegram.telegram_format import format_intraday_monitor
+    from trading_pulse.telegram.telegram_format import (
+        format_entry_notification,
+        format_intraday_monitor,
+    )
 
     today = us_trading_session_date()
     if not is_us_trading_day(today):
@@ -614,13 +623,40 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
     if not is_within_market_hours(cfg):
         return False
 
+    sent_any = False
+
+    # שיטה 2: fill pending breakouts on daily level or 5m/1m micro trigger
+    try:
+        from trading_pulse.agent.method2_intraday import try_fill_pending_method2
+
+        path = plan_path(today)
+        if path.exists():
+            plan = read_json(path)
+            m2_fills = try_fill_pending_method2(cfg, state, plan, today)
+            if m2_fills:
+                save_json(path, plan)
+                save_json(STATE_FILE, state)
+                msg = format_entry_notification(
+                    m2_fills,
+                    trading_day=today.isoformat(),
+                    subtitle="שיטה 2 · פריצה תוך־יומית",
+                )
+                if msg and send_user_notification(
+                    cfg, msg, context="entry:method2", parse_mode="HTML"
+                ):
+                    sent_any = True
+                logging.info("Method2 intraday: filled %d", len(m2_fills))
+    except Exception as ex:
+        logging.warning("Method2 intraday fill failed: %s", ex)
+
     report = build_intraday_report(cfg, state)
     cooldown = int(getattr(cfg, "intraday_alert_cooldown_minutes", DEFAULT_COOLDOWN_MINUTES))
     report = filter_cooled_down(report, state, cooldown)
 
     if not report.has_content:
-        logging.info("Intraday check: nothing noteworthy")
-        return False
+        if not sent_any:
+            logging.info("Intraday check: nothing noteworthy")
+        return sent_any
 
     text = format_intraday_monitor(report)
     sent = send_user_notification(cfg, text, context="intraday", parse_mode="HTML")
@@ -632,4 +668,5 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
             len(report.alerts),
             len(report.suggestions),
         )
-    return bool(sent)
+        sent_any = True
+    return sent_any

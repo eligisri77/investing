@@ -170,7 +170,21 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "label": "מניה חמישית — שיטה 2",
                 "type": "boolean",
                 "default": True,
-                "hint": "טריגרי 1/2/3 + שרוול סיכון 1–2% + מעקב שעתי אחרי אישור",
+                "hint": "טריגר ממתינים לפריצה + HTF באותו כיוון + שרוול סיכון",
+            },
+            {
+                "key": "method2_allow_short",
+                "label": "שיטה 2 — אפשר שורט",
+                "type": "boolean",
+                "default": True,
+                "hint": "כש־W/M פונים למטה — מציע גם כניסת שורט בפריצה מטה",
+            },
+            {
+                "key": "method2_intraday_enabled",
+                "label": "שיטה 2 — פריצה תוך־יומית",
+                "type": "boolean",
+                "default": True,
+                "hint": "אחרי הבוקר: מעקב שעתי לפריצת הרמה היומית או טריגר 5ד/1ד",
             },
             {
                 "key": "method2_risk_pct",

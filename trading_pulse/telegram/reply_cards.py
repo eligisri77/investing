@@ -536,7 +536,9 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
         label = str(r["symbol"])
         strat = str(r.get("strategy") or "")
         if strat == "method2":
-            label = f"{label} (שיטה 2)"
+            side = str(r.get("side") or "LONG").upper()
+            tag = "שיטה 2 שורט" if side == "SHORT" else "שיטה 2"
+            label = f"{label} ({tag})"
         elif strat == "rising_three_methods":
             label = f"{label} (נרות)"
         bullets.append(f"חדש: {label} ${float(r.get('capital_usd', 0)):.0f}")

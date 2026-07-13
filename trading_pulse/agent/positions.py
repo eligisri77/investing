@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Any
 
@@ -63,20 +64,27 @@ def fetch_day_ohlc(symbol: str, trading_day: date) -> dict[str, float] | None:
 
 
 def _stop_take(entry: float, pos: dict[str, Any], cfg: Any) -> tuple[float, float]:
-    sl_pct = float(pos.get("stop_loss_pct", getattr(cfg, "stop_loss_pct", 0.12)))
     tp_pct = float(pos.get("take_profit_pct", getattr(cfg, "take_profit_pct", 0.25)))
     floor = position_floor_price(pos, cfg, entry=entry)
-    return floor, entry * (1 + tp_pct)
+    side = str(pos.get("side") or "LONG").upper()
+    if side == "SHORT":
+        take = float(pos.get("take_profit_price") or entry * (1 - tp_pct))
+        return floor, take
+    take = float(pos.get("take_profit_price") or entry * (1 + tp_pct))
+    return floor, take
 
 
 def rec_floor_price(rec: dict[str, Any], entry_price: float | None = None, cfg: Any = None) -> float:
-    """Hard floor — sell automatically if price drops below."""
+    """Hard floor — sell automatically if price drops below (long) / rises above (short)."""
     if rec.get("floor_price") is not None:
         return round(float(rec["floor_price"]), 4)
     if rec.get("stop_loss_price") is not None:
         return round(float(rec["stop_loss_price"]), 4)
     entry = float(entry_price or rec.get("entry_ref_price") or rec.get("entry_price") or 0)
     sl_pct = float(rec.get("stop_loss_pct", getattr(cfg, "stop_loss_pct", 0.12) if cfg else 0.12))
+    side = str(rec.get("side") or "LONG").upper()
+    if side == "SHORT":
+        return round(entry * (1 + sl_pct), 4)
     return round(entry * (1 - sl_pct), 4)
 
 
@@ -97,11 +105,18 @@ def evaluate_intraday_exit(
     low = bar["low"]
     high = bar["high"]
     close = bar["close"]
+    side = str(pos.get("side") or "LONG").upper()
 
-    if low <= stop_price:
-        return stop_price, "floor_price"
-    if high >= take_price:
-        return take_price, "take_profit"
+    if side == "SHORT":
+        if high >= stop_price:
+            return stop_price, "floor_price"
+        if low <= take_price:
+            return take_price, "take_profit"
+    else:
+        if low <= stop_price:
+            return stop_price, "floor_price"
+        if high >= take_price:
+            return take_price, "take_profit"
 
     days_held = int(pos.get("days_held", 0))
     max_days = int(getattr(cfg, "max_hold_days", 5))
@@ -114,6 +129,14 @@ def evaluate_intraday_exit(
     return None
 
 
+def _pnl_pct(entry: float, exit_price: float, side: str = "LONG") -> float:
+    if entry <= 0:
+        return 0.0
+    if str(side).upper() == "SHORT":
+        return (entry - exit_price) / entry
+    return (exit_price / entry) - 1
+
+
 def unrealized_pnl_for_position(
     pos: dict[str, Any],
     *,
@@ -124,16 +147,16 @@ def unrealized_pnl_for_position(
     enriched = dict(pos)
     entry = float(enriched.get("entry_price") or enriched.get("entry_ref_price") or 0)
     capital = float(enriched.get("capital_usd", 0))
+    side = str(enriched.get("side") or "LONG")
     mark = mark_price
     if mark is None and trading_day is not None and entry > 0:
         bar = fetch_day_ohlc(str(enriched["symbol"]), trading_day)
         mark = float(bar["close"]) if bar else None
     if mark is not None and entry > 0:
-        pnl_pct = (mark / entry - 1) * 100
-        pnl_usd = capital * (mark / entry - 1)
+        frac = _pnl_pct(entry, mark, side)
         enriched["mark_price"] = round(mark, 4)
-        enriched["unrealized_pnl_usd"] = round(pnl_usd, 2)
-        enriched["unrealized_pnl_pct"] = round(pnl_pct, 2)
+        enriched["unrealized_pnl_usd"] = round(capital * frac, 2)
+        enriched["unrealized_pnl_pct"] = round(frac * 100, 2)
     else:
         enriched["mark_price"] = None
         enriched["unrealized_pnl_usd"] = 0.0
@@ -158,9 +181,11 @@ def enrich_held_unrealized(
 def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -> dict[str, Any]:
     entry = float(pos["entry_price"])
     capital = float(pos["capital_usd"])
-    pnl_pct = (exit_price / entry) - 1
+    side = str(pos.get("side") or "LONG")
+    pnl_pct = _pnl_pct(entry, exit_price, side)
     return {
         "symbol": pos["symbol"],
+        "side": side,
         "entry_price": round(entry, 4),
         "exit_price": round(exit_price, 4),
         "exit_reason": exit_reason,
@@ -176,17 +201,26 @@ def new_position_from_rec(rec: dict[str, Any], entry_price: float, trading_day: 
     from datetime import datetime, timezone
 
     floor = rec_floor_price(rec, entry_price)
+    side = str(rec.get("side") or "LONG").upper()
+    tp = rec.get("take_profit_price")
+    if tp is None:
+        tp_pct = float(rec.get("take_profit_pct", 0.25))
+        tp = entry_price * (1 - tp_pct) if side == "SHORT" else entry_price * (1 + tp_pct)
     return {
         "symbol": rec["symbol"],
+        "side": side,
         "entry_day": trading_day,
         "entry_at": datetime.now(timezone.utc).isoformat(),
         "entry_price": round(entry_price, 4),
         "capital_usd": round(float(rec["capital_usd"]), 2),
         "stop_loss_pct": float(rec.get("stop_loss_pct", 0.12)),
         "take_profit_pct": float(rec.get("take_profit_pct", 0.25)),
+        "take_profit_price": round(float(tp), 4),
         "floor_price": floor,
         "stop_loss_price": floor,
         "days_held": 0,
+        "strategy": rec.get("strategy"),
+        "trigger": rec.get("trigger"),
     }
 
 
@@ -326,13 +360,39 @@ def simulate_swing_day(
 
         bar = fetch_day_ohlc(symbol, trading_day)
         if bar is None:
+            # Method2 needs a real session bar to confirm breakout — never invent one.
+            if str(rec.get("strategy") or "") == "method2" or bool(rec.get("sleeve")):
+                logging.info(
+                    "Method2 skip %s: no OHLC yet for %s (waiting for breakout bar)",
+                    symbol,
+                    day_str,
+                )
+                continue
             ref = rec.get("entry_ref_price")
             if ref is None:
                 continue
             price = float(ref)
             bar = {"open": price, "high": price, "low": price, "close": price}
 
-        pos = new_position_from_rec(rec, bar["open"], day_str)
+        entry_px = float(bar["open"])
+        if str(rec.get("strategy") or "") == "method2" or bool(rec.get("sleeve")):
+            from trading_pulse.agent.candle_method2 import resolve_method2_fill
+
+            fill = resolve_method2_fill(rec, bar)
+            if fill is None:
+                logging.info(
+                    "Method2 skip %s: breakout not triggered (entry=%s stop=%s O=%.2f H=%.2f L=%.2f)",
+                    symbol,
+                    rec.get("method2_entry_ref") or rec.get("entry_ref_price"),
+                    rec.get("method2_stop_ref") or rec.get("floor_price"),
+                    bar["open"],
+                    bar["high"],
+                    bar["low"],
+                )
+                continue
+            entry_px = float(fill)
+
+        pos = new_position_from_rec(rec, entry_px, day_str)
         exit_info = evaluate_intraday_exit(pos, bar, cfg)
 
         if exit_info and getattr(cfg, "hold_mode", "swing") == "day":

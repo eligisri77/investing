@@ -137,9 +137,12 @@ class AgentConfig:
     plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
     initial_deploy_stocks: int = 4  # יום ראשון — חלוקה על כמה מניות (כולל מניית נרות)
     candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
+    method2_allow_short: bool = True
     method2_enabled: bool = True  # מניה חמישית — שיטה 2 (שרוול סיכון)
     method2_risk_pct: float = 0.02
     method2_max_position_pct: float = 0.15
+    method2_intraday_enabled: bool = True  # פריצה תוך־יומית (5m/1m) אחרי הבוקר
+    method2_intraday_intervals: list[str] | None = None  # default ["5m","1m"]
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
@@ -3529,12 +3532,22 @@ def generate_plan(
     method2_hit = None
     if bool(getattr(cfg, "method2_enabled", True)):
         from trading_pulse.agent.candle_method2 import scan_method2
-        from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
+        from trading_pulse.agent.symbol_cooldown import (
+            LEVERAGED_ETF_SYMBOLS,
+            is_symbol_in_cooldown,
+            leveraged_symbols,
+        )
 
         picked_syms = {str(s).upper() for s in (picks["symbol"].tolist() if not picks.empty else [])}
         if candle_hit:
             picked_syms.add(candle_hit.symbol.upper())
         exclude_m2 = set(held) | picked_syms
+        # Respect leveraged ETF cap across score + candle + method2
+        max_lev = int(getattr(cfg, "max_leveraged_etf_positions", 1) or 0)
+        if max_lev > 0:
+            already_lev = leveraged_symbols(exclude_m2 | set(held))
+            if len(already_lev) >= max_lev:
+                exclude_m2 |= set(LEVERAGED_ETF_SYMBOLS)
         # Need a free open slot beyond main picks
         main_count = len(picks) + (1 if candle_hit else 0)
         if open_slots > main_count or (is_empty_portfolio(state) and main_count < int(cfg.max_open_positions)):
@@ -3551,11 +3564,13 @@ def generate_plan(
                 risk_pct=float(getattr(cfg, "method2_risk_pct", 0.02)),
                 max_position_pct=float(getattr(cfg, "method2_max_position_pct", 0.15)),
                 min_avg_volume=float(getattr(cfg, "min_avg_volume_20d", 1_000_000)),
+                allow_short=bool(getattr(cfg, "method2_allow_short", True)),
             )
             if method2_hit:
                 logging.info(
-                    "Method2 fifth pick: %s trigger=%s capital=$%.0f",
+                    "Method2 fifth pick: %s %s trigger=%s capital=$%.0f",
                     method2_hit.symbol,
+                    method2_hit.side,
                     method2_hit.trigger,
                     method2_hit.capital_usd,
                 )
@@ -3669,14 +3684,19 @@ def generate_plan(
     if method2_hit:
         entry = float(method2_hit.entry_ref)
         stop = float(method2_hit.stop_ref)
+        side = str(method2_hit.side or "LONG")
         stop_pct = abs(entry - stop) / entry if entry else cfg.stop_loss_pct
+        if side == "SHORT":
+            tp_price = round(entry * (1 - cfg.take_profit_pct), 4)
+        else:
+            tp_price = round(entry * (1 + cfg.take_profit_pct), 4)
         method2_rec: dict[str, Any] = {
             "symbol": method2_hit.symbol,
-            "side": "LONG",
+            "side": side,
             "capital_usd": round(float(method2_hit.capital_usd), 2),
             "entry_ref_price": round(entry, 4),
             "stop_loss_price": round(stop, 4),
-            "take_profit_price": round(entry * (1 + cfg.take_profit_pct), 4),
+            "take_profit_price": tp_price,
             "floor_price": round(stop, 4),
             "stop_loss_pct": round(stop_pct, 4),
             "take_profit_pct": cfg.take_profit_pct,
@@ -3701,6 +3721,7 @@ def generate_plan(
             "pattern_score": method2_hit.pattern_score,
             "reason": method2_hit.reason_he,
             "sleeve": True,
+            "entry_style": "breakout",
         }
         if speculative:
             method2_rec["atr_pct"] = float((method2_hit.details or {}).get("atr_pct") or 0)
@@ -3903,12 +3924,17 @@ def run_entry_simulation(
         if str(pos["symbol"]) not in held_before and pos.get("entry_day") == trading_day.isoformat():
             new_entries.append(pos)
 
-    if new_entries:
-        from trading_pulse.agent.plan_engine import mark_executed, refresh_stale_draft_plan
+    from trading_pulse.agent.method2_intraday import stamp_method2_after_morning
+    from trading_pulse.agent.plan_engine import mark_executed, refresh_stale_draft_plan
 
+    pending_m2 = stamp_method2_after_morning(plan, state, trading_day)
+    # Mark executed when anything filled OR method2 is waiting / resolved
+    if new_entries or pending_m2 or any(
+        str(r.get("method2_status") or "") in {"filled", "invalidated"} for r in approved
+    ):
         mark_executed(plan, trading_day, cfg=cfg)
-        save_json(path, plan)
         refresh_stale_draft_plan(cfg, state, trading_day)
+    save_json(path, plan)
     return new_entries
 
 
@@ -4321,16 +4347,45 @@ def run_scheduler_loop(service: bool = True) -> None:
         try:
             state = load_state(cfg)
             entries = run_entry_simulation(cfg, state, today)
-            if not entries:
+            from trading_pulse.telegram.telegram_format import format_entry_notification, escape_html
+
+            path = plan_path(today)
+            pending_m2: list[str] = []
+            if path.exists():
+                plan = read_json(path)
+                pending_m2 = [
+                    str(r["symbol"])
+                    for r in plan.get("recommendations") or []
+                    if str(r.get("method2_status") or "") == "pending_breakout"
+                ]
+            if not entries and not pending_m2:
                 record_job("entry", "skipped", f"no new entries; day={today.isoformat()}")
                 logging.info("JOB SKIP: entry (nothing to open for %s)", today.isoformat())
                 return
-            from trading_pulse.telegram.telegram_format import format_entry_notification
-
-            msg = format_entry_notification(entries, trading_day=today.isoformat())
+            parts: list[str] = []
+            if entries:
+                parts.append(format_entry_notification(entries, trading_day=today.isoformat()))
+            if pending_m2:
+                syms = ", ".join(escape_html(s) for s in pending_m2)
+                parts.append(
+                    f"<b>⏳ שיטה 2 ממתין לפריצה</b>\n"
+                    f"{syms}\n"
+                    "כניסה אוטומטית אם תיפרץ הרמה (או טריגר 5ד/1ד) במהלך היום"
+                )
+            msg = "\n\n".join(p for p in parts if p)
             send_user_notification(cfg, msg, context="entry", parse_mode="HTML")
-            record_job("entry", "ok", trading_day=today.isoformat(), count=len(entries))
-            logging.info("JOB END: market entry (%d position(s))", len(entries))
+            record_job(
+                "entry",
+                "ok",
+                trading_day=today.isoformat(),
+                count=len(entries),
+                method2_pending=len(pending_m2),
+            )
+            logging.info(
+                "JOB END: market entry (%d position(s), %d method2 pending)",
+                len(entries),
+                len(pending_m2),
+            )
         except Exception as ex:
             record_job("entry", "failed", str(ex))
             logging.exception("JOB FAILED: market entry: %s", ex)
@@ -4360,8 +4415,8 @@ def run_scheduler_loop(service: bool = True) -> None:
                 "JOB SKIP: daily simulation (market closed or no plan; today=%s)",
                 today.isoformat(),
             )
-            # Still clear leftover watches on non-session days.
-            _clear_price_watches_eod()
+            # Do NOT clear watches on non-session days — שיטה 2 watches are
+            # often attached Sunday evening for Monday's pending breakout.
             return
         logging.info("JOB START: daily simulation")
         try:
@@ -4387,6 +4442,18 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("simulation", "failed", str(ex))
             logging.exception("JOB FAILED: daily simulation: %s", ex)
         finally:
+            try:
+                from trading_pulse.agent.method2_intraday import expire_method2_pending
+
+                path = plan_path(today)
+                if path.exists():
+                    plan = read_json(path)
+                    n_exp = expire_method2_pending(plan)
+                    if n_exp:
+                        save_json(path, plan)
+                        logging.info("Expired %d method2 pending breakout(s)", n_exp)
+            except Exception as ex:
+                logging.debug("Method2 expire skipped: %s", ex)
             _clear_price_watches_eod()
 
     def run_heartbeat_job() -> None:

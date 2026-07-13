@@ -596,17 +596,33 @@ def format_funding_prompt(plan: dict[str, Any], gap: dict[str, Any], *, trading_
     return finalize("\n".join(lines))
 
 
-def format_entry_notification(entries: list[dict[str, Any]], *, trading_day: str) -> str:
+def format_entry_notification(
+    entries: list[dict[str, Any]],
+    *,
+    trading_day: str,
+    subtitle: str | None = None,
+) -> str:
     if not entries:
         return ""
+    title = subtitle or "קנית"
     lines = [
-        f"<b>✅ קנית · {escape_html(trading_day)}</b>",
+        f"<b>✅ {escape_html(title)} · {escape_html(trading_day)}</b>",
         "",
     ]
     for e in entries:
+        extra = ""
+        reason = e.get("method2_fill_reason")
+        if reason == "daily_level_break":
+            extra = " · פריצה יומית"
+        elif reason == "micro_trigger":
+            iv = escape_html(str(e.get("method2_fill_interval") or "5m"))
+            trig = escape_html(str(e.get("method2_micro_trigger") or ""))
+            extra = f" · טריגר {iv}" + (f" {trig}" if trig else "")
+        side = str(e.get("side") or "LONG").upper()
+        side_tag = " שורט" if side == "SHORT" else ""
         lines.append(
-            f"• <b>{escape_html(e['symbol'])}</b> "
-            f"${float(e['capital_usd']):.0f} @ <b>${float(e['entry_price']):.2f}</b>"
+            f"• <b>{escape_html(e['symbol'])}</b>{side_tag} "
+            f"${float(e['capital_usd']):.0f} @ <b>${float(e['entry_price']):.2f}</b>{extra}"
         )
     lines.extend(["", "דוח סוף יום יישלח אחרי סגירת וול סטריט"])
     return finalize("\n".join(lines))
@@ -659,10 +675,12 @@ def format_recommendation(
     ]
     if str(rec.get("strategy") or "") == "method2":
         trig = escape_html(str(rec.get("trigger") or ""))
-        lines.append(f"<b>שיטה 2 · טריגר {trig}</b>")
+        side = str(rec.get("side") or "LONG").upper()
+        side_he = "שורט" if side == "SHORT" else "לונג"
+        lines.append(f"<b>שיטה 2 · {side_he} · טריגר {trig}</b>")
         entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
         stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
-        lines.append(f"כניסה ~${entry:.2f} · סטופ ~${stop:.2f} · שרוול סיכון")
+        lines.append(f"פריצה ~${entry:.2f} · סטופ ~${stop:.2f} · כניסה רק אם נפרץ")
     elif str(rec.get("strategy") or "") == "rising_three_methods":
         weak = " (חלש)" if rec.get("pattern_weak") else ""
         lines.append(f"<b>נרות · Rising Three Methods{weak}</b>")

@@ -9,7 +9,24 @@ from typing import Any
 import pandas as pd
 
 # 3x sector / index ETFs — limit overlap in one portfolio.
-LEVERAGED_ETF_SYMBOLS = frozenset({"TQQQ", "SOXL", "LABU", "TECL", "TNA", "SQQQ", "SPXS"})
+LEVERAGED_ETF_SYMBOLS = frozenset(
+    {
+        "TQQQ",
+        "SQQQ",
+        "SOXL",
+        "SOXS",
+        "LABU",
+        "LABD",
+        "TECL",
+        "TECS",
+        "TNA",
+        "TZA",
+        "SPXL",
+        "SPXS",
+        "UPRO",
+        "SPXU",
+    }
+)
 
 
 def leveraged_symbols(symbols: set[str] | list[str]) -> set[str]:

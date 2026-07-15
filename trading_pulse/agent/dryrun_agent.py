@@ -1045,55 +1045,10 @@ def format_plan_message(plan: dict[str, Any]) -> str:
 
 
 def format_plan_message_for_app(plan: dict[str, Any]) -> str:
-    recs = plan.get("recommendations", [])
-    day = plan.get("for_trading_day", "")
-    speculative = plan.get("risk_profile") == "speculative"
-    lines = [
-        f"📋 תוכנית Dry Run — {day}",
-        "",
-        "סיכום חשבון",
-        f"הון: ${float(plan.get('equity_snapshot', 0)):.0f}",
-        f"הפסד יומי מקס: ${float(plan.get('daily_loss_limit_usd', 0)):.0f}",
-        f"סיכון: {plan.get('risk_profile_summary', 'n/a')}",
-    ]
-    if plan.get("monthly_target_summary"):
-        lines.append(plan["monthly_target_summary"])
-    holdings = plan.get("holdings") or []
-    if holdings:
-        lines.append("")
-        lines.append(f"📂 מחזיקים ({len(holdings)}) — נשארים פתוחים:")
-        for h in holdings:
-            lines.append(
-                f"  {h['symbol']} · ${float(h['capital_usd']):.0f} · מ-{h['entry_day']} · {h['days_held']} ימים"
-            )
-        lines.append(f"פנוי לחדשות: ${float(plan.get('available_capital_usd', 0)):.0f}")
-    if not recs:
-        if holdings:
-            lines.extend(["", "אין כניסות חדשות — רק החזקה."])
-            return "\n".join(lines)
-        lines.extend(["", "🔍 אין המלצות היום"])
-        from trading_pulse.telegram.telegram_format import format_scan_summary
+    """Same plan UX as Telegram (banner + how-to), stripped for the app inbox."""
+    from trading_pulse.telegram.app_notify import strip_html
 
-        summary = format_scan_summary(plan, html=False)
-        if summary:
-            lines.extend(["", "📊 סיכום סריקה", summary])
-        elif plan.get("no_picks_reason"):
-            lines.append(str(plan["no_picks_reason"]))
-        return "\n".join(lines)
-    lines.append("")
-    lines.append(f"כניסות חדשות ({len(recs)}):")
-    for idx, rec in enumerate(recs, start=1):
-        lines.extend(
-            [
-                "",
-                f"#{idx} {rec['symbol']} · LONG",
-                format_rec_signal_block(rec, speculative),
-            ]
-        )
-        if rec.get("news_summary"):
-            lines.append(f"📰 {rec['news_summary']}")
-    lines.extend(["", "פתח באפליקציה → תוכנית פעילה → אשר או דחה"])
-    return "\n".join(lines)
+    return strip_html(format_plan_message(plan))
 
 
 def format_heartbeat_message(cfg: AgentConfig, state: dict[str, Any]) -> str:
@@ -4359,8 +4314,16 @@ def run_scheduler_loop(service: bool = True) -> None:
                     if str(r.get("method2_status") or "") == "pending_breakout"
                 ]
             if not entries and not pending_m2:
-                record_job("entry", "skipped", f"no new entries; day={today.isoformat()}")
-                logging.info("JOB SKIP: entry (nothing to open for %s)", today.isoformat())
+                from trading_pulse.telegram.telegram_format import format_no_entries_morning
+
+                send_user_notification(
+                    cfg,
+                    format_no_entries_morning(trading_day=today.isoformat()),
+                    context="entry",
+                    parse_mode="HTML",
+                )
+                record_job("entry", "ok", f"no new entries; day={today.isoformat()}")
+                logging.info("JOB END: market entry (nothing to open for %s — notified)", today.isoformat())
                 return
             parts: list[str] = []
             if entries:

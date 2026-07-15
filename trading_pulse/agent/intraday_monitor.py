@@ -296,16 +296,29 @@ def _sell_recommendations(
         if replacement is not None:
             to_sym, to_data = replacement
             sold_usd = float(h.get("capital_usd", 0))
-            action = (
-                f"ירידה חדה · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
-                f"(ציון {float(to_data.get('score', 0)):.1f}) · שלח: החלף {sym} {to_sym}"
+            out.append(
+                TradeSuggestion(
+                    kind="swap",
+                    symbol=to_sym,
+                    score=float(to_data.get("score", 0)),
+                    swap_from=sym,
+                    message=(
+                        f"ירידה חדה · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
+                        f"(ציון {float(to_data.get('score', 0)):.1f})"
+                    ),
+                )
             )
         else:
-            action = (
-                f"ירידה חדה · {pnl_txt}שלח מכור {sym} — "
-                f"אין מועמדת חזקה, השאר במזומן עד הזדמנות"
+            out.append(
+                TradeSuggestion(
+                    kind="sell",
+                    symbol=sym,
+                    message=(
+                        f"ירידה חדה · {pnl_txt}אין מועמדת חזקה — "
+                        f"מכירה למזומן עד הזדמנות"
+                    ),
+                )
             )
-        out.append(TradeSuggestion(kind="sell", symbol=sym, message=action))
     return out
 
 
@@ -325,7 +338,12 @@ def build_suggestions(
     suggestions: list[TradeSuggestion] = _sell_recommendations(
         cfg, holdings, quotes, alerts_by_symbol, scores, skip
     )
-    sell_symbols = {s.symbol for s in suggestions}
+    sell_symbols: set[str] = set()
+    for s in suggestions:
+        if s.kind == "sell":
+            sell_symbols.add(s.symbol)
+        elif s.kind == "swap" and s.swap_from:
+            sell_symbols.add(str(s.swap_from))
 
     if not scores:
         return suggestions
@@ -355,8 +373,7 @@ def build_suggestions(
                 score=float(best["score"]),
                 message=(
                     f"ציון {best['score']:.1f} · 5י {best.get('ret_5d_pct', 0):+.1f}% · "
-                    f"נפח {best.get('vol_ratio', 0):.2f}x · "
-                    f"מומלץ ~${buy_usd:.0f} · שלח: החלף SYMBOL {best_sym} (או מכור מניה חלשה קודם)"
+                    f"נפח {best.get('vol_ratio', 0):.2f}x · מומלץ ~${buy_usd:.0f}"
                 ),
             )
         )

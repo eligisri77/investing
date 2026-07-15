@@ -123,10 +123,10 @@ def test_sell_recommendation_includes_redeploy_swap():
     alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "x", severity=2)]}
     scores = {"NVDA": {"score": 12.0, "ret_5d_pct": 8.0, "vol_ratio": 1.5, "volume_ok": True}}
     suggestions = build_suggestions(cfg, holdings, scores, quotes, alerts)
-    sells = [s for s in suggestions if s.kind == "sell"]
-    assert len(sells) == 1
-    assert "החלף SOXL NVDA" in sells[0].message
-    assert "$333" in sells[0].message
+    swaps = [s for s in suggestions if s.kind == "swap" and s.swap_from == "SOXL"]
+    assert len(swaps) == 1
+    assert swaps[0].symbol == "NVDA"
+    assert "$333" in swaps[0].message
 
 
 def test_sell_recommendation_holds_cash_when_no_candidate():
@@ -138,6 +138,77 @@ def test_sell_recommendation_holds_cash_when_no_candidate():
     sells = [s for s in suggestions if s.kind == "sell"]
     assert len(sells) == 1
     assert "מזומן" in sells[0].message
+
+
+def test_format_intraday_howto_commands():
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+    from trading_pulse.telegram.telegram_format import format_intraday_monitor
+
+    report = IntradayReport(
+        checked_at="now",
+        holdings=[{"symbol": "LABD", "last": 10.0, "pnl_pct": 5.0, "day_change_pct": 1.0, "capital_usd": 250}],
+        suggestions=[
+            TradeSuggestion(
+                kind="swap",
+                symbol="PYPL",
+                swap_from="LABD",
+                message="החלף LABD ב-PYPL",
+            ),
+            TradeSuggestion(kind="buy", symbol="NVDA", message="ציון 12 · מומלץ ~$200"),
+            TradeSuggestion(kind="sell", symbol="SOXL", message="ירידה חדה"),
+        ],
+    )
+    text = format_intraday_monitor(report)
+    assert "איך לבצע" in text
+    assert "החלף LABD PYPL" in text
+    assert "תקנה NVDA" in text
+    assert "מכור SOXL" in text
+
+
+def test_format_no_entries_morning():
+    from trading_pulse.telegram.telegram_format import format_no_entries_morning
+
+    text = format_no_entries_morning(trading_day="2026-07-15")
+    assert "אין קניות היום" in text
+    assert "2026-07-15" in text
+    assert "התיק הקיים" in text
+
+
+def test_format_plan_message_for_app_no_picks_matches_telegram():
+    from trading_pulse.agent.dryrun_agent import format_plan_message_for_app
+
+    plan = {
+        "for_trading_day": "2026-07-15",
+        "equity_snapshot": 1000,
+        "available_capital_usd": 0,
+        "deployed_capital_usd": 1000,
+        "recommendations": [],
+        "holdings": [
+            {"symbol": "META", "capital_usd": 250, "entry_day": "2026-07-13", "days_held": 2},
+        ],
+        "holding_actions": [
+            {
+                "symbol": "META",
+                "verdict": "hold",
+                "pnl_pct": 2.0,
+                "capital_usd": 250,
+                "reason": "חזק",
+            }
+        ],
+        "status": "no_picks",
+        "scan_stats": {
+            "tickers_scanned": 20,
+            "before_quality": 2,
+            "after_quality": 0,
+            "min_entry_score": 7.0,
+            "top_skipped_scores": [{"symbol": "AMD", "score": 6.5}],
+        },
+    }
+    text = format_plan_message_for_app(plan)
+    assert "אין המלצות היום" in text
+    assert "איך לבצע" in text or "אין פעולה" in text
+    assert "<b>" not in text
+    assert "META" in text
 
 
 def test_no_sell_on_mild_drop():

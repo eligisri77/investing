@@ -287,30 +287,68 @@ def format_holding_actions(
     actions: list[dict[str, Any]],
     holdings: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Evening decision: hold / sell / swap per open position, with $ amounts."""
+    """Evening decision: hold / sell / swap per open position, with how-to commands."""
     if not actions:
         return []
     cap_by_sym = {str(h["symbol"]): float(h.get("capital_usd", 0)) for h in (holdings or [])}
-    lines = ["<b>📊 מה לעשות עם מה שיש לך</b>"]
+    lines = [
+        "<b>📊 המלצות על התיק הקיים</b>",
+        "<i>«הכל» לא מבצע החלפות/מכירות — רק קניות ממזומן. החלפה ידנית למטה.</i>",
+    ]
+    has_manual = False
     for a in actions:
         sym = escape_html(str(a.get("symbol", "")))
+        raw_sym = str(a.get("symbol", ""))
         verdict = str(a.get("verdict", "hold"))
         icon, label = _VERDICT_META.get(verdict, ("🟢", "החזק"))
         pnl = float(a.get("pnl_pct", 0))
-        cap = float(a.get("capital_usd") or cap_by_sym.get(str(a.get("symbol", "")), 0))
+        cap = float(a.get("capital_usd") or cap_by_sym.get(raw_sym, 0))
         cap_txt = f" · <b>${cap:.0f}</b> מושקע" if cap > 0 else ""
-        head = f"{icon} <b>{sym}</b>{cap_txt} · {pnl:+.1f}% · <b>{label}</b>"
         reason = escape_html(str(a.get("reason", "")))
-        lines.append(f"{head} — {reason}")
+        lines.append(f"{icon} <b>{sym}</b>{cap_txt} · {pnl:+.1f}% · <b>{label}</b>")
+        if reason:
+            lines.append(f"   {reason}")
         if verdict == "swap" and a.get("swap_to"):
             to_sym = escape_html(str(a["swap_to"]))
+            to_raw = str(a["swap_to"])
+            has_manual = True
             lines.append(
-                f"   ↳ מוכר <b>${cap:.0f}</b> מ-{sym} → קונה <b>{to_sym}</b> · "
-                f"<code>החלף {sym} {to_sym}</code>"
+                f"   ✅ <b>איך לבצע:</b> שלח "
+                f"<code>החלף {raw_sym} {to_raw}</code>"
+            )
+            lines.append(
+                f"   → מוכר ~${cap:.0f} מ-{sym} וקונה <b>{to_sym}</b> במכה אחת"
             )
         elif verdict in {"sell", "take_profit"}:
-            lines.append(f"   ↳ מוכר <b>${cap:.0f}</b> מ-{sym} · <code>מכור {sym}</code>")
+            has_manual = True
+            lines.append(f"   ✅ <b>איך לבצע:</b> שלח <code>מכור {raw_sym}</code>")
+            lines.append(f"   → מוכר ~${cap:.0f} מ-{sym} למזומן")
+        elif verdict == "hold":
+            lines.append("   ✅ אין פעולה — ממשיכים להחזיק")
+    if has_manual:
+        lines.append(
+            "<i>טיפ: אפשר גם <code>מכור SYMBOL $100</code> למכירה חלקית</i>"
+        )
     return lines
+
+
+def _rec_entry_hint(rec: dict[str, Any]) -> str:
+    strat = str(rec.get("strategy") or "")
+    side = str(rec.get("side") or "LONG").upper()
+    if strat == "method2":
+        trig = escape_html(str(rec.get("trigger") or ""))
+        entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
+        stop = float(rec.get("method2_stop_ref") or rec.get("floor_price") or 0)
+        side_he = "שורט" if side == "SHORT" else "לונג"
+        return (
+            f"שיטה 2 · {side_he} · טריגר {trig} · "
+            f"כניסה רק בפריצה ~${entry:.2f} (סטופ ~${stop:.2f})"
+        )
+    if strat == "rising_three_methods":
+        weak = " · דפוס חלש" if rec.get("pattern_weak") else ""
+        return f"נרות Rising Three{weak} · כניסה בפתיחה"
+    score = float(rec.get("score") or 0)
+    return f"ציון {score:.1f} · כניסה במחיר פתיחה"
 
 
 def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, Any]]) -> list[str]:
@@ -329,24 +367,41 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
             lines.append(f"• <b>{sym}</b> — ${cap:.0f} מושקע · ממשיך להחזיק")
 
     if new_recs:
-        lines.extend(["", f"<b>🆕 קניות חדשות למחר ({len(new_recs)})</b>"])
+        lines.extend(["", f"<b>🆕 המלצות קנייה חדשות ({len(new_recs)})</b>"])
+        has_method2 = False
         for idx, r in enumerate(new_recs, 1):
             sym = escape_html(str(r["symbol"]))
+            raw = str(r["symbol"])
+            cap = float(r.get("capital_usd", 0))
+            ref = float(r.get("entry_ref_price") or r.get("method2_entry_ref") or 0)
             strat = str(r.get("strategy") or "")
-            tag = ""
+            lines.append(f"#{idx} <b>{sym}</b> — <b>${cap:.0f}</b> @ ~${ref:.2f}")
+            lines.append(f"   {_rec_entry_hint(r)}")
             if strat == "method2":
-                trig = escape_html(str(r.get("trigger") or ""))
-                tag = f" · <i>שיטה 2 · {trig}</i>"
-            elif strat == "rising_three_methods":
-                weak = " · חלש" if r.get("pattern_weak") else ""
-                tag = f" · <i>נרות{weak}</i>"
-            lines.append(
-                f"#{idx} <b>{sym}</b> — <b>${float(r['capital_usd']):.0f}</b> "
-                f"@ ~${float(r.get('entry_ref_price', 0)):.2f}{tag}"
-            )
+                has_method2 = True
+                lines.append(
+                    f"   ✅ <b>איך לבצע:</b> שלח <code>הכל</code> "
+                    f"(או רק <code>{raw}</code> אם תרצה לאשר בודדת)"
+                )
+                lines.append(
+                    "   → אחרי אישור: כניסה <b>רק אם נפרצת הרמה</b> "
+                    "(בוקר או תוך־יום). בלי פריצה — אין קנייה."
+                )
+            else:
+                lines.append(
+                    f"   ✅ <b>איך לבצע:</b> שלח <code>הכל</code> "
+                    f"(או <code>{raw}</code> לאישור בודד)"
+                )
+                lines.append("   → מחר בפתיחת וול סטריט ייכנס אוטומטית במחיר פתיחה")
         if held:
-            lines.append("<i>לא מחליף מניות קיימות — רק מוסיף מזומן פנוי</i>")
-    elif recs and not dup_recs:
+            lines.append("<i>לא מחליף מניות קיימות אוטומטית — רק מוסיף ממזומן פנוי</i>")
+        lines.append(
+            "<b>סיכום ביצוע:</b> שלח <code>הכל</code> לאישור כל הקניות ממזומן"
+            + (" · שיטה 2 מחכה לפריצה" if has_method2 else "")
+        )
+    elif not dup_recs and not recs:
+        pass
+    elif recs and not dup_recs and not new_recs:
         symbols = " · ".join(
             f"<b>#{idx} {escape_html(rec['symbol'])}</b> (${float(rec['capital_usd']):.0f})"
             for idx, rec in enumerate(recs, start=1)
@@ -360,33 +415,111 @@ def format_what_all_does(
     recs: list[dict[str, Any]],
     holdings: list[dict[str, Any]],
     free: float,
+    *,
+    actions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Plain-language explanation of what «הכל» will do."""
+    """Plain-language explanation of what «הכל» will do vs manual steps."""
     held = _held_symbol_set(holdings)
     new_recs = [r for r in recs if str(r["symbol"]) not in held]
-    lines = ["", "<b>📌 מה קורה בלחיצת «הכל»?</b>"]
+    actions = actions or []
+    manual = [
+        a
+        for a in actions
+        if str(a.get("verdict")) in {"swap", "sell", "take_profit"}
+    ]
+    lines = ["", "<b>📌 איך לבצע — שני מסלולים</b>"]
 
+    lines.append("<b>א. אוטומטי עם «הכל»</b>")
     if intent == "first_investment":
         total = sum(float(r.get("capital_usd", 0)) for r in recs)
         lines.append(
-            f"קונה {len(recs)} מניות חדשות · סה\"כ <b>${total:.0f}</b> · בפתיחת וול סטריט"
+            f"• שלח <code>הכל</code> → קונה {len(recs)} מניות · סה\"כ <b>${total:.0f}</b> בפתיחה"
         )
     elif intent == "add_needs_sell":
-        lines.append("אין מספיק מזומן — קודם <code>מכור SYMBOL</code>, אחר כך «הכל»")
+        lines.append("• אין מספיק מזומן — קודם מכירה/החלפה, ואז <code>הכל</code>")
     elif new_recs:
         buys = " · ".join(
             f"{escape_html(str(r['symbol']))} ${float(r['capital_usd']):.0f}" for r in new_recs
         )
-        lines.append(f"קונה: <b>{buys}</b> ממזומן פנוי (${free:.0f})")
+        lines.append(f"• שלח <code>הכל</code> → קונה: <b>{buys}</b> ממזומן (${free:.0f})")
+        method2 = [r for r in new_recs if str(r.get("strategy")) == "method2"]
+        if method2:
+            names = ", ".join(escape_html(str(r["symbol"])) for r in method2)
+            lines.append(
+                f"• שיטה 2 ({names}): אחרי אישור — כניסה <b>רק אם נפרצת הרמה</b> "
+                "(בוקר או תוך־יום), לא חובה בפתיחה"
+            )
         if held:
-            lines.append(f"נשאר ללא שינוי: <b>{escape_html(', '.join(sorted(held)))}</b>")
-        lines.append("בפתיחת וול סטריט למחר")
-    elif held:
-        lines.append("אין קניות חדשות — המשך להחזיק את התיק")
+            lines.append(
+                f"• התיק הקיים נשאר: <b>{escape_html(', '.join(sorted(held)))}</b>"
+            )
     else:
-        lines.append("מאשר כניסה בפתיחת השוק למחר")
+        lines.append("• אין קניות חדשות ממזומן — <code>הכל</code> לא ישנה את התיק")
 
-    lines.append("החלפה ידנית: <code>החלף X Y</code> או <code>למכור X ולקנות Y</code>")
+    lines.append("<b>ב. ידני (החלפה / מכירה)</b>")
+    if manual:
+        for a in manual[:4]:
+            sym = str(a.get("symbol", ""))
+            if str(a.get("verdict")) == "swap" and a.get("swap_to"):
+                lines.append(
+                    f"• <code>החלף {escape_html(sym)} {escape_html(str(a['swap_to']))}</code>"
+                )
+            else:
+                lines.append(f"• <code>מכור {escape_html(sym)}</code>")
+        lines.append("<i>אחרי החלפה ידנית אין צורך ב«הכל» לאותה מניה</i>")
+    else:
+        lines.append(
+            "• אין המלצת החלפה היום · בכל זאת אפשר: "
+            "<code>החלף X Y</code> / <code>מכור X</code>"
+        )
+    return lines
+
+
+def format_no_new_buys_banner(
+    plan: dict[str, Any],
+    *,
+    holdings: list[dict[str, Any]],
+    actions: list[dict[str, Any]],
+) -> list[str]:
+    """Emphasize empty / weak recommendation days."""
+    lines = [
+        "",
+        "🚫 <b>אין המלצות היום לקנייה חדשה</b>",
+        "<b>אין מניות שעברו את סף האיכות</b>",
+    ]
+    summary = format_scan_summary(plan, html=True)
+    if summary:
+        lines.extend(["", "<b>📊 למה?</b>", summary])
+    reason = plan.get("no_picks_reason")
+    if reason and not (plan.get("scan_stats") or {}).get("top_skipped_scores"):
+        lines.append(escape_html(str(reason)))
+
+    manual = [a for a in actions if str(a.get("verdict")) in {"swap", "sell", "take_profit"}]
+    if manual:
+        lines.extend(
+            [
+                "",
+                "<b>✅ יש המלצות על מה שכבר מחזיקים</b> — ראה למעלה איך לבצע "
+                "(<code>החלף</code> / <code>מכור</code>).",
+                "<i>אין צורך לשלוח «הכל» — אין מה לאשר לקנייה ממזומן.</i>",
+            ]
+        )
+    elif holdings:
+        lines.extend(
+            [
+                "",
+                "<b>✅ המלצה:</b> להמשיך להחזיק את התיק עד הזדמנות מחר.",
+                "<i>אין צורך באישור — לא נשלחת קנייה.</i>",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "<b>✅ המלצה:</b> לחכות לערב הבא — התיק ריק ואין כניסות.",
+                "<i>אין צורך לשלוח «הכל».</i>",
+            ]
+        )
     return lines
 
 
@@ -470,6 +603,8 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     holdings = plan.get("holdings") or []
     actions = plan.get("holding_actions") or []
     intent = plan.get("flow_intent", "")
+    held = _held_symbol_set(holdings)
+    new_recs = [r for r in recs if str(r["symbol"]) not in held]
 
     lines = [
         "<b>📋 תוכנית למחר</b>",
@@ -483,23 +618,13 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     if not recs:
         if holdings:
             lines.append("")
+            lines.extend(format_current_holdings(holdings))
             if actions:
+                lines.append("")
                 lines.extend(format_holding_actions(actions, holdings))
-            else:
-                lines.append("<b>📂 מחזיקים — אין כניסות חדשות</b>")
-                for h in holdings:
-                    lines.append(
-                        f"• <b>{escape_html(h['symbol'])}</b> "
-                        f"${float(h['capital_usd']):.0f} · {h['days_held']} ימים"
-                    )
+            lines.extend(format_no_new_buys_banner(plan, holdings=holdings, actions=actions))
         else:
-            lines.extend(["", "🔍 <b>אין המלצות היום</b>"])
-            summary = format_scan_summary(plan, html=True)
-            if summary:
-                lines.extend(["", "<b>📊 סיכום סריקה</b>", summary])
-            reason = plan.get("no_picks_reason")
-            if reason and not (plan.get("scan_stats") or {}).get("top_skipped_scores"):
-                lines.append(escape_html(str(reason)))
+            lines.extend(format_no_new_buys_banner(plan, holdings=[], actions=[]))
         return finalize("\n".join(lines))
 
     if intent == "first_investment":
@@ -547,24 +672,31 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
             [
                 "",
                 "<b>⚠️ אין מניה שעברה את סף האיכות</b>",
-                "<i>הטובה ביותר היום (מתחת לסף) — לשיקולך בלבד</i>",
+                "<i>מוצגת הטובה ביותר כיום (מתחת לסף) — לשיקולך בלבד, לא אות חזק</i>",
             ]
         )
 
     lines.extend(format_new_picks_block(recs, holdings))
-    lines.extend(format_what_all_does(intent, recs, holdings, free))
-    lines.extend(
-        [
-            "",
-            "<i>פרטים + גרף לכל מניה ↓</i>",
-            "",
-            SEP,
-            "<b>⏰ מחר בפתיחת וול סטריט</b> — כניסה במחיר פתיחה",
-            "<b>בערב</b> — דוח יומי",
-            "",
-            "לאישור: <code>הכל</code>",
-        ]
-    )
+
+    if not new_recs:
+        # Recommendations exist but all already held, or empty new set
+        lines.extend(format_no_new_buys_banner(plan, holdings=holdings, actions=actions))
+
+    lines.extend(format_what_all_does(intent, recs, holdings, free, actions=actions))
+
+    footer: list[str] = ["", "<i>פרטים + גרף לכל מניה ↓</i>", "", SEP]
+    if new_recs:
+        has_m2 = any(str(r.get("strategy")) == "method2" for r in new_recs)
+        footer.append("<b>⏰ מחר</b> — כניסת ציון/נרות בפתיחה")
+        if has_m2:
+            footer.append("<b>שיטה 2</b> — כניסה רק אם נפרצת הרמה (בוקר או תוך־יום)")
+        footer.append("<b>בערב</b> — דוח יומי")
+        footer.extend(["", "לאישור קניות ממזומן: <code>הכל</code>"])
+    else:
+        footer.append("<b>אין קניות ממזומן לאשר</b> — אם יש החלפה למעלה, שלח את הפקודה הידנית")
+        footer.append("<b>בערב</b> — דוח יומי")
+
+    lines.extend(footer)
     return finalize("\n".join(lines))
 
 
@@ -635,21 +767,32 @@ def format_plan_table_caption(plan: dict[str, Any]) -> str:
     holdings = plan.get("holdings") or []
     held = _held_symbol_set(holdings)
     new_recs = [r for r in recs if str(r["symbol"]) not in held]
+    actions = plan.get("holding_actions") or []
+    has_manual = any(str(a.get("verdict")) in {"swap", "sell", "take_profit"} for a in actions)
     if new_recs:
         picks = " · ".join(
             f"{escape_html(r['symbol'])} ${float(r.get('capital_usd', 0)):.0f}" for r in new_recs
         )
+        how = "שלח <code>הכל</code> לאישור קניות"
+        if has_manual:
+            how += " · החלפות ידניות בטקסט"
         return (
             f"<b>📋 המלצות {day}</b>\n"
             f"קניות חדשות: {picks}\n"
-            "שלח <code>הכל</code> לאישור"
+            f"{how}"
         )
     if recs:
-        return f"<b>📋 תוכנית {day}</b>\nשלח <code>הכל</code> לאישור"
+        return f"<b>📋 תוכנית {day}</b>\nאין קניות חדשות (כבר בתיק) · פרטים בטקסט"
     summary = format_scan_summary(plan, html=True)
     if summary:
-        return f"<b>📋 תוכנית {day}</b>\n🔍 אין המלצות\n{summary}"
-    return f"<b>📋 תוכנית {day}</b>\nאין המלצות היום — אין צורך באישור."
+        return (
+            f"<b>📋 תוכנית {day}</b>\n"
+            f"🚫 <b>אין המלצות קנייה</b>\n{summary}"
+        )
+    return (
+        f"<b>📋 תוכנית {day}</b>\n"
+        "🚫 <b>אין המלצות היום</b> — אין צורך באישור."
+    )
 
 
 def format_recommendation(
@@ -758,7 +901,27 @@ def format_approval_reply(
         if new_buys:
             lines.extend(["", "<b>🛒 קניות מחר בפתיחה:</b>"])
             for sym, amt in new_buys:
-                lines.append(f"• <b>{escape_html(sym)}</b> — <b>${amt:.0f}</b>")
+                rec = next(
+                    (
+                        r
+                        for r in (plan.get("recommendations") or [])
+                        if str(r.get("symbol")) == sym
+                    ),
+                    {},
+                )
+                extra = ""
+                if str(rec.get("strategy") or "") == "method2":
+                    trig = escape_html(str(rec.get("trigger") or ""))
+                    extra = f" · שיטה 2 ({trig}) — כניסה בפריצה בלבד"
+                lines.append(f"• <b>{escape_html(sym)}</b> — <b>${amt:.0f}</b>{extra}")
+            if any(
+                str(r.get("strategy") or "") == "method2"
+                for r in (plan.get("recommendations") or [])
+                if str(r.get("symbol")) in {s for s, _ in new_buys}
+            ):
+                lines.append(
+                    "<i>שיטה 2: אם לא נפרץ בבוקר — נשאר במעקב תוך־יומי; בלי פריצה אין כניסה</i>"
+                )
         if held:
             lines.extend(["", "<b>📂 נשאר בתיק (ללא שינוי):</b>"])
             for sym, amt in held:
@@ -941,6 +1104,20 @@ def format_portfolio(data: dict[str, Any]) -> str:
     return finalize("\n".join(lines))
 
 
+def _intraday_howto_command(sug: Any) -> str | None:
+    """Copy-paste Telegram command for an intraday suggestion."""
+    kind = getattr(sug, "kind", "")
+    sym = str(getattr(sug, "symbol", "") or "")
+    swap_from = getattr(sug, "swap_from", None)
+    if kind == "swap" and swap_from and sym:
+        return f"החלף {swap_from} {sym}"
+    if kind == "buy" and sym:
+        return f"תקנה {sym}"
+    if kind == "sell" and sym:
+        return f"מכור {sym}"
+    return None
+
+
 def format_intraday_monitor(report: Any) -> str:
     """Hourly intraday watch message (alerts + buy/swap suggestions)."""
     lines = [
@@ -1005,14 +1182,29 @@ def format_intraday_monitor(report: Any) -> str:
                 lines.append(
                     f"👀 <b>לעקוב</b> · {escape_html(sug.symbol)} — {escape_html(sug.message)}"
                 )
+            cmd = _intraday_howto_command(sug)
+            if cmd:
+                lines.append(f"   ✅ <b>איך לבצע:</b> שלח <code>{escape_html(cmd)}</code>")
 
     lines.extend(
         [
             "",
-            "<i>הצעה בלבד — לא ביצוע אוטומטי. להחלפה: שלח את הפקודה המוצעת.</i>",
+            "<i>הצעה בלבד — לא ביצוע אוטומטי. העתק את הפקודה מ«איך לבצע».</i>",
         ]
     )
     return finalize("\n".join(lines))
+
+
+def format_no_entries_morning(*, trading_day: str) -> str:
+    """Short morning ping when the book has nothing new to open."""
+    return finalize(
+        "\n".join(
+            [
+                f"<b>📂 אין קניות היום · {escape_html(trading_day)}</b>",
+                "ממשיכים עם התיק הקיים — אין כניסות חדשות בפתיחה",
+            ]
+        )
+    )
 
 
 def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn, speculative_fn) -> str:

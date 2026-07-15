@@ -41,6 +41,8 @@ Bare `1`–`5` during pending allocation → allocation pick (with hint).
 | Context | Format |
 |---------|--------|
 | plan | HTML text + table PNG + per-stock chart PNGs |
+| entry | HTML — fills and/or Method 2 pending; empty morning → `format_no_entries_morning` |
+| intraday | HTML — alerts + suggestions with `איך לבצע` commands |
 | allocation:prompt | HTML |
 | reminder:pre_sim | HTML (~22:00 if pending) |
 | report | HTML + table PNG |

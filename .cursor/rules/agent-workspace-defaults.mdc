@@ -13,4 +13,13 @@ alwaysApply: true
 
 # Trading Pulse
 
-This repo is **Trading Pulse** (`my-project/`). For Telegram, plans, guides, or watchlist work, read `.cursor/skills/trading-pulse/SKILL.md` before coding.
+This repo is **Trading Pulse**. See root `AGENTS.md`.
+
+| Task | Use |
+|------|-----|
+| Telegram / plans / guides / watchlist coding | `.cursor/skills/trading-pulse/SKILL.md` |
+| «מה קרה היום?» / logs / fills | `trading-pulse-day-review` + `@trading-pulse-cracker` |
+| New code → tests | `@trading-pulse-test-writer` (proactive after features) |
+| Commands / flow → app guides | `@trading-pulse-guide-updater` |
+| Unclear / new bot messages | `@trading-pulse-bot-messages` |
+| Before saying «done» | `@trading-pulse-verifier` |

@@ -129,12 +129,13 @@ def test_format_plan_with_holdings_explains_new_vs_held():
     text = format_plan(plan, rec_formatter=lambda r, i, p: "")
     assert "התיק שלך עכשיו" in text
     assert "LABD" in text and "מושקע" in text
-    assert "קניות חדשות" in text
+    assert "קניות חדשות" in text or "המלצות קנייה חדשות" in text
     assert "BEAM" in text
     assert "כבר בתיק" in text
     assert "RIVN" in text
-    assert "מה קורה בלחיצת" in text
-    assert "נשאר ללא שינוי" in text
+    assert "איך לבצע" in text
+    assert "החלף" in text
+    assert "הכל" in text
 
 
 def test_format_approval_reply_new_vs_held():
@@ -200,6 +201,41 @@ def test_apply_confirm_syncs_holdings_from_state():
     assert result["deployed_capital_usd"] > 600
     assert result["allocation"]["amounts"].get("BEAM") is not None
     assert "RIVN" not in result["allocation"].get("amounts", {})
+
+
+def test_format_plan_emphasizes_no_buys_with_swap_howto():
+    plan = {
+        "for_trading_day": "2026-07-14",
+        "equity_snapshot": 1000,
+        "available_capital_usd": 0,
+        "deployed_capital_usd": 1000,
+        "recommendations": [],
+        "holdings": [
+            {"symbol": "META", "capital_usd": 500, "days_held": 1, "entry_price": 660},
+        ],
+        "holding_actions": [
+            {
+                "symbol": "META",
+                "verdict": "swap",
+                "pnl_pct": -1.0,
+                "capital_usd": 500,
+                "swap_to": "MPC",
+                "reason": "יש מניה חזקה יותר",
+            }
+        ],
+        "scan_stats": {
+            "tickers_scanned": 35,
+            "before_quality": 2,
+            "after_quality": 0,
+            "min_entry_score": 7.0,
+            "top_skipped_scores": [{"symbol": "PATH", "score": 6.2}],
+        },
+    }
+    text = format_plan(plan, rec_formatter=lambda r, i, p: "")
+    assert "אין המלצות היום" in text
+    assert "איך לבצע" in text
+    assert "החלף META MPC" in text
+    assert "אין צורך לשלוח" in text or "אין צורך באישור" in text or "אין צורך" in text
 
 
 def test_format_plan_with_recommendations_shows_approval():

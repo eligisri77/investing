@@ -120,6 +120,22 @@ Nav links in `renderNav()` in `app.js`. Reuse `.guide-*` CSS classes.
 - User guides: `user_guide_step1()`, `user_guide_step2()`, `user_guide_done()` in `telegram_format.py`
 - Status/allocation replies show contextual "מה לשלוח עכשיו"
 - Plan summary is short; per-stock detail in separate photo messages
+- **How-to commands**: evening `format_holding_actions` / new picks and intraday `format_intraday_monitor` must show `✅ איך לבצע:` + `<code>…</code>` copy-paste (`החלף X Y`, `מכור SYM`, `תקנה SYM`)
+- **No picks**: `format_no_new_buys_banner` — same clarity in Telegram and app (`format_plan_message_for_app` = strip HTML of `format_plan_message`)
+- **Empty morning entry**: `format_no_entries_morning` — always notify, do not stay silent
+
+## Day review / forensics
+
+For “what happened today?” use skill `trading-pulse-day-review` and/or subagent `trading-pulse-cracker` (read-only). Evidence lives under `instance/data/`.
+
+## Specialist subagents (after coding)
+
+| Change | Delegate |
+|--------|----------|
+| New behavior / module | `@trading-pulse-test-writer` |
+| New command or flow text | `@trading-pulse-guide-updater` |
+| Plan / entry / intraday / report wording | `@trading-pulse-bot-messages` |
+| Final check | `@trading-pulse-verifier` |
 
 ## Runtime notes
 

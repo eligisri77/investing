@@ -529,9 +529,16 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
     holdings = plan.get("holdings") or []
     held = {str(h["symbol"]) for h in holdings}
     new_recs = [r for r in recs if str(r["symbol"]) not in held]
+    actions = plan.get("holding_actions") or []
+    has_manual = any(str(a.get("verdict")) in {"swap", "sell", "take_profit"} for a in actions)
     bullets = [f"מזומן ${free:.0f} · מושקע ${invested:.0f} · סה\"כ ${equity:.0f}"]
     for h in holdings[:4]:
         bullets.append(f"בתיק: {h['symbol']} ${float(h.get('capital_usd', 0)):.0f}")
+    for a in actions:
+        if str(a.get("verdict")) == "swap" and a.get("swap_to"):
+            bullets.append(f"החלף: {a['symbol']} → {a['swap_to']}")
+        elif str(a.get("verdict")) in {"sell", "take_profit"}:
+            bullets.append(f"מכור: {a['symbol']}")
     for r in new_recs[:5]:
         label = str(r["symbol"])
         strat = str(r.get("strategy") or "")
@@ -542,14 +549,28 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
         elif strat == "rising_three_methods":
             label = f"{label} (נרות)"
         bullets.append(f"חדש: {label} ${float(r.get('capital_usd', 0)):.0f}")
+    if not new_recs:
+        bullets.append("אין קניות חדשות ממזומן")
     if not recs and not holdings:
         bullets.append("אין המלצות היום")
+    chips = []
+    if new_recs:
+        chips.append("הכל")
+    if has_manual:
+        chips.append("החלף")
+    if not chips:
+        chips = ["תיק"]
+    footer = (
+        "הכל = קניות ממזומן · החלף ידני בטקסט"
+        if new_recs or has_manual
+        else "אין צורך באישור"
+    )
     return render_reply_card(
         f"תוכנית · {day}",
         accent="cyan",
         bullets=bullets,
-        chips=["הכל"] if recs else ["תיק"],
-        footer="פרטים בטבלה ובגרפים למטה" if recs else "אין צורך באישור",
+        chips=chips,
+        footer=footer,
     )
 
 

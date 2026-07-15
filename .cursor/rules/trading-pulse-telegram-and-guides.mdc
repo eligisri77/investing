@@ -8,6 +8,8 @@ alwaysApply: false
 
 When editing matched files, read `.cursor/skills/trading-pulse/SKILL.md` first.
 
+For dedicated follow-up: `@trading-pulse-bot-messages` (copy) · `@trading-pulse-guide-updater` (guides) · `@trading-pulse-test-writer` (tests).
+
 ## Required on Telegram / UX changes
 
 1. New or changed command → `parse_telegram_user_command` + handler in `dryrun_agent.py`

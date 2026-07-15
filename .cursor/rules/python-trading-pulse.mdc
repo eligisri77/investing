@@ -1,0 +1,14 @@
+---
+description: Python conventions when editing trading_pulse package code
+globs: trading_pulse/**/*.py
+alwaysApply: false
+---
+
+# trading_pulse Python
+
+- Small, focused diffs; match existing module style.
+- User-facing Telegram strings → `telegram_format.py` + HTML (`escape_html`), not raw prints in jobs.
+- After UX/command changes: `@trading-pulse-bot-messages` and/or `@trading-pulse-guide-updater`.
+- After behavior changes: `@trading-pulse-test-writer` then `@trading-pulse-verifier`.
+- Restart app for code changes: `.\scripts\run_app.ps1` (quit tray first).
+- Do not hardcode secrets; read from config / env via existing helpers.

@@ -6,46 +6,42 @@ Dry-run swing trading agent (Telegram + desktop dashboard). Package: `trading_pu
 
 | Need | Open / invoke |
 |------|----------------|
-| Conventions (Telegram, plans, guides) | `.cursor/skills/trading-pulse/SKILL.md` |
-| Day / log / “what happened?” | skill `trading-pulse-day-review` + `@trading-pulse-cracker` |
-| Write tests for new code | `@trading-pulse-test-writer` |
-| Update app / dashboard guides | `@trading-pulse-guide-updater` |
-| Update bot / notification copy | `@trading-pulse-bot-messages` |
-| Verify after a change | `@trading-pulse-verifier` |
+| Tooling overview | `.cursor/README.md` |
+| Conventions | `.cursor/skills/trading-pulse/SKILL.md` |
+| Day / “what happened?” | `trading-pulse-day-review` + `@trading-pulse-cracker` |
+| Pre-done checklist | skill `trading-pulse-ship-check` |
+| Bot copy | `@trading-pulse-bot-messages` |
+| App guides | `@trading-pulse-guide-updater` |
+| Tests for new code | `@trading-pulse-test-writer` |
+| Verify | `@trading-pulse-verifier` |
 
-## Suggested pipeline after a feature
+## Feature pipeline
 
 1. Implement (main agent)
-2. `@trading-pulse-bot-messages` — if user-facing text changed
-3. `@trading-pulse-guide-updater` — if commands / flow / selection changed
-4. `@trading-pulse-test-writer` — cover new behavior
-5. `@trading-pulse-verifier` — run tests + gap check
+2. `@trading-pulse-bot-messages` — if user-facing text
+3. `@trading-pulse-guide-updater` — if commands / flow
+4. `@trading-pulse-test-writer` — cover behavior
+5. `@trading-pulse-verifier` — green tests + gaps
+6. Restart if needed: `.\scripts\run_app.ps1`
 
 ## Layout
 
 ```
-trading_pulse/
-  agent/       dryrun_agent, positions, intraday, method2, plan_engine
-  telegram/    format, images, notify, guides
-  api/         FastAPI dashboard
-  desktop/     Windows tray app
-  core/        paths, config, bootstrap
-instance/      writable runtime (config, plans, reports, logs, inbox)
-web/static/    dashboard UI
-tests/         pytest
+trading_pulse/   agent, telegram, api, desktop, core, guides
+instance/        writable runtime (config, plans, reports, logs)
+web/static/      dashboard UI
+tests/           pytest
+.cursor/         agents, skills, rules, hooks, mcp example
 ```
 
 Dev data: `instance/data/`. Installed: `%LOCALAPPDATA%\TradingPulse\`.
-
-## Daily cycle (UTC config times)
-
-1. Evening plan → user confirms (`הכל` / swaps manual)
-2. Morning entry at open (+ Method 2 pending breakout)
-3. Intraday monitor (alerts + suggestions with how-to commands)
-4. EOD report (realized + unrealized)
 
 ## Hard rules
 
 - Never commit `.env` / bot tokens
 - User-facing Telegram = HTML
-- Prefer small diffs; restart app after code changes: `.\scripts\run_app.ps1`
+- Prefer small diffs
+
+## Optional MCP
+
+Copy `.cursor/mcp.json.example` → `.cursor/mcp.json` and set `GITHUB_TOKEN` if you want GitHub MCP. See `.cursor/README.md`.

@@ -38,3 +38,6 @@ venv/
 dist/
 build/
 installer/output/
+
+# Local MCP config (may reference secrets via env; keep example committed)
+.cursor/mcp.json

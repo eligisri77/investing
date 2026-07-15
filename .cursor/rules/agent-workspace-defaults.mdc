@@ -22,4 +22,7 @@ This repo is **Trading Pulse**. See root `AGENTS.md`.
 | New code → tests | `@trading-pulse-test-writer` (proactive after features) |
 | Commands / flow → app guides | `@trading-pulse-guide-updater` |
 | Unclear / new bot messages | `@trading-pulse-bot-messages` |
-| Before saying «done» | `@trading-pulse-verifier` |
+| Before saying «done» | skill `trading-pulse-ship-check` + `@trading-pulse-verifier` |
+| Optional GitHub MCP | copy `.cursor/mcp.json.example` → `mcp.json` (see `.cursor/README.md`) |
+
+Hooks (`.cursor/hooks.json`) block force-push to main / staging `.env` and inject a short session map.

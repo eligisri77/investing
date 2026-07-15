@@ -1,0 +1,14 @@
+---
+description: Pytest conventions for Trading Pulse
+globs: tests/**/*.py
+alwaysApply: false
+---
+
+# Tests
+
+- Prefer extending an existing `tests/test_*.py` over a new file.
+- Match neighbors: `from __future__ import annotations`, small FakeCfg dataclasses, mock I/O.
+- Assert user-visible Hebrew/HTML fragments when testing formatters (`איך לבצע`, command text).
+- No live network in unit tests; freeze time when scheduling matters.
+- After adding tests, run: `python -m pytest <files> -q --tb=short`
+- New product behavior → also consider `@trading-pulse-test-writer`.

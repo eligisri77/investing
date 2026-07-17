@@ -583,7 +583,11 @@ def api_plan_action(trading_day: str, body: PlanActionRequest) -> dict[str, Any]
     if isinstance(body.indices, list):
         indices = sorted({int(i) - 1 for i in body.indices if 0 < int(i) <= total})
     else:
-        indices = parse_indices(str(body.indices).upper(), total=total)
+        indices = parse_indices(
+            str(body.indices).upper(),
+            total=total,
+            recs=plan.get("recommendations") or [],
+        )
     if not indices:
         raise HTTPException(status_code=400, detail="No valid indices")
 

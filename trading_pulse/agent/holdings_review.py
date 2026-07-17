@@ -86,6 +86,13 @@ def review_holding(
     last = float(info.get("close") or 0)
     my_score = float(info.get("score") or 0)
 
+    if last <= 0:
+        for key in ("mark_price", "last_price"):
+            alt = float(holding.get(key) or 0)
+            if alt > 0:
+                last = alt
+                break
+
     if entry <= 0 or last <= 0:
         return HoldingReview(
             symbol=symbol,
@@ -144,6 +151,52 @@ def review_holding(
     )
 
 
+def backfill_holding_scores(
+    holdings: list[dict[str, Any]],
+    scores: dict[str, dict[str, Any]],
+    *,
+    as_of: Any | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Ensure each open holding has a usable close in scores (evening plan PnL)."""
+    from datetime import date as date_cls
+
+    out = dict(scores)
+    day = as_of if isinstance(as_of, date_cls) else date_cls.today()
+    for h in holdings:
+        sym = str(h.get("symbol") or "")
+        if not sym:
+            continue
+        cur = out.get(sym) or {}
+        if float(cur.get("close") or 0) > 0:
+            continue
+        close = 0.0
+        try:
+            from trading_pulse.agent.positions import fetch_day_ohlc
+
+            bar = fetch_day_ohlc(sym, day)
+            if bar:
+                close = float(bar.get("close") or 0)
+        except Exception:
+            close = 0.0
+        if close <= 0:
+            try:
+                from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
+
+                q = fetch_intraday_quote(sym)
+                if q:
+                    close = float(q.get("last") or 0)
+            except Exception:
+                close = 0.0
+        if close <= 0:
+            close = float(h.get("mark_price") or 0)
+        if close > 0:
+            merged = dict(cur)
+            merged["close"] = close
+            merged.setdefault("score", float(cur.get("score") or 0))
+            out[sym] = merged
+    return out
+
+
 def review_holdings(
     holdings: list[dict[str, Any]],
     cfg: Any,
@@ -151,4 +204,5 @@ def review_holdings(
     recommendations: list[dict[str, Any]] | None = None,
 ) -> list[HoldingReview]:
     recs = recommendations or []
-    return [review_holding(h, cfg, scores, recs) for h in holdings]
+    enriched = backfill_holding_scores(holdings, scores)
+    return [review_holding(h, cfg, enriched, recs) for h in holdings]

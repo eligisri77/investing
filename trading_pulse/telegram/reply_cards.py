@@ -415,9 +415,9 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
     h += 5 * 52  # summary stats (incl. cash)
     h += 14
     if pending:
-        h += 28 + len(pending) * 58 + 8
+        h += 28 + len(pending) * 70 + 8
     if holding:
-        h += 28 + len(holding) * 108 + 8
+        h += 28 + len(holding) * 120 + 8
     elif not pending:
         h += 36
     h += 36 + len(chips) * 36 + 28 + PAD
@@ -460,19 +460,28 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
 
     if pending:
         _section("מאושר — ממתין לפתיחה")
+        from trading_pulse.agent.strategy_labels import strategy_label
+
         for p in pending:
             sym = str(p["symbol"])
             cap = float(p.get("capital_usd", 0))
             when = str(p.get("scheduled_entry", "פתיחת השוק"))
-            box_h = 50
+            strat = strategy_label(p)
+            box_h = 66 if strat else 50
             draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=CHIP_BORDER)
             _rtl(draw, x_right - 10, y + 8, f"{sym}  ${cap:.0f}", font_sym, PINK)
-            _rtl(draw, x_right - 10, y + 30, f"כניסה {when}", font_line, MUTED)
+            if strat:
+                _rtl(draw, x_right - 10, y + 30, strat, font_foot, MUTED)
+                _rtl(draw, x_right - 10, y + 46, f"כניסה {when}", font_line, MUTED)
+            else:
+                _rtl(draw, x_right - 10, y + 30, f"כניסה {when}", font_line, MUTED)
             y += box_h + 8
         y += 4
 
     if holding:
         _section("בתיק עכשיו")
+        from trading_pulse.agent.strategy_labels import strategy_label
+
         for i, p in enumerate(holding):
             slot = p.get("slot", "—")
             sym = str(p["symbol"])
@@ -482,14 +491,21 @@ def card_portfolio(data: dict[str, Any]) -> bytes:
             ur = float(p.get("unrealized_pnl_usd", 0))
             ur_s = "+" if ur > 0 else ("-" if ur < 0 else "")
             when = format_local_entry_moment(p.get("entry_at"))
-            box_h = 92
+            strat = strategy_label(p)
+            box_h = 108 if strat else 92
             draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=BORDER)
             _rtl(draw, x_right - 10, y + 10, f"#{slot}  {sym}", font_sym, CYAN)
-            _rtl(draw, x_right - 10, y + 36, f"${cap:.0f}  @  ${ep:.2f}", font_line_b, TEXT)
-            _rtl(draw, x_right - 10, y + 56, f"שווי ${mv:.0f}", font_line_b, TEXT)
+            y_line = y + 36
+            if strat:
+                _rtl(draw, x_right - 10, y_line, strat, font_foot, MUTED)
+                y_line += 16
+            _rtl(draw, x_right - 10, y_line, f"${cap:.0f}  @  ${ep:.2f}", font_line_b, TEXT)
+            y_line += 20
+            _rtl(draw, x_right - 10, y_line, f"שווי ${mv:.0f}", font_line_b, TEXT)
             pnl_txt = f"{ur_s}${abs(ur):.0f}"
-            draw.text((x0 + 14, y + 56), pnl_txt, fill=_pnl_color(ur), font=font_line_b)
-            _rtl(draw, x_right - 10, y + 74, when, font_foot, MUTED)
+            draw.text((x0 + 14, y_line), pnl_txt, fill=_pnl_color(ur), font=font_line_b)
+            y_line += 18
+            _rtl(draw, x_right - 10, y_line, when, font_foot, MUTED)
             y += box_h + 14
             if i < len(holding) - 1:
                 draw.line((x0 + 28, y - 7, x1 - 28, y - 7), fill=(60, 60, 95), width=2)

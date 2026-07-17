@@ -8,8 +8,9 @@ import sys
 
 CONTEXT = """Trading Pulse tooling:
 - AGENTS.md — agent map + feature pipeline
+- After product edits: MUST Task @trading-pulse-test-writer; UX/commands also @trading-pulse-guide-updater (stop hook auto-nudges if skipped)
 - @trading-pulse-cracker — runtime forensics (logs/plans)
-- @trading-pulse-bot-messages / guide-updater / test-writer / verifier — after code changes
+- @trading-pulse-bot-messages / verifier as needed
 - Never commit instance/.env or bot tokens; runtime data under instance/data/
 """
 

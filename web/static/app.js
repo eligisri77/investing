@@ -760,16 +760,34 @@ async function renderActivePlan() {
     </section>`;
 }
 
+function strategyLabel(p) {
+  const strat = p && p.strategy;
+  if (strat === "method2") {
+    const parts = ["שיטה 2", "נרות סיניים"];
+    if (p.trigger) parts.push(String(p.trigger));
+    if (String(p.side || "").toUpperCase() === "SHORT") parts.push("שורט");
+    return parts.join(" · ");
+  }
+  if (strat === "rising_three_methods") {
+    return p.pattern_weak ? "נרות Rising Three (חלש)" : "נרות Rising Three";
+  }
+  return "";
+}
+
 function renderPortfolio(data) {
   const hasPending = data.open_positions.some(
     (p) => p.status === "pending_execution" || p.status === "pending_market_entry"
   );
   const openRows = data.open_positions.length
     ? data.open_positions
-        .map(
-          (p) => `
+        .map((p) => {
+          const strat = strategyLabel(p);
+          const stratHtml = strat
+            ? `<div class="muted" style="font-size:0.85em;margin-top:2px">${escapeHtml(strat)}</div>`
+            : "";
+          return `
         <tr>
-          <td><a href="#/stock/${p.symbol}" class="pick-symbol">${p.symbol}</a></td>
+          <td><a href="#/stock/${p.symbol}" class="pick-symbol">${p.symbol}</a>${stratHtml}</td>
           <td>${p.entry_day || p.trading_day || "—"}</td>
           <td>$${p.capital_usd.toFixed(0)}</td>
           <td>${p.entry_price ? `$${Number(p.entry_price).toFixed(2)}` : p.entry_ref_price ? `$${Number(p.entry_ref_price).toFixed(2)}` : "—"}</td>
@@ -781,8 +799,8 @@ function renderPortfolio(data) {
                 ? `מאושר · כניסה ${p.scheduled_entry || "בפתיחה"}`
                 : "ממתין לקנייה"
           }</span></td>
-        </tr>`
-        )
+        </tr>`;
+        })
         .join("")
     : `<tr><td colspan="6" class="empty-cell">אין מניות בתיק — שלח התחל או לחץ קנה בדשבורד</td></tr>`;
 

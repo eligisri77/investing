@@ -351,6 +351,8 @@ class _SafeConsoleFilter(logging.Filter):
 
 
 def setup_logger(log_file: Path | None = None) -> None:
+    from trading_pulse.core.log_redact import RedactSecretsFilter
+
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -361,6 +363,9 @@ def setup_logger(log_file: Path | None = None) -> None:
         handlers=handlers,
         force=True,
     )
+    redact = RedactSecretsFilter()
+    for handler in logging.root.handlers:
+        handler.addFilter(redact)
     for handler in handlers:
         if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
             handler.addFilter(_SafeConsoleFilter())
@@ -1127,8 +1132,11 @@ def _send_telegram_api(
             log_telegram_message("out", context, sent_text, parse_mode=parse_mode)
         return True
     except Exception as ex:
+        from trading_pulse.core.log_redact import redact_secrets
+
+        safe = redact_secrets(ex)
         if parse_mode:
-            logging.warning("Telegram HTML send failed (%s), retrying plain text: %s", context, ex)
+            logging.warning("Telegram HTML send failed (%s), retrying plain text: %s", context, safe)
             try:
                 plain = re.sub(r"<[^>]+>", "", text)
                 telegram_api_call(token, "sendMessage", {"chat_id": chat_id, "text": plain})
@@ -1137,9 +1145,9 @@ def _send_telegram_api(
                     log_telegram_message("out", context, plain, parse_mode=None)
                 return True
             except Exception as retry_ex:
-                logging.warning("Telegram send failed (%s): %s", context, retry_ex)
+                logging.warning("Telegram send failed (%s): %s", context, redact_secrets(retry_ex))
                 return False
-        logging.warning("Telegram send failed (%s): %s", context, ex)
+        logging.warning("Telegram send failed (%s): %s", context, safe)
         return False
 
 
@@ -1209,7 +1217,9 @@ def send_telegram_photo(
             )
         return True
     except Exception as ex:
-        logging.warning("Telegram photo send failed (%s): %s", context, ex)
+        from trading_pulse.core.log_redact import redact_secrets
+
+        logging.warning("Telegram photo send failed (%s): %s", context, redact_secrets(ex))
         return False
 
 
@@ -1557,8 +1567,17 @@ def send_telegram_card(
 
 
 
-def parse_indices(raw: str, total: int) -> list[int]:
+def parse_indices(
+    raw: str,
+    total: int,
+    *,
+    recs: list[dict[str, Any]] | None = None,
+    include_below_bar: bool = False,
+) -> list[int]:
+    """Parse approve/reject indices. «הכל» skips below_bar (weak fallback) picks."""
     if raw.upper() == "ALL":
+        if recs is not None and not include_below_bar:
+            return [i for i, r in enumerate(recs) if not r.get("below_bar")]
         return list(range(total))
     picked: list[int] = []
     for chunk in raw.split(","):
@@ -1788,7 +1807,7 @@ def execute_sell_command(
     *,
     sell_usd: float | None = None,
 ) -> str:
-    from trading_pulse.agent.positions import free_cash, partial_sell_position, partial_sell_usd
+    from trading_pulse.agent.positions import free_cash, holdings_snapshot, partial_sell_position, partial_sell_usd
     from trading_pulse.telegram.reply_cards import card_sell
     from trading_pulse.telegram.telegram_format import format_sell_reply
 
@@ -1817,6 +1836,7 @@ def execute_sell_command(
         pnl_usd=float(trade["pnl_usd"]),
         cash=cash,
         target_usd=sold_usd,
+        holdings=holdings_snapshot(state),
     )
     try:
         send_telegram_card(
@@ -1881,7 +1901,7 @@ def execute_swap_command(
     sell_usd: float | None = None,
     buy_usd: float | None = None,
 ) -> str:
-    from trading_pulse.agent.positions import free_cash, partial_sell_position, partial_sell_usd
+    from trading_pulse.agent.positions import free_cash, holdings_snapshot, partial_sell_position, partial_sell_usd
     from trading_pulse.agent.trading_flow import before_market_entry
     from trading_pulse.telegram.telegram_format import format_swap_completed
 
@@ -1933,6 +1953,7 @@ def execute_swap_command(
                 entry_price=float(pos.get("entry_price", 0)),
                 bought_usd=purchase_usd,
                 cash=free_cash(state, cfg),
+                holdings=holdings_snapshot(state),
             )
         return (
             f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
@@ -1971,6 +1992,7 @@ def execute_swap_command(
             entry_price=float(pos.get("entry_price", 0)),
             bought_usd=purchase_usd,
             cash=free_cash(state, cfg),
+            holdings=holdings_snapshot(state),
         )
 
     indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol]
@@ -2159,19 +2181,38 @@ def apply_allocation_choice(trading_day: str, option_id: int, *, cfg: AgentConfi
     )
 
 
-def ensure_plan_allocation(cfg: AgentConfig, plan: dict[str, Any], state: dict[str, Any], trading_day: date) -> None:
-    """Entry runs only on user-confirmed plans."""
+def ensure_plan_allocation(
+    cfg: AgentConfig,
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    trading_day: date,
+    *,
+    purpose: str = "entry",
+) -> None:
+    """Entry runs only on user-confirmed plans. purpose=eod → quiet log (not a failed entry)."""
     from trading_pulse.agent.plan_engine import STATUS_CONFIRMED, normalize_status
 
     if normalize_status(plan) != STATUS_CONFIRMED:
-        logging.warning(
-            "Entry skipped for %s: plan not confirmed (send הכל or confirm in app)",
-            trading_day.isoformat(),
-        )
+        if purpose == "eod":
+            logging.info(
+                "EOD for %s: plan not confirmed (normal if no morning buys / hold-only day)",
+                trading_day.isoformat(),
+            )
+        else:
+            logging.warning(
+                "Entry skipped for %s: plan not confirmed (send הכל or confirm in app)",
+                trading_day.isoformat(),
+            )
         return
     alloc = plan.get("allocation") or {}
     if alloc.get("status") != "applied":
-        logging.warning("Entry skipped for %s: allocation not applied", trading_day.isoformat())
+        if purpose == "eod":
+            logging.info(
+                "EOD for %s: allocation not applied (entries may already have run)",
+                trading_day.isoformat(),
+            )
+        else:
+            logging.warning("Entry skipped for %s: allocation not applied", trading_day.isoformat())
 
 
 def plan_status_text(trading_day: str) -> str:
@@ -3275,18 +3316,36 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
             elif kind in {"approve", "reject"}:
                 trading_day = resolve_trading_day(parsed.get("day"))
                 plan = read_json(plan_path(date.fromisoformat(trading_day)))
-                total = len(plan.get("recommendations", []))
-                indices = parse_indices(str(parsed.get("indices_raw", "ALL")), total=total)
+                recs = plan.get("recommendations", []) or []
+                total = len(recs)
+                raw_idx = str(parsed.get("indices_raw", "ALL"))
+                indices = parse_indices(raw_idx, total=total, recs=recs)
                 if not indices:
-                    from trading_pulse.telegram.telegram_format import user_guide_invalid_approve
+                    from trading_pulse.telegram.telegram_format import (
+                        format_below_bar_approve_hint,
+                        user_guide_invalid_approve,
+                    )
 
-                    reply = user_guide_invalid_approve()
+                    weak = [r for r in recs if r.get("below_bar")]
+                    if raw_idx.upper() == "ALL" and weak and kind == "approve":
+                        reply = format_below_bar_approve_hint(weak, plan_recs=recs)
+                    else:
+                        reply = user_guide_invalid_approve()
                     reply_context = f"reply:{kind}"
                     send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                     handled += 1
                     continue
                 else:
                     reply = set_plan_status(trading_day, kind.upper(), indices, cfg=cfg)
+                    skipped_weak = [
+                        str(r["symbol"])
+                        for i, r in enumerate(recs)
+                        if r.get("below_bar") and i not in indices and raw_idx.upper() == "ALL"
+                    ]
+                    if skipped_weak and kind == "approve":
+                        from trading_pulse.telegram.telegram_format import format_below_bar_skipped_note
+
+                        reply = reply + "\n\n" + format_below_bar_skipped_note(skipped_weak)
                     reply_context = f"reply:{kind}"
                     send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                     handled += 1
@@ -3930,7 +3989,7 @@ def simulate_day(
     plan = read_json(path)
     approved = [x for x in plan.get("recommendations", []) if x.get("approved")]
     logging.info("Simulation for %s: %d approved trade(s)", trading_day.isoformat(), len(approved))
-    ensure_plan_allocation(cfg, plan, state, trading_day)
+    ensure_plan_allocation(cfg, plan, state, trading_day, purpose="eod")
     plan = read_json(path)
     approved = [x for x in plan.get("recommendations", []) if x.get("approved")]
 
@@ -4521,11 +4580,15 @@ def run_scheduler_loop(service: bool = True) -> None:
                 record_job("telegram_poll", "ok", f"{handled} command(s)")
                 logging.info("JOB DONE: telegram poll (%d command(s))", handled)
         except requests.exceptions.Timeout as ex:
-            logging.warning("Telegram poll timeout (will retry): %s", ex)
+            from trading_pulse.core.log_redact import redact_secrets
+
+            logging.warning("Telegram poll timeout (will retry): %s", redact_secrets(ex))
             record_job("telegram_poll", "skipped", "timeout — will retry")
         except requests.exceptions.RequestException as ex:
-            logging.warning("Telegram poll network error (will retry): %s", ex)
-            record_job("telegram_poll", "skipped", f"network: {ex}")
+            from trading_pulse.core.log_redact import redact_secrets
+
+            logging.warning("Telegram poll network error (will retry): %s", redact_secrets(ex))
+            record_job("telegram_poll", "skipped", f"network: {redact_secrets(ex)}")
         except Exception as ex:
             record_job("telegram_poll", "failed", str(ex))
             logging.exception("JOB FAILED: telegram poll: %s", ex)

@@ -53,6 +53,10 @@ def _append_pending_approved_rows(
                     "entry_day": trading_day,
                     "approved_at": plan.get("approved_at"),
                     "scheduled_entry": entry_when,
+                    "strategy": rec.get("strategy"),
+                    "trigger": rec.get("trigger"),
+                    "side": rec.get("side"),
+                    "pattern_weak": rec.get("pattern_weak"),
                 }
             )
             held_symbols.add(sym)

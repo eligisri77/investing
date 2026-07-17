@@ -128,14 +128,18 @@ Nav links in `renderNav()` in `app.js`. Reuse `.guide-*` CSS classes.
 
 For “what happened today?” use skill `trading-pulse-day-review` and/or subagent `trading-pulse-cracker` (read-only). Evidence lives under `instance/data/`.
 
-## Specialist subagents (after coding)
+## Specialist subagents (mandatory after coding)
+
+Launch via Task tool **before** telling the user the work is done:
 
 | Change | Delegate |
 |--------|----------|
-| New behavior / module | `@trading-pulse-test-writer` |
-| New command or flow text | `@trading-pulse-guide-updater` |
-| Plan / entry / intraday / report wording | `@trading-pulse-bot-messages` |
+| Any new/changed product behavior | `@trading-pulse-test-writer` (**required**) |
+| Commands, flows, or user-facing copy | `@trading-pulse-guide-updater` (**required**) |
+| Unclear plan / entry / intraday / report wording | `@trading-pulse-bot-messages` |
 | Final check | `@trading-pulse-verifier` |
+
+A `stop` hook nudges once if product files were edited without these specialists.
 
 ## Runtime notes
 

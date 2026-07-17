@@ -19,10 +19,19 @@ This repo is **Trading Pulse**. See root `AGENTS.md`.
 |------|-----|
 | Telegram / plans / guides / watchlist coding | `.cursor/skills/trading-pulse/SKILL.md` |
 | «מה קרה היום?» / logs / fills | `trading-pulse-day-review` + `@trading-pulse-cracker` |
-| New code → tests | `@trading-pulse-test-writer` (proactive after features) |
-| Commands / flow → app guides | `@trading-pulse-guide-updater` |
+| New code → tests | `@trading-pulse-test-writer` (**required** after product edits) |
+| Commands / flow → app guides | `@trading-pulse-guide-updater` (**required** when UX/commands change) |
 | Unclear / new bot messages | `@trading-pulse-bot-messages` |
 | Before saying «done» | skill `trading-pulse-ship-check` + `@trading-pulse-verifier` |
 | Optional GitHub MCP | copy `.cursor/mcp.json.example` → `mcp.json` (see `.cursor/README.md`) |
 
-Hooks (`.cursor/hooks.json`) block force-push to main / staging `.env` and inject a short session map.
+## Mandatory after product code changes
+
+Before telling the user a feature/fix is done, launch Task subagents (parallel OK):
+
+1. `trading-pulse-test-writer` — whenever you changed `trading_pulse/**` or `web/static/**` behavior
+2. `trading-pulse-guide-updater` — whenever commands, flows, or user-facing Telegram/dashboard text changed
+
+Do not skip these and “mention later”. A `stop` hook auto-nudges once if you forget.
+
+Hooks (`.cursor/hooks.json`): session map · shell safety · **auto ship follow-up** (tests/guides).

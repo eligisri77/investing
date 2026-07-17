@@ -75,6 +75,17 @@ def test_hold_when_no_price_data():
     h = _holding("XYZ", 50.0, 44.0, days=1)
     r = review_holding(h, cfg, {}, [])
     assert r.verdict == "hold"
+    assert "אין נתוני מחיר" in r.reason
+
+
+def test_mark_price_fallback_when_score_close_missing():
+    cfg = FakeCfg()
+    h = _holding("META", 100.0, 88.0, days=1)
+    h["mark_price"] = 103.0
+    r = review_holding(h, cfg, {}, [])
+    assert r.verdict == "hold"
+    assert round(r.pnl_pct) == 3
+    assert "אין נתוני מחיר" not in r.reason
 
 
 def test_review_holdings_batch_and_serialize():

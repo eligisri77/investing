@@ -22,11 +22,37 @@ if (-not (Test-Path $python)) {
     throw "Missing .venv. Run: python -m venv .venv ; .\.venv\Scripts\pip install -r requirements/requirements.txt"
 }
 
+function Get-AppVersion {
+    $ver = & $python -c "from trading_pulse.core.app_paths import APP_VERSION; print(APP_VERSION)"
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($ver)) {
+        throw "Could not read APP_VERSION from trading_pulse.core.app_paths"
+    }
+    return $ver.Trim()
+}
+
+function Ensure-Utf8Bom([string]$Path) {
+    $text = [System.IO.File]::ReadAllText($Path)
+    $utf8Bom = New-Object System.Text.UTF8Encoding $true
+    [System.IO.File]::WriteAllText($Path, $text, $utf8Bom)
+}
+
 Write-Host "==> Installing build dependencies..."
 if (-not $SkipInstall) {
     & $python -m pip install -q pyinstaller
     & $python -m pip install -q -r requirements/requirements.txt
 }
+
+Write-Host "==> Generating app icon (installer/assets/TradingPulse.ico)..."
+& $python (Join-Path $PSScriptRoot "assets\generate_icon.py")
+if ($LASTEXITCODE -ne 0) { throw "Icon generation failed" }
+
+$icon = Join-Path $PSScriptRoot "assets\TradingPulse.ico"
+if (-not (Test-Path $icon)) {
+    throw "Expected icon not found: $icon"
+}
+
+$version = Get-AppVersion
+Write-Host "==> App version: $version"
 
 Write-Host "==> PyInstaller (installer/trading_pulse.spec)..."
 & $python -m PyInstaller --noconfirm --clean installer/trading_pulse.spec
@@ -49,11 +75,19 @@ if ($Package) {
         throw "Inno Setup not found. Install from https://jrsoftware.org/isinfo.php or build without -Package"
     }
 
-    Write-Host "==> Inno Setup..."
-    & $iscc (Join-Path $PSScriptRoot "TradingPulse.iss")
+    # Hebrew info screens need UTF-8 BOM for Inno Setup
+    Ensure-Utf8Bom (Join-Path $PSScriptRoot "hebrew_info_before.txt")
+    Ensure-Utf8Bom (Join-Path $PSScriptRoot "hebrew_info_after.txt")
+
+    $iss = Join-Path $PSScriptRoot "TradingPulse.iss"
+    Write-Host "==> Inno Setup (version $version, Hebrew wizard)..."
+    # /DMyAppVersion= overrides the #ifndef fallback inside the .iss
+    & $iscc "/DMyAppVersion=$version" $iss
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
-    $setup = Get-ChildItem (Join-Path $PSScriptRoot "output\TradingPulse-Setup-*.exe") | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $setup = Get-ChildItem (Join-Path $PSScriptRoot "output\TradingPulse-Setup-*.exe") |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
     if ($setup) {
         Write-Host "OK: $($setup.FullName)"
         Write-Host ""

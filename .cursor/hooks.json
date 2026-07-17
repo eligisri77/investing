@@ -11,6 +11,22 @@
         "command": "python .cursor/hooks/safe_shell.py",
         "failClosed": false
       }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "python .cursor/hooks/track_product_edit.py"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "python .cursor/hooks/clear_ship_on_subagent.py"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python .cursor/hooks/ship_followup.py",
+        "loop_limit": 1
+      }
     ]
   }
 }

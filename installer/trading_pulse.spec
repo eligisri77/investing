@@ -46,6 +46,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+_icon = root / "installer" / "assets" / "TradingPulse.ico"
 exe = EXE(
     pyz,
     a.scripts,
@@ -62,6 +63,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(_icon) if _icon.is_file() else None,
 )
 
 coll = COLLECT(

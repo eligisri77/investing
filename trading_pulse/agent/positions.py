@@ -194,6 +194,9 @@ def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -
         "pnl_usd": round(capital * pnl_pct, 2),
         "days_held": int(pos.get("days_held", 0)),
         "entry_day": pos.get("entry_day"),
+        "strategy": pos.get("strategy"),
+        "trigger": pos.get("trigger"),
+        "pattern_weak": pos.get("pattern_weak"),
     }
 
 
@@ -221,6 +224,8 @@ def new_position_from_rec(rec: dict[str, Any], entry_price: float, trading_day: 
         "days_held": 0,
         "strategy": rec.get("strategy"),
         "trigger": rec.get("trigger"),
+        "pattern_weak": rec.get("pattern_weak"),
+        "sleeve": rec.get("sleeve"),
     }
 
 
@@ -511,6 +516,11 @@ def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
                 "floor_price": float(pos.get("floor_price", 0)) or None,
                 "days_held": int(pos.get("days_held", 0)),
                 "status": "holding",
+                "mark_price": float(pos["mark_price"]) if pos.get("mark_price") is not None else None,
+                "strategy": pos.get("strategy"),
+                "trigger": pos.get("trigger"),
+                "side": pos.get("side"),
+                "pattern_weak": pos.get("pattern_weak"),
             }
         )
     return rows

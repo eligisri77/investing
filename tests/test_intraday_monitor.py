@@ -113,7 +113,10 @@ def test_sell_recommended_on_near_stop_without_scores():
     quotes = {"MSTR": {"last": 89.0, "change_pct": -5.0}}
     alerts = {"MSTR": [PositionAlert("MSTR", "near_stop", "קרוב לרף", severity=3)]}
     suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
-    assert any(s.kind == "sell" and s.symbol == "MSTR" for s in suggestions)
+    sells = [s for s in suggestions if s.kind == "sell" and s.symbol == "MSTR"]
+    assert len(sells) == 1
+    assert "קרוב לרף" in sells[0].message
+    assert "ירידה חדה" not in sells[0].message
 
 
 def test_sell_recommendation_includes_redeploy_swap():

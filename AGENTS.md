@@ -15,14 +15,16 @@ Dry-run swing trading agent (Telegram + desktop dashboard). Package: `trading_pu
 | Tests for new code | `@trading-pulse-test-writer` |
 | Verify | `@trading-pulse-verifier` |
 
-## Feature pipeline
+## Feature pipeline (mandatory)
 
 1. Implement (main agent)
-2. `@trading-pulse-bot-messages` — if user-facing text
-3. `@trading-pulse-guide-updater` — if commands / flow
-4. `@trading-pulse-test-writer` — cover behavior
-5. `@trading-pulse-verifier` — green tests + gaps
+2. `@trading-pulse-bot-messages` — if user-facing text is new/unclear
+3. `@trading-pulse-guide-updater` — **required** when commands / flow / UX text change
+4. `@trading-pulse-test-writer` — **required** after product behavior changes
+5. `@trading-pulse-verifier` — green tests + gaps (before saying done)
 6. Restart if needed: `.\scripts\run_app.ps1`
+
+A project `stop` hook auto-nudges once if product edits landed without tests/guides specialists.
 
 ## Layout
 

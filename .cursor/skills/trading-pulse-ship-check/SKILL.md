@@ -23,12 +23,14 @@ Ship check
 - [ ] Restart noted if needed: .\scripts\run_app.ps1
 ```
 
-## Delegate order
+## Delegate order (do not skip 2–3 after product/UX edits)
 
 1. `@trading-pulse-bot-messages` (if text)
-2. `@trading-pulse-guide-updater` (if commands/docs)
-3. `@trading-pulse-test-writer`
+2. `@trading-pulse-guide-updater` — **required** for commands/flow/UX
+3. `@trading-pulse-test-writer` — **required** for behavior changes
 4. `@trading-pulse-verifier`
+
+If you forget, the project `stop` hook sends one automatic follow-up.
 
 ## Report to user
 

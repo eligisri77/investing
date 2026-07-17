@@ -8,16 +8,17 @@ alwaysApply: false
 
 When editing matched files, read `.cursor/skills/trading-pulse/SKILL.md` first.
 
-For dedicated follow-up: `@trading-pulse-bot-messages` (copy) · `@trading-pulse-guide-updater` (guides) · `@trading-pulse-test-writer` (tests).
+**After coding these files, before done:** launch Task `trading-pulse-test-writer` **and** `trading-pulse-guide-updater` (plus `@trading-pulse-bot-messages` if copy is unclear). Do not finish without them.
 
 ## Required on Telegram / UX changes
 
 1. New or changed command → `parse_telegram_user_command` + handler in `dryrun_agent.py`
 2. User-facing text → HTML (`telegram_format.escape_html`, `parse_mode="HTML"`)
-3. Update **`telegram_guide.py`** (dashboard מדריך) for every new user command
+3. Update **`telegram_guide.py`** (dashboard מדריך) for every new user command — via `@trading-pulse-guide-updater`
 4. Update **`telegram_format.user_guide_full()`** for common commands
 5. Update **`selection_guide.py`** if watchlist, scoring, or scan behavior changes
 6. Verify `app.js` nav/routes if adding a dashboard page
+7. Cover new behavior with pytest — via `@trading-pulse-test-writer`
 
 ## Two-step flow (do not break)
 

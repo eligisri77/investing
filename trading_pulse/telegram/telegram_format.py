@@ -93,7 +93,7 @@ def user_guide_full() -> str:
             "3. בערב אחרי סגירה — דוח יומי על הרווח/הפסד",
             "",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
-            "קנייה ממזומן: <code>תקנה 1 $20</code> · <code>קנה BEAM $50</code>",
+            "יש מזומן פנוי? הבוט מציע מה לעשות · חיזוק: <code>תקנה 1 $20</code> · <code>קנה BEAM $50</code>",
             "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
             "שני סכומים: <code>מכור 1 200$ קנה 2 100$</code>",
             "ניתוח מניה: <code>מניה NVDA</code> · <code>ציון AAPL</code>",
@@ -269,16 +269,19 @@ def format_current_holdings(holdings: list[dict[str, Any]]) -> list[str]:
     """What the user owns right now — invested $ per symbol."""
     if not holdings:
         return []
+    from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
     lines = ["<b>💼 התיק שלך עכשיו</b>"]
     total = 0.0
     for h in holdings:
         sym = escape_html(str(h["symbol"]))
+        tag = strategy_suffix_html(h)
         cap = float(h.get("capital_usd", 0))
         total += cap
         entry = h.get("entry_price")
         days = int(h.get("days_held", 0))
         entry_txt = f" @ ${float(entry):.2f}" if entry else ""
-        lines.append(f"• <b>{sym}</b> — <b>${cap:.0f}</b> מושקע{entry_txt} · {days} ימים")
+        lines.append(f"• <b>{sym}</b>{tag} — <b>${cap:.0f}</b> מושקע{entry_txt} · {days} ימים")
     lines.append(f"סה\"כ מושקע: <b>${total:.0f}</b>")
     return lines
 
@@ -290,7 +293,10 @@ def format_holding_actions(
     """Evening decision: hold / sell / swap per open position, with how-to commands."""
     if not actions:
         return []
+    from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
     cap_by_sym = {str(h["symbol"]): float(h.get("capital_usd", 0)) for h in (holdings or [])}
+    strat_by_sym = {str(h["symbol"]): h for h in (holdings or [])}
     lines = [
         "<b>📊 המלצות על התיק הקיים</b>",
         "<i>«הכל» לא מבצע החלפות/מכירות — רק קניות ממזומן. החלפה ידנית למטה.</i>",
@@ -299,13 +305,14 @@ def format_holding_actions(
     for a in actions:
         sym = escape_html(str(a.get("symbol", "")))
         raw_sym = str(a.get("symbol", ""))
+        tag = strategy_suffix_html(strat_by_sym.get(raw_sym) or a)
         verdict = str(a.get("verdict", "hold"))
         icon, label = _VERDICT_META.get(verdict, ("🟢", "החזק"))
         pnl = float(a.get("pnl_pct", 0))
         cap = float(a.get("capital_usd") or cap_by_sym.get(raw_sym, 0))
         cap_txt = f" · <b>${cap:.0f}</b> מושקע" if cap > 0 else ""
         reason = escape_html(str(a.get("reason", "")))
-        lines.append(f"{icon} <b>{sym}</b>{cap_txt} · {pnl:+.1f}% · <b>{label}</b>")
+        lines.append(f"{icon} <b>{sym}</b>{tag}{cap_txt} · {pnl:+.1f}% · <b>{label}</b>")
         if reason:
             lines.append(f"   {reason}")
         if verdict == "swap" and a.get("swap_to"):
@@ -341,7 +348,7 @@ def _rec_entry_hint(rec: dict[str, Any]) -> str:
         stop = float(rec.get("method2_stop_ref") or rec.get("floor_price") or 0)
         side_he = "שורט" if side == "SHORT" else "לונג"
         return (
-            f"שיטה 2 · {side_he} · טריגר {trig} · "
+            f"שיטה 2 · נרות סיניים · {side_he} · טריגר {trig} · "
             f"כניסה רק בפריצה ~${entry:.2f} (סטופ ~${stop:.2f})"
         )
     if strat == "rising_three_methods":
@@ -387,18 +394,37 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
                     "   → אחרי אישור: כניסה <b>רק אם נפרצת הרמה</b> "
                     "(בוקר או תוך־יום). בלי פריצה — אין קנייה."
                 )
+            elif r.get("below_bar"):
+                lines.append(
+                    f"   ⚠️ <b>מתחת לסף האיכות</b> — <code>הכל</code> <b>לא</b> מאשר אוטומטית"
+                )
+                lines.append(
+                    f"   ✅ <b>איך לבצע:</b> שלח <code>{idx}</code> לאישור מפורש "
+                    f"(או <code>דחה</code> לדלג)"
+                )
+                lines.append("   → רק אם אתה מקבל מניה חלשה כיום — לא אות חזק")
             else:
                 lines.append(
                     f"   ✅ <b>איך לבצע:</b> שלח <code>הכל</code> "
                     f"(או <code>{raw}</code> לאישור בודד)"
                 )
                 lines.append("   → מחר בפתיחת וול סטריט ייכנס אוטומטית במחיר פתיחה")
+        if any(r.get("below_bar") for r in new_recs):
+            lines.append(
+                "<i>«הכל» מאשר רק מניות שעברו את הסף — חלשות דורשות מספר מפורש</i>"
+            )
         if held:
             lines.append("<i>לא מחליף מניות קיימות אוטומטית — רק מוסיף ממזומן פנוי</i>")
-        lines.append(
-            "<b>סיכום ביצוע:</b> שלח <code>הכל</code> לאישור כל הקניות ממזומן"
-            + (" · שיטה 2 מחכה לפריצה" if has_method2 else "")
-        )
+        strong = [r for r in new_recs if not r.get("below_bar")]
+        if strong:
+            lines.append(
+                "<b>סיכום ביצוע:</b> שלח <code>הכל</code> לאישור הקניות שעברו סף"
+                + (" · שיטה 2 מחכה לפריצה" if has_method2 else "")
+            )
+        else:
+            lines.append(
+                "<b>סיכום ביצוע:</b> אין קניות חזקות ל«הכל» — אשר במספר או דחה"
+            )
     elif not dup_recs and not recs:
         pass
     elif recs and not dup_recs and not new_recs:
@@ -438,10 +464,18 @@ def format_what_all_does(
     elif intent == "add_needs_sell":
         lines.append("• אין מספיק מזומן — קודם מכירה/החלפה, ואז <code>הכל</code>")
     elif new_recs:
-        buys = " · ".join(
-            f"{escape_html(str(r['symbol']))} ${float(r['capital_usd']):.0f}" for r in new_recs
-        )
-        lines.append(f"• שלח <code>הכל</code> → קונה: <b>{buys}</b> ממזומן (${free:.0f})")
+        strong = [r for r in new_recs if not r.get("below_bar")]
+        weak = [r for r in new_recs if r.get("below_bar")]
+        if strong:
+            buys = " · ".join(
+                f"{escape_html(str(r['symbol']))} ${float(r['capital_usd']):.0f}" for r in strong
+            )
+            lines.append(f"• שלח <code>הכל</code> → קונה: <b>{buys}</b> ממזומן (${free:.0f})")
+        if weak:
+            wnames = ", ".join(escape_html(str(r["symbol"])) for r in weak)
+            lines.append(
+                f"• מתחת לסף ({wnames}): <code>הכל</code> מדלג — אשר במספר מהתוכנית"
+            )
         method2 = [r for r in new_recs if str(r.get("strategy")) == "method2"]
         if method2:
             names = ", ".join(escape_html(str(r["symbol"])) for r in method2)
@@ -453,6 +487,8 @@ def format_what_all_does(
             lines.append(
                 f"• התיק הקיים נשאר: <b>{escape_html(', '.join(sorted(held)))}</b>"
             )
+        if not strong and not weak:
+            lines.append("• אין קניות חדשות ממזומן — <code>הכל</code> לא ישנה את התיק")
     else:
         lines.append("• אין קניות חדשות ממזומן — <code>הכל</code> לא ישנה את התיק")
 
@@ -475,6 +511,98 @@ def format_what_all_does(
     return lines
 
 
+def _best_topup_holding(
+    holdings: list[dict[str, Any]],
+    actions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Pick a held name to suggest topping up with idle cash."""
+    if not holdings:
+        return None
+    actions = actions or []
+    by_sym = {str(a.get("symbol")): a for a in actions}
+    ranked: list[tuple[float, float, dict[str, Any]]] = []
+    for h in holdings:
+        sym = str(h.get("symbol") or "")
+        if not sym:
+            continue
+        a = by_sym.get(sym) or {}
+        # Prefer holds that aren't sell/swap candidates.
+        verdict = str(a.get("verdict") or "hold")
+        if verdict in {"sell", "swap"}:
+            continue
+        score = float(a.get("score") or 0)
+        pnl = float(a.get("pnl_pct") if a.get("pnl_pct") is not None else h.get("unrealized_pnl_pct") or 0)
+        ranked.append((score, pnl, h))
+    if not ranked:
+        # All marked sell/swap — still allow top-up of strongest PnL
+        for h in holdings:
+            pnl = float(h.get("unrealized_pnl_pct") or 0)
+            ranked.append((0.0, pnl, h))
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return ranked[0][2]
+
+
+def format_cash_deploy_advice(
+    cash: float,
+    holdings: list[dict[str, Any]],
+    *,
+    actions: list[dict[str, Any]] | None = None,
+    new_buy_symbols: set[str] | frozenset[str] | None = None,
+    min_cash: float = 20.0,
+) -> list[str]:
+    """What to do with idle cash — including topping up an existing holding."""
+    cash = float(cash or 0)
+    if cash < min_cash:
+        return []
+    holdings = holdings or []
+    new_buy_symbols = set(new_buy_symbols or ())
+    suggest_usd = int(round(cash)) if cash < 100 else int(round(cash / 5.0) * 5)
+    suggest_usd = max(int(min_cash), min(int(cash), suggest_usd))
+
+    lines = [
+        "",
+        f"<b>💰 יש מזומן פנוי · ${cash:.0f}</b>",
+        "<b>מה אפשר לעשות איתו:</b>",
+    ]
+    if new_buy_symbols:
+        lines.append(
+            "• אם אישרת קניות חדשות — המזומן ילך אליהן עם <code>הכל</code>"
+        )
+    top = _best_topup_holding(holdings, actions)
+    if top:
+        sym = str(top["symbol"])
+        slot = top.get("slot")
+        if slot:
+            cmd = f"תקנה {int(slot)} ${suggest_usd}"
+            alt = f"תקנה {sym} ${suggest_usd}"
+            lines.append(
+                f"• להוסיף ל־<b>{escape_html(sym)}</b> (כבר בתיק): "
+                f"שלח <code>{escape_html(cmd)}</code>"
+            )
+            lines.append(f"  או: <code>{escape_html(alt)}</code>")
+        else:
+            lines.append(
+                f"• להוסיף ל־<b>{escape_html(sym)}</b> (כבר בתיק): "
+                f"שלח <code>תקנה {escape_html(sym)} ${suggest_usd}</code>"
+            )
+        # Second option if another holding exists
+        others = [h for h in holdings if str(h.get("symbol")) != sym][:1]
+        for h in others:
+            o = str(h["symbol"])
+            lines.append(
+                f"• או למניה אחרת: <code>תקנה {escape_html(o)} ${suggest_usd}</code>"
+            )
+    elif not new_buy_symbols:
+        lines.append(
+            f"• לקנות מניה מהרשימה: <code>קנה SYMBOL ${suggest_usd}</code>"
+        )
+    lines.append("• להשאיר במזומן — אין חובה לקנות היום")
+    lines.append(
+        "<i>טיפ: <code>תקנה 1 $50</code> מוסיף למניה #1 בתיק בלי למכור אחרת</i>"
+    )
+    return lines
+
+
 def format_no_new_buys_banner(
     plan: dict[str, Any],
     *,
@@ -494,6 +622,7 @@ def format_no_new_buys_banner(
     if reason and not (plan.get("scan_stats") or {}).get("top_skipped_scores"):
         lines.append(escape_html(str(reason)))
 
+    free = float(plan.get("available_capital_usd", 0))
     manual = [a for a in actions if str(a.get("verdict")) in {"swap", "sell", "take_profit"}]
     if manual:
         lines.extend(
@@ -509,7 +638,7 @@ def format_no_new_buys_banner(
             [
                 "",
                 "<b>✅ המלצה:</b> להמשיך להחזיק את התיק עד הזדמנות מחר.",
-                "<i>אין צורך באישור — לא נשלחת קנייה.</i>",
+                "<i>אין צורך באישור אוטומטי — אין קנייה חדשה מהתוכנית.</i>",
             ]
         )
     else:
@@ -520,6 +649,9 @@ def format_no_new_buys_banner(
                 "<i>אין צורך לשלוח «הכל».</i>",
             ]
         )
+    lines.extend(
+        format_cash_deploy_advice(free, holdings, actions=actions, new_buy_symbols=set())
+    )
     return lines
 
 
@@ -552,6 +684,7 @@ def format_sell_reply(
     cash: float,
     target_symbol: str | None = None,
     target_usd: float | None = None,
+    holdings: list[dict[str, Any]] | None = None,
 ) -> str:
     sign = "+" if pnl_usd >= 0 else ""
     pct = int(round(fraction * 100))
@@ -566,7 +699,10 @@ def format_sell_reply(
             f"<code>החלף {escape_html(symbol)} {escape_html(target_symbol)}</code> "
             f"(~${target_usd:.0f})"
         )
-    else:
+    lines.extend(
+        format_cash_deploy_advice(cash, holdings or [], new_buy_symbols=set())
+    )
+    if not (target_symbol and target_usd) and cash < 20:
         lines.append("לקנייה חדשה: <code>החלף X Y</code> או אשר תוכנית עם «הכל»")
     return finalize("\n".join(lines))
 
@@ -579,18 +715,17 @@ def format_swap_completed(
     entry_price: float,
     bought_usd: float,
     cash: float,
+    holdings: list[dict[str, Any]] | None = None,
 ) -> str:
-    return finalize(
-        "\n".join(
-            [
-                "🔄 <b>החלפה הושלמה</b>",
-                f"מכרת <b>{escape_html(from_symbol)}</b> — <b>${sold_usd:.0f}</b>",
-                f"קנית <b>{escape_html(to_symbol)}</b> — <b>${bought_usd:.0f}</b> "
-                f"@ ${entry_price:.2f}",
-                f"מזומן פנוי: <b>${cash:.0f}</b>",
-            ]
-        )
-    )
+    lines = [
+        "🔄 <b>החלפה הושלמה</b>",
+        f"מכרת <b>{escape_html(from_symbol)}</b> — <b>${sold_usd:.0f}</b>",
+        f"קנית <b>{escape_html(to_symbol)}</b> — <b>${bought_usd:.0f}</b> "
+        f"@ ${entry_price:.2f}",
+        f"מזומן פנוי: <b>${cash:.0f}</b>",
+    ]
+    lines.extend(format_cash_deploy_advice(cash, holdings or [], new_buy_symbols=set()))
+    return finalize("\n".join(lines))
 
 
 def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
@@ -684,6 +819,16 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
 
     lines.extend(format_what_all_does(intent, recs, holdings, free, actions=actions))
 
+    if new_recs:
+        lines.extend(
+            format_cash_deploy_advice(
+                free,
+                holdings,
+                actions=actions,
+                new_buy_symbols={str(r["symbol"]) for r in new_recs},
+            )
+        )
+
     footer: list[str] = ["", "<i>פרטים + גרף לכל מניה ↓</i>", "", SEP]
     if new_recs:
         has_m2 = any(str(r.get("strategy")) == "method2" for r in new_recs)
@@ -752,8 +897,11 @@ def format_entry_notification(
             extra = f" · טריגר {iv}" + (f" {trig}" if trig else "")
         side = str(e.get("side") or "LONG").upper()
         side_tag = " שורט" if side == "SHORT" else ""
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
+        tag = strategy_suffix_html(e)
         lines.append(
-            f"• <b>{escape_html(e['symbol'])}</b>{side_tag} "
+            f"• <b>{escape_html(e['symbol'])}</b>{tag}{side_tag} "
             f"${float(e['capital_usd']):.0f} @ <b>${float(e['entry_price']):.2f}</b>{extra}"
         )
     lines.extend(["", "דוח סוף יום יישלח אחרי סגירת וול סטריט"])
@@ -820,7 +968,7 @@ def format_recommendation(
         trig = escape_html(str(rec.get("trigger") or ""))
         side = str(rec.get("side") or "LONG").upper()
         side_he = "שורט" if side == "SHORT" else "לונג"
-        lines.append(f"<b>שיטה 2 · {side_he} · טריגר {trig}</b>")
+        lines.append(f"<b>שיטה 2 · נרות סיניים · {side_he} · טריגר {trig}</b>")
         entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
         stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
         lines.append(f"פריצה ~${entry:.2f} · סטופ ~${stop:.2f} · כניסה רק אם נפרץ")
@@ -912,7 +1060,9 @@ def format_approval_reply(
                 extra = ""
                 if str(rec.get("strategy") or "") == "method2":
                     trig = escape_html(str(rec.get("trigger") or ""))
-                    extra = f" · שיטה 2 ({trig}) — כניסה בפריצה בלבד"
+                    extra = f" · שיטה 2 · נרות סיניים ({trig}) — כניסה בפריצה בלבד"
+                elif str(rec.get("strategy") or "") == "rising_three_methods":
+                    extra = " · נרות Rising Three — כניסה בפתיחה"
                 lines.append(f"• <b>{escape_html(sym)}</b> — <b>${amt:.0f}</b>{extra}")
             if any(
                 str(r.get("strategy") or "") == "method2"
@@ -999,18 +1149,23 @@ def format_report(report: dict[str, Any]) -> str:
 
     held = report.get("held_eod") or []
     if held:
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
         lines.extend(["", "<b>📂 עדיין מחזיקים</b>"])
         for pos in held:
             ur = float(pos.get("unrealized_pnl_usd", 0))
             ur_sign = "+" if ur >= 0 else ""
             ur_txt = f" · {ur_sign}${ur:.2f} ({float(pos.get('unrealized_pnl_pct', 0)):+.1f}%)" if pos.get("unrealized_pnl_usd") is not None else ""
+            tag = strategy_suffix_html(pos)
             lines.append(
-                f"• <b>{escape_html(pos['symbol'])}</b> "
+                f"• <b>{escape_html(pos['symbol'])}</b>{tag} "
                 f"${float(pos['capital_usd']):.0f} · {pos.get('days_held', 0)} ימים{ur_txt}"
             )
 
     executed = report.get("executed", [])
     if executed:
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
         lines.extend(["", "<b>✅ נסגרו היום</b>"])
         for t in executed:
             p = float(t.get("pnl_usd", 0))
@@ -1023,8 +1178,9 @@ def format_report(report: dict[str, Any]) -> str:
                 "max_hold_days": "מקס ימים",
             }.get(t.get("exit_reason", ""), t.get("exit_reason", ""))
             days = f" · {t['days_held']}י" if t.get("days_held") is not None else ""
+            tag = strategy_suffix_html(t)
             lines.append(
-                f"• <b>{escape_html(t['symbol'])}</b> {reason}{days}"
+                f"• <b>{escape_html(t['symbol'])}</b>{tag} {reason}{days}"
                 f" · <b>{sign}${p:.2f}</b> ({float(t.get('pnl_pct', 0)):+.1f}%)"
             )
     elif not held:
@@ -1055,21 +1211,31 @@ def format_portfolio(data: dict[str, Any]) -> str:
     open_positions = data.get("open_positions") or []
     pending = [p for p in open_positions if p.get("status") == "pending_market_entry"]
     holding = [p for p in open_positions if p.get("status") == "holding"]
+    cash = float(data.get("cash_usd", 0))
+    lines.extend(
+        format_cash_deploy_advice(cash, holding, actions=None, new_buy_symbols=set())
+    )
     if pending:
         lines.extend(["", "<b>⏳ מאושר — ממתין לפתיחת השוק</b>"])
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
         for p in pending:
             sym = escape_html(p["symbol"])
+            tag = strategy_suffix_html(p)
             when = escape_html(str(p.get("scheduled_entry", "פתיחת השוק")))
             approved = format_local_entry_moment(p.get("approved_at"))
             lines.append(
-                f"• <b>{sym}</b> ${p['capital_usd']:.0f} · אושר {escape_html(approved)} · כניסה {when}"
+                f"• <b>{sym}</b>{tag} ${p['capital_usd']:.0f} · אושר {escape_html(approved)} · כניסה {when}"
             )
     if holding:
         lines.extend(["", "<b>📌 בתיק עכשיו</b>"])
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
         for i, p in enumerate(holding):
             if i:
                 lines.append("")  # blank line between stocks
             sym = escape_html(p["symbol"])
+            tag = strategy_suffix_html(p)
             slot = p.get("slot")
             prefix = f"<b>#{slot}</b> " if slot else ""
             entry = p.get("entry_price")
@@ -1078,7 +1244,7 @@ def format_portfolio(data: dict[str, Any]) -> str:
             marked_val = float(p.get("marked_value_usd", p.get("capital_usd", 0)))
             ur = float(p.get("unrealized_pnl_usd", 0))
             ur_s = "+" if ur >= 0 else ""
-            lines.append(f"{prefix}<b>{sym}</b> ${p['capital_usd']:.0f}{price_bit}")
+            lines.append(f"{prefix}<b>{sym}</b>{tag} ${p['capital_usd']:.0f}{price_bit}")
             lines.append(
                 f"→ שווי <b>${marked_val:.0f}</b> ({ur_s}${ur:.0f}) · {escape_html(when)}"
             )
@@ -1127,6 +1293,8 @@ def format_intraday_monitor(report: Any) -> str:
 
     holdings = report.holdings or []
     if holdings:
+        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+
         lines.append("<b>📌 מושקע עכשיו</b>")
         for h in holdings[:6]:
             pnl = float(h.get("pnl_pct", 0))
@@ -1136,8 +1304,9 @@ def format_intraday_monitor(report: Any) -> str:
             cap_txt = f"<b>${cap:.0f}</b> מושקע · " if cap > 0 else ""
             floor = h.get("floor_price")
             floor_txt = f" · רף ${float(floor):.2f}" if floor else ""
+            tag = strategy_suffix_html(h)
             lines.append(
-                f"• <b>{escape_html(h['symbol'])}</b> — {cap_txt}"
+                f"• <b>{escape_html(h['symbol'])}</b>{tag} — {cap_txt}"
                 f"${h.get('last', 0):.2f}{floor_txt} · {sign}{pnl:.1f}% · היום {day:+.1f}%"
             )
 
@@ -1214,9 +1383,12 @@ def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn,
     lines = [
         "<b>💚 הסוכן חי</b>",
         SEP,
-        f"הון: <b>${equity:.2f}</b>",
-        escape_html(truncate(summary_fn(cfg, equity), 100)),
+        f"הון בספרים: <b>${equity:.2f}</b>",
     ]
+    marked_txt = _heartbeat_marked_line(state, equity)
+    if marked_txt:
+        lines.append(marked_txt)
+    lines.append(escape_html(truncate(summary_fn(cfg, equity), 100)))
     if speculative_fn(cfg):
         lines.append(escape_html(truncate(monthly_fn(cfg, state), 120)))
     plan_t = format_dual_time(str(cfg.planning_time)) or str(cfg.planning_time)
@@ -1224,6 +1396,53 @@ def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn,
     lines.append(f"תוכנית {escape_html(plan_t)}")
     lines.append(f"דוח {escape_html(report_t)}")
     return finalize("\n".join(lines))
+
+
+def _heartbeat_marked_line(state: dict[str, Any], equity: float) -> str | None:
+    """Optional marked equity (book + unrealized) when quotes are available."""
+    positions = [dict(p) for p in (state.get("open_positions") or [])]
+    if not positions:
+        return None
+    try:
+        from trading_pulse.agent.positions import enrich_held_unrealized
+        from trading_pulse.core.schedule_tz import us_trading_session_date
+
+        day = us_trading_session_date()
+        _, ur = enrich_held_unrealized(positions, day)
+        marked = round(equity + float(ur), 2)
+        ur_f = float(ur)
+        ur_sign = "+" if ur_f >= 0 else ""
+        return (
+            f"שווי משוער: <b>${marked:.2f}</b> "
+            f"(עתידי {ur_sign}${ur_f:.2f})"
+        )
+    except Exception:
+        return None
+
+
+def format_below_bar_approve_hint(weak_recs: list[dict[str, Any]], *, plan_recs: list[dict[str, Any]] | None = None) -> str:
+    """Reply when «הכל» would only cover below-threshold fallback picks."""
+    plan_recs = plan_recs or weak_recs
+    lines = [
+        "<b>⚠️ המלצות מתחת לסף — «הכל» לא מאשר אותן</b>",
+        "זה fallback חלש (לא אות איכות מלא). לאישור מפורש שלח את המספר:",
+    ]
+    for i, r in enumerate(plan_recs, start=1):
+        if not r.get("below_bar"):
+            continue
+        sym = escape_html(str(r.get("symbol", "")))
+        score = float(r.get("score") or 0)
+        lines.append(f"• שלח <code>{i}</code> — <b>{sym}</b> (ציון {score:.1f})")
+    lines.append("<i>או דחה: <code>דחה</code> / חכה לערב הבא</i>")
+    return finalize("\n".join(lines))
+
+
+def format_below_bar_skipped_note(symbols: list[str]) -> str:
+    names = ", ".join(escape_html(s) for s in symbols)
+    return (
+        f"⚠️ לא אושר אוטומטית (מתחת לסף): <b>{names}</b>\n"
+        "לאישור מפורש שלח את המספר מהתוכנית (למשל <code>1</code>)."
+    )
 
 
 def format_reply_plain(text: str) -> str:

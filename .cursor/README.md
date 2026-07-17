@@ -26,9 +26,13 @@ Do **not** commit real tokens. Prefer `${env:…}` interpolation.
 
 - `sessionStart` → reminds agents of Trading Pulse tooling
 - `beforeShellExecution` → blocks force-push to main / staging `.env`; asks on hard reset
+- `afterFileEdit` → marks product edits that still need tests/guides
+- `subagentStop` → clears pending when test-writer / guide-updater finish
+- `stop` → auto-nudges once to run those specialists if still pending (`loop_limit: 1`)
 
-Requires `python` on PATH (Windows OK).
+Requires `python` on PATH (Windows OK). State file: `.cursor/hooks/state/` (gitignored).
 
 ## After a feature (short)
 
-Messages → Guides → Tests → Verifier → restart if needed.
+Messages → Guides → Tests → Verifier → restart if needed.  
+Agents must run test-writer + guide-updater via Task; the stop hook enforces a one-shot reminder.

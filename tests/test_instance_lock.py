@@ -46,6 +46,19 @@ def test_refuses_when_our_process_alive(tmp_path, monkeypatch):
     assert il.acquire_instance_lock("app") is False
 
 
+def test_refuses_when_installed_exe_alive(tmp_path, monkeypatch):
+    """Installed build runs TradingPulse.exe — must count as our process."""
+    lock = _use_temp_lock(tmp_path, monkeypatch)
+    lock.write_text("4321 app\n", encoding="utf-8")
+    monkeypatch.setattr(il, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        il,
+        "_process_image_name",
+        lambda pid: r"C:\Users\Eli\AppData\Local\Programs\TradingPulse\TradingPulse.exe",
+    )
+    assert il.acquire_instance_lock("app") is False
+
+
 def test_second_acquire_in_same_process_is_idempotent(tmp_path, monkeypatch):
     _use_temp_lock(tmp_path, monkeypatch)
     assert il.acquire_instance_lock("app") is True

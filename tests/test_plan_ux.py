@@ -71,6 +71,8 @@ def test_format_plan_no_picks_skips_approval_steps():
     assert "13" in text
     assert "LABU (6.8)" in text
     assert "ח1" not in text
+    assert "יש מזומן פנוי" in text  # idle cash ≥ $20
+    assert "קנה SYMBOL" in text  # empty holdings
 
 
 def test_format_scan_summary_funnel():
@@ -136,6 +138,9 @@ def test_format_plan_with_holdings_explains_new_vs_held():
     assert "איך לבצע" in text
     assert "החלף" in text
     assert "הכל" in text
+    # New buys + idle cash: advice mentions הכל and prefers hold (LABD) over swap (RIVN)
+    assert "יש מזומן פנוי" in text
+    assert "תקנה LABD" in text or "תקנה" in text
 
 
 def test_format_approval_reply_new_vs_held():

@@ -54,16 +54,11 @@ def send_pre_simulation_reminder(cfg: Any, trading_day: date) -> bool:
 
     minutes = minutes_until_utc_hhmm(str(cfg.market_close_sim_time))
     text = format_pre_sim_reminder(minutes, kind)
-    from trading_pulse.telegram.app_notify import notify_user
-    from trading_pulse.agent.dryrun_agent import send_telegram_message
+    # Use send_user_notification once — do NOT nest notify_user(send_telegram_message)
+    # (that double-logged reminder:pre_sim into the inbox).
+    from trading_pulse.agent.dryrun_agent import send_user_notification
 
-    sent = notify_user(
-        cfg,
-        text,
-        "reminder:pre_sim",
-        parse_mode="HTML",
-        telegram_sender=send_telegram_message,
-    )
+    sent = send_user_notification(cfg, text, context="reminder:pre_sim", parse_mode="HTML")
     if not sent:
         return False
 

@@ -291,6 +291,14 @@ def _sell_recommendations(
         last = float(quotes.get(sym, {}).get("last", 0))
         pnl_pct = (last / entry - 1) * 100 if entry > 0 and last > 0 else 0
         pnl_txt = f"{pnl_pct:+.1f}% מהכניסה · " if entry > 0 and last > 0 else ""
+        if kinds & {"near_stop", "floor_breach"}:
+            lead = "קרוב לרף"
+        elif "heavy_loss" in kinds or (
+            "intraday_drop" in kinds and day_pct <= SELL_STRONG_DROP_PCT
+        ):
+            lead = "ירידה חדה"
+        else:
+            lead = "אזהרת מכירה"
 
         replacement = _top_candidate(cfg, scores, set(skip) | {sym})
         if replacement is not None:
@@ -303,7 +311,7 @@ def _sell_recommendations(
                     score=float(to_data.get("score", 0)),
                     swap_from=sym,
                     message=(
-                        f"ירידה חדה · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
+                        f"{lead} · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
                         f"(ציון {float(to_data.get('score', 0)):.1f})"
                     ),
                 )
@@ -314,7 +322,7 @@ def _sell_recommendations(
                     kind="sell",
                     symbol=sym,
                     message=(
-                        f"ירידה חדה · {pnl_txt}אין מועמדת חזקה — "
+                        f"{lead} · {pnl_txt}אין מועמדת חזקה — "
                         f"מכירה למזומן עד הזדמנות"
                     ),
                 )
@@ -588,6 +596,10 @@ def build_intraday_report(cfg: Any, state: dict[str, Any]) -> IntradayReport:
                 "pnl_pct": round((last / entry - 1) * 100, 2) if entry > 0 else 0,
                 "day_change_pct": quote.get("change_pct", 0),
                 "status": pos.get("status", "holding"),
+                "strategy": pos.get("strategy"),
+                "trigger": pos.get("trigger"),
+                "side": pos.get("side"),
+                "pattern_weak": pos.get("pattern_weak"),
             }
         )
 

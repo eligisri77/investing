@@ -68,7 +68,7 @@ def _is_our_process(pid: int) -> bool:
         # Can't verify (non-Windows or query failed) — fall back to alive check.
         return sys.platform != "win32"
     name = os.path.basename(image).lower()
-    return name in {"python.exe", "pythonw.exe"}
+    return name in {"python.exe", "pythonw.exe", "tradingpulse.exe"}
 
 
 def _read_lock() -> tuple[int, str] | None:

@@ -187,7 +187,9 @@ def render_portfolio_image(data: dict[str, Any]) -> bytes:
     colors: list[list[tuple[int, int, int]]] = []
 
     for p in sorted(open_positions, key=lambda x: (x.get("entry_at") or x.get("approved_at") or "", x["symbol"])):
-        symbol = str(p["symbol"])
+        from trading_pulse.agent.strategy_labels import strategy_suffix_plain
+
+        symbol = str(p["symbol"]) + strategy_suffix_plain(p)
         capital = float(p.get("capital_usd", 0))
         entry = p.get("entry_price") or p.get("entry_ref_price")
         entry_f = float(entry) if entry else 0.0
@@ -395,11 +397,13 @@ def render_report_image(report: dict[str, Any]) -> bytes:
     }
 
     for t in report.get("executed") or []:
+        from trading_pulse.agent.strategy_labels import strategy_suffix_plain
+
         p = float(t.get("pnl_usd", 0))
         ps = "+" if p >= 0 else ""
         rows.append(
             [
-                str(t["symbol"]),
+                str(t["symbol"]) + strategy_suffix_plain(t),
                 reason_map.get(t.get("exit_reason", ""), str(t.get("exit_reason", ""))),
                 str(t.get("days_held", "—")),
                 f"{ps}${p:.2f}",
@@ -409,11 +413,13 @@ def render_report_image(report: dict[str, Any]) -> bytes:
         colors.append([TEXT, TEXT, TEXT, _pnl_color(p), _pnl_color(p)])
 
     for pos in report.get("held_eod") or []:
+        from trading_pulse.agent.strategy_labels import strategy_suffix_plain
+
         ur = float(pos.get("unrealized_pnl_usd", 0))
         ps = "+" if ur >= 0 else ""
         rows.append(
             [
-                str(pos["symbol"]),
+                str(pos["symbol"]) + strategy_suffix_plain(pos),
                 "Holding",
                 str(pos.get("days_held", 0)),
                 f"{ps}${ur:.2f}" if pos.get("unrealized_pnl_usd") is not None else "—",

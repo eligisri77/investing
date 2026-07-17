@@ -41,3 +41,6 @@ installer/output/
 
 # Local MCP config (may reference secrets via env; keep example committed)
 .cursor/mcp.json
+
+# Cursor hook runtime state (pending tests/guides flags)
+.cursor/hooks/state/

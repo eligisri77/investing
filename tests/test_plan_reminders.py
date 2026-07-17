@@ -27,3 +27,26 @@ def test_plan_reminder_kind_ready():
         "allocation": {"status": "applied"},
     }
     assert plan_reminder_kind(plan) is None
+
+
+def test_parse_indices_all_skips_below_bar():
+    from trading_pulse.agent.dryrun_agent import parse_indices
+
+    recs = [
+        {"symbol": "META", "below_bar": False},
+        {"symbol": "NVDL", "below_bar": True},
+    ]
+    assert parse_indices("ALL", total=2, recs=recs) == [0]
+    assert parse_indices("ALL", total=2, recs=recs, include_below_bar=True) == [0, 1]
+    assert parse_indices("1,2", total=2, recs=recs) == [0, 1]
+
+
+def test_format_below_bar_approve_hint():
+    from trading_pulse.telegram.telegram_format import format_below_bar_approve_hint
+
+    recs = [{"symbol": "NVDL", "score": 5.8, "below_bar": True}]
+    text = format_below_bar_approve_hint(recs, plan_recs=recs)
+    assert "הכל" in text
+    assert "לא מאשר" in text
+    assert "NVDL" in text
+    assert "<code>1</code>" in text

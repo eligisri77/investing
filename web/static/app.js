@@ -1464,6 +1464,94 @@ async function testTelegramConnection(formEl, statusEl) {
   }
 }
 
+function renderUpdateSection(info) {
+  const current = info?.current_version || "—";
+  const upgrades = Array.isArray(info?.upgrades) ? info.upgrades : [];
+  const msg = info?.message || "";
+  const repo = info?.repo || "";
+  let body;
+  if (!info) {
+    body = `<p class="settings-section-note">לא ניתן לבדוק עדכונים כרגע.</p>`;
+  } else if (upgrades.length === 0) {
+    body = `<p class="settings-section-note">${escapeHtml(msg || "אין עדכון זמין.")}</p>`;
+  } else {
+    const rows = upgrades
+      .map((u, i) => {
+        const latest = i === 0 ? ' <span class="update-badge">מומלץ</span>' : "";
+        const sizeMb =
+          u.size_bytes != null ? ` · ${(Number(u.size_bytes) / (1024 * 1024)).toFixed(1)} MB` : "";
+        return `
+        <label class="update-option">
+          <input type="radio" name="update_version" value="${escapeHtml(u.version)}" ${i === 0 ? "checked" : ""} />
+          <span>
+            <b>${escapeHtml(u.version)}</b>${latest}${sizeMb}
+            ${u.name ? `<span class="settings-hint">${escapeHtml(u.name)}</span>` : ""}
+          </span>
+        </label>`;
+      })
+      .join("");
+    body = `
+      <p class="settings-section-note">רק שדרוג קדימה · מוצגות עד 3 גרסאות חדשות יותר מהנוכחית.</p>
+      <div class="update-options">${rows}</div>
+      <div class="settings-actions telegram-actions">
+        <button type="button" id="updateInstallBtn" class="btn btn-save">הורד והתקן</button>
+        <button type="button" id="updateRefreshBtn" class="btn btn-sm">בדוק שוב</button>
+        <p id="updateStatus" class="settings-status"></p>
+      </div>`;
+  }
+  return `
+    <section class="settings-section update-settings">
+      <h2 class="section-title">⬆ עדכון גרסה</h2>
+      <p class="telegram-intro">גרסה מותקנת: <b>${escapeHtml(current)}</b>
+        ${repo ? ` · מקור: <code>${escapeHtml(repo)}</code> Releases` : ""}</p>
+      ${body}
+    </section>`;
+}
+
+function bindUpdateSection() {
+  const refreshBtn = document.getElementById("updateRefreshBtn");
+  if (refreshBtn) {
+    refreshBtn.onclick = () => renderSettings();
+  }
+  const installBtn = document.getElementById("updateInstallBtn");
+  if (!installBtn) return;
+  installBtn.onclick = async () => {
+    const statusEl = document.getElementById("updateStatus");
+    const selected = document.querySelector('input[name="update_version"]:checked');
+    if (!selected) {
+      statusEl.textContent = "בחרו גרסה";
+      statusEl.className = "settings-status err";
+      return;
+    }
+    const version = selected.value;
+    if (!confirm(`להוריד ולהתקין את גרסה ${version}?\nאחרי שהמתקין נפתח — סגרו את האפליקציה מה-tray.`)) {
+      return;
+    }
+    statusEl.textContent = "מוריד…";
+    statusEl.className = "settings-status";
+    installBtn.disabled = true;
+    try {
+      const res = await fetch("/api/update/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = body.detail || res.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      statusEl.textContent = body.message || "המתקין נפתח.";
+      statusEl.className = "settings-status ok";
+    } catch (err) {
+      statusEl.textContent = `שגיאה: ${err.message}`;
+      statusEl.className = "settings-status err";
+    } finally {
+      installBtn.disabled = false;
+    }
+  };
+}
+
 function renderTelegramSettingsSection(tg) {
   const statusBadge = tg.configured
     ? `<span class="telegram-status ok">מחובר · ${escapeHtml(tg.bot_token_masked)} · chat ${escapeHtml(tg.chat_id_masked)}</span>`
@@ -1613,9 +1701,10 @@ async function renderBotGuide() {
 }
 
 async function renderSettings() {
-  const [data, tg] = await Promise.all([
+  const [data, tg, updateInfo] = await Promise.all([
     fetchJson("/api/settings"),
     fetchJson("/api/settings/telegram"),
+    fetchJson("/api/update").catch(() => null),
   ]);
   const timeDual = data.time_dual || {};
   const sections = (data.sections || [])
@@ -1637,6 +1726,7 @@ async function renderSettings() {
       <h1>⚙ הגדרות</h1>
       <p>הגדרות כלליות ב־config.json · בוט טלגרם ב־.env (לכל משתמש בוט משלו)</p>
     </section>
+    ${renderUpdateSection(updateInfo)}
     ${renderTelegramSettingsSection(tg)}
     <div class="settings-meta">
       <span>מקור סודות: <b>${escapeHtml(data.secrets_source || "—")}</b></span>
@@ -1665,6 +1755,8 @@ async function renderSettings() {
   });
   document.getElementById("telegramTestBtn").onclick = () =>
     testTelegramConnection(tgForm, tgStatus);
+
+  bindUpdateSection();
 
   form.querySelectorAll('input[type="time"]').forEach((input) => {
     input.addEventListener("input", () => {

@@ -50,6 +50,14 @@ User secrets and trading data **never** go inside the install folder in git — 
 
 User then opens **Settings** or **Bot guide** to connect Telegram.
 
+## Publishing a release (for the in-app updater)
+
+1. Bump `APP_VERSION` in `trading_pulse/core/app_paths.py`
+2. `.\installer\build.ps1 -Package`
+3. Create a GitHub Release tagged `vX.Y.Z` and upload `TradingPulse-Setup-X.Y.Z.exe`
+
+The app settings page lists up to **3 newer** releases (forward-only) from `eligisri77/investing`.
+
 ## Version bump
 
 1. Change only `trading_pulse/core/app_paths.py` → `APP_VERSION`

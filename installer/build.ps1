@@ -36,6 +36,44 @@ function Ensure-Utf8Bom([string]$Path) {
     [System.IO.File]::WriteAllText($Path, $text, $utf8Bom)
 }
 
+function Stop-TradingPulseProcesses {
+    # Packaged EXE locks dist\TradingPulse\_internal\*.pyd — PyInstaller --clean then fails.
+    $procs = @(Get-Process -Name "TradingPulse" -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { return }
+    Write-Host "==> Stopping running TradingPulse.exe (locks dist build output)..."
+    foreach ($p in $procs) {
+        Write-Host "    PID $($p.Id)"
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Clear-DistOutput {
+    $distApp = Join-Path $ProjectRoot "dist\TradingPulse"
+    if (-not (Test-Path $distApp)) { return }
+    Write-Host "==> Removing old dist\TradingPulse ..."
+    $ok = $false
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Remove-Item -LiteralPath $distApp -Recurse -Force -ErrorAction Stop
+            $ok = $true
+            break
+        } catch {
+            Write-Host "    retry $i/5: $($_.Exception.Message)"
+            Stop-TradingPulseProcesses
+            Start-Sleep -Seconds 2
+        }
+    }
+    if (-not $ok) {
+        throw @"
+Cannot delete dist\TradingPulse (file still locked).
+1) Close Trading Pulse from the tray (Exit / יציאה)
+2) Close any Explorer window inside dist\TradingPulse
+3) Re-run: .\installer\build.ps1 -Package -SkipInstall
+"@
+    }
+}
+
 Write-Host "==> Installing build dependencies..."
 if (-not $SkipInstall) {
     & $python -m pip install -q pyinstaller
@@ -53,6 +91,9 @@ if (-not (Test-Path $icon)) {
 
 $version = Get-AppVersion
 Write-Host "==> App version: $version"
+
+Stop-TradingPulseProcesses
+Clear-DistOutput
 
 Write-Host "==> PyInstaller (installer/trading_pulse.spec)..."
 & $python -m PyInstaller --noconfirm --clean installer/trading_pulse.spec

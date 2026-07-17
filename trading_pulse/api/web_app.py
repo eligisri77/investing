@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from trading_pulse.telegram.telegram_store import load_messages, merge_backfill
 
 from trading_pulse.core.app_settings import get_settings_payload, update_settings
+from trading_pulse.core.app_update import download_and_launch_installer, list_upgrade_options
 from trading_pulse.telegram.telegram_settings import get_telegram_settings_payload, test_telegram_connection, update_telegram_settings
 from trading_pulse.telegram.app_notify import inbox_summary, mark_inbox_read
 from trading_pulse.guides.selection_guide import get_selection_guide
@@ -83,6 +84,10 @@ class SettingsUpdateRequest(BaseModel):
 class TelegramSettingsUpdate(BaseModel):
     bot_token: str = Field(default="", description="Bot token from @BotFather; empty keeps current")
     chat_id: str = Field(default="", description="Numeric chat id; empty keeps current")
+
+
+class UpdateInstallRequest(BaseModel):
+    version: str = Field(description="Target version to install (must be newer; from /api/update list)")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -317,6 +322,22 @@ def api_telegram_settings_put(body: TelegramSettingsUpdate) -> dict[str, Any]:
 @app.post("/api/settings/telegram/test")
 def api_telegram_settings_test(body: TelegramSettingsUpdate) -> dict[str, Any]:
     return test_telegram_connection(bot_token=body.bot_token, chat_id=body.chat_id)
+
+
+@app.get("/api/update")
+def api_update_check() -> dict[str, Any]:
+    """List up to 3 newer GitHub Release versions (forward-only)."""
+    return list_upgrade_options(max_options=3)
+
+
+@app.post("/api/update/install")
+def api_update_install(body: UpdateInstallRequest) -> dict[str, Any]:
+    try:
+        return download_and_launch_installer(body.version.strip())
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"הורדת העדכון נכשלה: {ex}") from ex
 
 
 @app.get("/api/health")

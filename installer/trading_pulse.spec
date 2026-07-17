@@ -5,13 +5,24 @@ import sys
 from pathlib import Path
 
 block_cipher = None
-root = Path(SPECPATH).parent.parent
+# SPECPATH = directory containing this .spec (installer/), so repo root is parent.
+_spec_dir = Path(SPECPATH)
+root = _spec_dir.parent if _spec_dir.name == "installer" else _spec_dir.parent.parent
+if not (root / "trading_pulse" / "desktop" / "win_app.py").is_file():
+    raise SystemExit(f"Repo root not found from SPECPATH={SPECPATH!r} (resolved root={root})")
 
 datas = [
     (str(root / "web" / "static"), "web/static"),
     (str(root / "instance" / "config.example.json"), "."),
     (str(root / "instance" / ".env.example"), "."),
 ]
+
+try:
+    import certifi
+
+    datas.append((certifi.where(), "certifi"))
+except Exception:
+    pass
 
 hiddenimports = [
     "uvicorn.logging",
@@ -26,6 +37,7 @@ hiddenimports = [
     "uvicorn.lifespan.on",
     "uvicorn.lifespan.off",
     "dotenv",
+    "certifi",
 ]
 
 a = Analysis(

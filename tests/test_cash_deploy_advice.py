@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from trading_pulse.telegram.telegram_format import (
     format_cash_deploy_advice,
     format_no_new_buys_banner,
@@ -172,6 +174,50 @@ def test_sell_reply_includes_cash_deploy_when_cash_ge_20():
     assert "מכרת META" in text
     assert "יש מזומן פנוי" in text
     assert "תקנה PYPL" in text or "תקנה 1" in text
+
+
+@pytest.mark.parametrize(
+    ("pnl_usd", "outcome", "amount"),
+    [
+        (-12.5, "הפסד ממומש", "-$12.50"),
+        (12.5, "רווח ממומש", "+$12.50"),
+        (0.0, "רווח ממומש", "+$0.00"),
+    ],
+)
+def test_sell_reply_preserves_sign_and_names_outcome(pnl_usd, outcome, amount):
+    text = format_sell_reply(
+        "META",
+        fraction=1.0,
+        pnl_usd=pnl_usd,
+        cash=10,
+        equity=987.5,
+    )
+    assert outcome in text
+    assert f"<code>{amount}</code>" in text
+    assert "הון לאחר המכירה: <b>$987.50</b>" in text
+
+
+def test_no_buy_banner_uses_capacity_reason_without_quality_contradiction():
+    plan = {
+        "available_capital_usd": 0,
+        "max_trades": 0,
+        "scan_stats": {
+            "tickers_scanned": 20,
+            "before_quality": 4,
+            "after_quality": 1,
+        },
+        "capacity": {
+            "blocked_reason": "no_cash_and_slots",
+            "positions_open": 5,
+            "max_positions": 5,
+        },
+    }
+    text = "\n".join(
+        format_no_new_buys_banner(plan, holdings=[], actions=[])
+    )
+    assert "מניה אחת עברה את סף האיכות" in text
+    assert "אין מזומן ואין מקום בתיק" in text
+    assert "אין מניות שעברו את סף האיכות" not in text
 
 
 def test_swap_completed_includes_cash_deploy_when_cash_ge_20():

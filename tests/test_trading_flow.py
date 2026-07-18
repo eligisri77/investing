@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from trading_pulse.agent.dryrun_agent import parse_telegram_user_command
+from datetime import date
+
+import pytest
+
+import trading_pulse.agent.dryrun_agent as agent
+from trading_pulse.agent.dryrun_agent import AgentConfig, parse_telegram_user_command
 from trading_pulse.agent.trading_flow import initial_deploy_slots, is_empty_portfolio, plan_intent
 
 
@@ -35,3 +40,82 @@ def test_first_investment_intent():
     assert is_empty_portfolio(state)
     assert plan_intent(plan, state, Cfg()) == "first_investment"
     assert initial_deploy_slots(Cfg(), state) == 3
+
+
+@pytest.mark.parametrize(
+    "manual_pnls",
+    [
+        [5.0],
+        [5.0, -1.0],
+    ],
+)
+def test_simulate_day_merges_manual_exits_once_and_keeps_equity_transition(
+    tmp_path, monkeypatch, manual_pnls
+):
+    trading_day = date(2026, 7, 17)
+    plan_file = tmp_path / "plan.json"
+    report_file = tmp_path / "report.json"
+    state_file = tmp_path / "state.json"
+    agent.save_json(
+        plan_file,
+        {
+            "for_trading_day": trading_day.isoformat(),
+            "status": "executed",
+            "recommendations": [],
+        },
+    )
+    manual_rows = [
+        {
+            "exit_id": f"manual:{index}",
+            "symbol": "U",
+            "trading_day": trading_day.isoformat(),
+            "exit_reason": "user_sell",
+            "manual_exit": True,
+            "pnl_usd": pnl,
+            "fees_usd": 0.5,
+        }
+        for index, pnl in enumerate(manual_pnls)
+    ]
+    booked_pnl = sum(manual_pnls)
+    state = {
+        "equity": 1000.0 + booked_pnl,
+        "open_positions": [],
+        "intraday_floor_exits": manual_rows,
+        "history": [],
+    }
+    automatic = {
+        "symbol": "AUTO",
+        "exit_reason": "take_profit",
+        "pnl_usd": -2.0,
+        "fees_usd": 1.0,
+    }
+
+    monkeypatch.setattr(agent, "plan_path", lambda _day: plan_file)
+    monkeypatch.setattr(agent, "report_path", lambda _day: report_file)
+    monkeypatch.setattr(agent, "STATE_FILE", state_file)
+    monkeypatch.setattr(agent, "ensure_plan_allocation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.entries_already_run",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.simulate_swing_day",
+        lambda *_args, **_kwargs: ([automatic], [], -2.0, 1.0),
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.enrich_held_unrealized",
+        lambda held, _day: (held, 0.0),
+    )
+
+    report = agent.simulate_day(AgentConfig(), state, trading_day)
+
+    assert [row["exit_id"] for row in report["executed"] if row.get("manual_exit")] == [
+        row["exit_id"] for row in reversed(manual_rows)
+    ]
+    assert len(report["executed"]) == len(manual_rows) + 1
+    assert report["pnl_usd"] == booked_pnl - 2.0
+    assert report["pnl_applied_at_eod"] == -2.0
+    assert report["equity_before"] == 1000.0
+    assert report["equity_after"] == 1000.0 + booked_pnl - 2.0
+    assert state["equity"] == report["equity_after"]
+    assert state["history"] == [report]

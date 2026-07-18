@@ -186,6 +186,13 @@ def finalize(text: str, limit: int = 4000) -> str:
     return truncate(text, limit - 1)
 
 
+def format_days_he(value: Any) -> str:
+    days = int(value or 0)
+    if days == 1:
+        return "יום אחד"
+    return f"{days} ימים"
+
+
 def format_scan_summary(plan: dict[str, Any], *, html: bool = True) -> str:
     """Human-readable scan funnel: tickers → signal pass → quality pass → picks."""
     stats = plan.get("scan_stats") or {}
@@ -281,7 +288,10 @@ def format_current_holdings(holdings: list[dict[str, Any]]) -> list[str]:
         entry = h.get("entry_price")
         days = int(h.get("days_held", 0))
         entry_txt = f" @ ${float(entry):.2f}" if entry else ""
-        lines.append(f"• <b>{sym}</b>{tag} — <b>${cap:.0f}</b> מושקע{entry_txt} · {days} ימים")
+        lines.append(
+            f"• <b>{sym}</b>{tag} — <b>${cap:.0f}</b> מושקע{entry_txt} · "
+            f"{format_days_he(days)}"
+        )
     lines.append(f"סה\"כ מושקע: <b>${total:.0f}</b>")
     return lines
 
@@ -610,10 +620,52 @@ def format_no_new_buys_banner(
     actions: list[dict[str, Any]],
 ) -> list[str]:
     """Emphasize empty / weak recommendation days."""
+    stats = plan.get("scan_stats") or {}
+    quality_passed = int(stats.get("after_quality", 0) or 0)
+    free = float(plan.get("available_capital_usd", 0))
+    slots = int(plan.get("max_trades", 0) or 0)
+    capacity = plan.get("capacity") or {}
+    blocked_reason = str(capacity.get("blocked_reason") or "")
+    quality_text = (
+        "מניה אחת עברה את סף האיכות"
+        if quality_passed == 1
+        else f"{quality_passed} מניות עברו את סף האיכות"
+    )
+    if quality_passed > 0 and blocked_reason == "no_cash_and_slots":
+        explanation = (
+            f"⏸️ <b>{quality_text}, אבל אין מזומן ואין מקום בתיק</b>\n"
+            f"מזומן פנוי: <b>${free:.0f}</b> · פוזיציות: "
+            f"<b>{int(capacity.get('positions_open', 0))}/"
+            f"{int(capacity.get('max_positions', 0))}</b>."
+        )
+    elif quality_passed > 0 and blocked_reason == "no_open_slots":
+        explanation = (
+            f"⏸️ <b>{quality_text}, אבל התיק מלא</b>\n"
+            f"פוזיציות: <b>{int(capacity.get('positions_open', 0))}/"
+            f"{int(capacity.get('max_positions', 0))}</b>."
+        )
+    elif quality_passed > 0 and blocked_reason == "no_cash":
+        explanation = (
+            f"⏸️ <b>{quality_text}, אבל אין מזומן פנוי</b>\n"
+            f"מזומן פנוי: <b>${free:.0f}</b>."
+        )
+    elif quality_passed > 0 and blocked_reason == "market_regime":
+        explanation = (
+            f"⏸️ <b>{quality_text}, אבל מסנן מצב השוק עצר כניסות חדשות</b>"
+        )
+    elif quality_passed > 0 and (slots <= 0 or free < 1):
+        explanation = f"⏸️ <b>{quality_text}, אבל לא ניתן לפתוח עסקה חדשה כרגע</b>"
+    elif quality_passed > 0:
+        explanation = (
+            f"<b>{quality_text}</b>, "
+            "אך האסטרטגיות הפעילות לא נתנו אות כניסה מתאים."
+        )
+    else:
+        explanation = "<b>אין מניות שעברו את סף האיכות</b>"
     lines = [
         "",
         "🚫 <b>אין המלצות היום לקנייה חדשה</b>",
-        "<b>אין מניות שעברו את סף האיכות</b>",
+        explanation,
     ]
     summary = format_scan_summary(plan, html=True)
     if summary:
@@ -622,7 +674,6 @@ def format_no_new_buys_banner(
     if reason and not (plan.get("scan_stats") or {}).get("top_skipped_scores"):
         lines.append(escape_html(str(reason)))
 
-    free = float(plan.get("available_capital_usd", 0))
     manual = [a for a in actions if str(a.get("verdict")) in {"swap", "sell", "take_profit"}]
     if manual:
         lines.extend(
@@ -682,17 +733,21 @@ def format_sell_reply(
     fraction: float,
     pnl_usd: float,
     cash: float,
+    equity: float | None = None,
     target_symbol: str | None = None,
     target_usd: float | None = None,
     holdings: list[dict[str, Any]] | None = None,
 ) -> str:
-    sign = "+" if pnl_usd >= 0 else ""
+    outcome = "רווח ממומש" if pnl_usd >= 0 else "הפסד ממומש"
+    amount = f"+${abs(pnl_usd):.2f}" if pnl_usd >= 0 else f"-${abs(pnl_usd):.2f}"
     pct = int(round(fraction * 100))
     lines = [
         f"✅ <b>מכרת {escape_html(symbol)}</b> ({pct}%)",
-        f"רווח/הפסד ממומש: <b>{sign}${abs(pnl_usd):.2f}</b>",
+        f"{outcome}: <code>{amount}</code>",
         f"מזומן פנוי: <b>${cash:.0f}</b>",
     ]
+    if equity is not None:
+        lines.append(f"הון לאחר המכירה: <b>${equity:.2f}</b>")
     if target_symbol and target_usd:
         lines.append(
             f"לקניית <b>{escape_html(target_symbol)}</b>: שלח "
@@ -730,6 +785,8 @@ def format_swap_completed(
 
 def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
     """Format daily plan overview for Telegram (details sent per stock)."""
+    from trading_pulse.core.schedule_tz import format_local_entry_moment
+
     day = escape_html(plan.get("for_trading_day", ""))
     recs = plan.get("recommendations", [])
     equity = float(plan.get("equity_snapshot", 0))
@@ -747,6 +804,18 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
         "",
         f"💼 מזומן <b>${free:.0f}</b> · מושקע <b>${invested:.0f}</b> · סה\"כ <b>${equity:.0f}</b>",
     ]
+    generated_at = format_local_entry_moment(plan.get("generated_at"))
+    if generated_at != "—":
+        lines.append(f"נכון ל־{escape_html(generated_at)} (שעון ישראל)")
+    if plan.get("last_manual_action"):
+        action = escape_html(str(plan["last_manual_action"]))
+        if plan.get("portfolio_snapshot_stale"):
+            lines.append(
+                f"⚠️ התיק השתנה לאחר {action}. "
+                "ההזמנה שכבר אושרה לא שונתה."
+            )
+        else:
+            lines.append(f"🔄 התוכנית עודכנה לאחר {action}.")
     if plan.get("monthly_target_summary"):
         lines.append(escape_html(truncate(plan["monthly_target_summary"], 100)))
 
@@ -1129,12 +1198,14 @@ def format_approval_reply(
 def format_report(report: dict[str, Any]) -> str:
     day = escape_html(report.get("trading_day", ""))
     pnl = float(report.get("pnl_usd", 0))
-    pnl_sign = "+" if pnl >= 0 else ""
+    pnl_outcome = "רווח" if pnl > 0 else ("הפסד" if pnl < 0 else "ללא שינוי")
+    pnl_amount = f"+${abs(pnl):.2f}" if pnl > 0 else (f"-${abs(pnl):.2f}" if pnl < 0 else "$0.00")
     lines = [
         f"<b>📊 דוח יומי · {day}</b>",
         SEP,
-        f"הון: <code>${report['equity_before']}</code> → <code>${report['equity_after']}</code>",
-        f"רווח/הפסד: <b>{pnl_sign}${pnl:.2f}</b>",
+        f"הון בתחילת היום: <code>${report['equity_before']}</code>",
+        f"סה״כ שינוי ממומש היום: <b>{pnl_outcome} {pnl_amount}</b>",
+        f"הון בסוף היום: <code>${report['equity_after']}</code>",
     ]
     if report.get("fees_usd"):
         lines.append(f"עמלות: ${float(report['fees_usd']):.2f}")
@@ -1159,30 +1230,56 @@ def format_report(report: dict[str, Any]) -> str:
             tag = strategy_suffix_html(pos)
             lines.append(
                 f"• <b>{escape_html(pos['symbol'])}</b>{tag} "
-                f"${float(pos['capital_usd']):.0f} · {pos.get('days_held', 0)} ימים{ur_txt}"
+                f"${float(pos['capital_usd']):.0f} · "
+                f"{format_days_he(pos.get('days_held', 0))}{ur_txt}"
             )
 
     executed = report.get("executed", [])
     if executed:
         from trading_pulse.agent.strategy_labels import strategy_suffix_html
 
-        lines.extend(["", "<b>✅ נסגרו היום</b>"])
-        for t in executed:
-            p = float(t.get("pnl_usd", 0))
-            sign = "+" if p >= 0 else ""
-            reason = {
-                "stop_loss": "סטופ",
-                "floor_price": "מחיר תחתון",
-                "take_profit": "יעד",
-                "close": "סגירה",
-                "max_hold_days": "מקס ימים",
-            }.get(t.get("exit_reason", ""), t.get("exit_reason", ""))
-            days = f" · {t['days_held']}י" if t.get("days_held") is not None else ""
-            tag = strategy_suffix_html(t)
-            lines.append(
-                f"• <b>{escape_html(t['symbol'])}</b>{tag} {reason}{days}"
-                f" · <b>{sign}${p:.2f}</b> ({float(t.get('pnl_pct', 0)):+.1f}%)"
-            )
+        def _append_trade_group(title: str, trades: list[dict[str, Any]]) -> None:
+            if not trades:
+                return
+            lines.extend(["", f"<b>{title}</b>"])
+            for trade in trades:
+                trade_pnl = float(trade.get("pnl_usd", 0))
+                trade_amount = (
+                    f"+${abs(trade_pnl):.2f}"
+                    if trade_pnl >= 0
+                    else f"-${abs(trade_pnl):.2f}"
+                )
+                reason = {
+                    "stop_loss": "סטופ",
+                    "floor_price": "מחיר תחתון",
+                    "take_profit": "יעד",
+                    "close": "סגירה",
+                    "max_hold_days": "מקס ימים",
+                    "user_sell": "מכירה ידנית",
+                }.get(
+                    trade.get("exit_reason", ""),
+                    trade.get("exit_reason", ""),
+                )
+                days = (
+                    f" · {format_days_he(trade['days_held'])}"
+                    if trade.get("days_held") is not None
+                    else ""
+                )
+                tag = strategy_suffix_html(trade)
+                lines.append(
+                    f"• <b>{escape_html(trade['symbol'])}</b>{tag} {reason}{days}"
+                    f" · <code>{trade_amount}</code> "
+                    f"({float(trade.get('pnl_pct', 0)):+.1f}%)"
+                )
+
+        manual = [
+            trade
+            for trade in executed
+            if trade.get("manual_exit") or trade.get("exit_reason") == "user_sell"
+        ]
+        automatic = [trade for trade in executed if trade not in manual]
+        _append_trade_group("🧾 מכירות ידניות", manual)
+        _append_trade_group("✅ נסגרו אוטומטית היום", automatic)
     elif not held:
         lines.append("\nאין עסקאות היום.")
 
@@ -1376,7 +1473,16 @@ def format_no_entries_morning(*, trading_day: str) -> str:
     )
 
 
-def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn, speculative_fn) -> str:
+def format_heartbeat(
+    cfg: Any,
+    state: dict[str, Any],
+    *,
+    summary_fn,
+    monthly_fn,
+    speculative_fn,
+    market_day: bool = True,
+    next_trading_day: str | None = None,
+) -> str:
     from trading_pulse.core.schedule_tz import format_dual_time
 
     equity = float(state.get("equity", cfg.initial_capital))
@@ -1391,10 +1497,24 @@ def format_heartbeat(cfg: Any, state: dict[str, Any], *, summary_fn, monthly_fn,
     lines.append(escape_html(truncate(summary_fn(cfg, equity), 100)))
     if speculative_fn(cfg):
         lines.append(escape_html(truncate(monthly_fn(cfg, state), 120)))
-    plan_t = format_dual_time(str(cfg.planning_time)) or str(cfg.planning_time)
-    report_t = format_dual_time(str(cfg.market_close_sim_time)) or str(cfg.market_close_sim_time)
-    lines.append(f"תוכנית {escape_html(plan_t)}")
-    lines.append(f"דוח {escape_html(report_t)}")
+    if market_day:
+        plan_t = format_dual_time(str(cfg.planning_time)) or str(cfg.planning_time)
+        report_t = format_dual_time(str(cfg.market_close_sim_time)) or str(cfg.market_close_sim_time)
+        lines.append(f"תוכנית {escape_html(plan_t)}")
+        lines.append(f"דוח {escape_html(report_t)}")
+    else:
+        lines.extend(
+            [
+                "",
+                "💤 <b>וול סטריט סגורה היום</b>",
+                "אין כניסות או דוח מסחר.",
+                (
+                    f"התוכנית הבאה תישלח לקראת המסחר ב־{escape_html(next_trading_day)}."
+                    if next_trading_day
+                    else "התוכנית הבאה תישלח לקראת יום המסחר הבא."
+                ),
+            ]
+        )
     return finalize("\n".join(lines))
 
 

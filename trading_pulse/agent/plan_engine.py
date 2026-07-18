@@ -172,6 +172,38 @@ def refresh_stale_draft_plan(cfg: Any, state: dict[str, Any], after_day: date) -
     return True
 
 
+def sync_active_plan_after_manual_action(
+    cfg: Any,
+    state: dict[str, Any],
+    *,
+    action: str,
+) -> bool:
+    """Refresh the visible plan after a manual portfolio change."""
+    from datetime import datetime, timezone
+
+    from trading_pulse.agent.dryrun_agent import plan_path, read_json, save_json
+
+    trading_day = active_trading_day()
+    if not trading_day:
+        return False
+    path = plan_path(date.fromisoformat(trading_day))
+    if not path.exists():
+        return False
+    plan = read_json(path)
+    status = normalize_status(plan)
+    if status == STATUS_DRAFT:
+        sync_plan_portfolio_snapshot(plan, state, cfg)
+        plan["portfolio_snapshot_stale"] = False
+        plan["portfolio_synced_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        # Never rewrite already-confirmed order amounts after a manual action.
+        plan["portfolio_snapshot_stale"] = True
+    plan["portfolio_changed_at"] = datetime.now(timezone.utc).isoformat()
+    plan["last_manual_action"] = action
+    save_json(path, plan)
+    return True
+
+
 def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict[str, Any]:
     """
     One-step confirm (like tapping Confirm on a broker order preview):

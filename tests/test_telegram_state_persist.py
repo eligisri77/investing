@@ -67,3 +67,103 @@ def test_telegram_poll_preserves_sell_when_saving_offset(tmp_path, monkeypatch):
     assert saved["telegram_last_update_id"] == 11
     assert saved["open_positions"][0]["capital_usd"] == 313.0
     assert saved["equity"] == 1003.0
+
+
+def test_app_and_telegram_failure_persists_delivery_and_warning(
+    tmp_path, monkeypatch
+):
+    from trading_pulse.telegram import app_notify, telegram_store
+
+    messages_file = tmp_path / "messages.json"
+    monkeypatch.setattr(telegram_store, "MESSAGES_FILE", messages_file)
+    monkeypatch.setattr(telegram_store, "TELEGRAM_DIR", tmp_path)
+    monkeypatch.setattr(app_notify, "bump_inbox", lambda **_kwargs: {})
+
+    class Cfg:
+        notification_mode = "both"
+
+    assert app_notify.notify_user(
+        Cfg(),
+        "<b>תוכנית</b>",
+        "plan",
+        parse_mode="HTML",
+        telegram_sender=lambda *_args, **_kwargs: False,
+    )
+
+    messages = telegram_store.load_messages()
+    original = next(row for row in messages if row["context"] == "plan")
+    warning = next(
+        row
+        for row in messages
+        if row["context"] == "delivery:telegram_failed"
+    )
+    assert original["text"] == "תוכנית"
+    assert original["metadata"]["delivery"]["app"]["status"] == "delivered"
+    assert original["metadata"]["delivery"]["telegram"]["status"] == "failed"
+    assert original["metadata"]["delivery"]["telegram"]["at"]
+    assert "לא נמסרה לטלגרם" in warning["text"]
+    assert warning["metadata"]["original_context"] == "plan"
+
+
+def test_message_metadata_update_merges_and_persists(tmp_path, monkeypatch):
+    from trading_pulse.telegram import telegram_store
+
+    monkeypatch.setattr(
+        telegram_store, "MESSAGES_FILE", tmp_path / "messages.json"
+    )
+    monkeypatch.setattr(telegram_store, "TELEGRAM_DIR", tmp_path)
+    row = telegram_store.append_message(
+        "out",
+        "plan",
+        "hello",
+        message_id="out:fixed",
+        metadata={"keep": "value"},
+    )
+
+    updated = telegram_store.update_message_metadata(
+        row["id"],
+        {"delivery": {"telegram": {"status": "failed"}}},
+    )
+
+    assert updated is not None
+    persisted = telegram_store.get_message("out:fixed")
+    assert persisted["metadata"]["keep"] == "value"
+    assert persisted["metadata"]["delivery"]["telegram"]["status"] == "failed"
+
+
+def test_retry_api_updates_delivery_metadata(monkeypatch):
+    import trading_pulse.api.web_app as web_app
+
+    updates = []
+    message = {
+        "id": "out:fixed",
+        "direction": "out",
+        "context": "plan",
+        "text": "תוכנית",
+        "metadata": {
+            "delivery": {
+                "app": {"status": "delivered", "at": "before"},
+                "telegram": {"status": "failed", "at": "before"},
+            }
+        },
+    }
+    monkeypatch.setattr(web_app, "get_message", lambda _message_id: message)
+    monkeypatch.setattr(web_app, "load_agent_config", lambda: object())
+    monkeypatch.setattr(
+        web_app,
+        "update_message_metadata",
+        lambda message_id, metadata: updates.append((message_id, metadata)),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_send_telegram_as_card",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = web_app.api_retry_telegram_message("out:fixed")
+
+    assert result["ok"] is True
+    assert result["delivery"]["app"]["status"] == "delivered"
+    assert result["delivery"]["telegram"]["status"] == "delivered"
+    assert result["delivery"]["telegram"]["at"] != "before"
+    assert updates == [("out:fixed", {"delivery": result["delivery"]})]

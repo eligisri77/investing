@@ -394,6 +394,7 @@ def render_report_image(report: dict[str, Any]) -> bytes:
         "take_profit": "Target",
         "close": "Close",
         "max_hold_days": "Max days",
+        "user_sell": "Manual sell",
     }
 
     for t in report.get("executed") or []:

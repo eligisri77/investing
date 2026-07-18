@@ -266,9 +266,9 @@ def risk_profile_summary(cfg: AgentConfig, equity: float | None = None) -> str:
     max_deploy = capital * float(profile["max_deploy_pct"])
     per_trade = capital * cfg.max_position_pct
     return (
-        f"{profile['label']} ({cfg.risk_profile}) | "
-        f"up to {int(profile['max_deploy_pct']*100)}% deployed (${max_deploy:.0f}) | "
-        f"{cfg.max_trades_per_day} trades x ${per_trade:.0f}"
+        f"{profile['label']} | "
+        f"עד {int(profile['max_deploy_pct']*100)}% מההון מושקע (${max_deploy:.0f}) | "
+        f"עד {cfg.max_trades_per_day} עסקאות, כ־${per_trade:.0f} לעסקה"
     )
 
 
@@ -1063,6 +1063,10 @@ def format_plan_message_for_app(plan: dict[str, Any]) -> str:
 
 def format_heartbeat_message(cfg: AgentConfig, state: dict[str, Any]) -> str:
     from trading_pulse.telegram.telegram_format import format_heartbeat
+    from trading_pulse.core.schedule_tz import us_trading_session_date
+
+    session_day = us_trading_session_date()
+    market_day = is_us_trading_day(session_day)
 
     return format_heartbeat(
         cfg,
@@ -1070,6 +1074,12 @@ def format_heartbeat_message(cfg: AgentConfig, state: dict[str, Any]) -> str:
         summary_fn=risk_profile_summary,
         monthly_fn=monthly_target_summary,
         speculative_fn=is_speculative,
+        market_day=market_day,
+        next_trading_day=(
+            get_next_us_trading_day(session_day).isoformat()
+            if not market_day
+            else None
+        ),
     )
 
 
@@ -1834,12 +1844,25 @@ def execute_sell_command(
             return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
         sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
+    try:
+        from trading_pulse.agent.plan_engine import (
+            sync_active_plan_after_manual_action,
+        )
+
+        sync_active_plan_after_manual_action(
+            cfg,
+            state,
+            action=f"מכירה ידנית של {symbol.upper()}",
+        )
+    except OSError as ex:
+        logging.warning("Could not refresh active plan after sell: %s", ex)
     cash = free_cash(state)
     html = format_sell_reply(
         symbol,
         fraction=fraction,
         pnl_usd=float(trade["pnl_usd"]),
         cash=cash,
+        equity=float(state.get("equity", 0)),
         target_usd=sold_usd,
         holdings=holdings_snapshot(state),
     )
@@ -1851,6 +1874,7 @@ def execute_sell_command(
                 fraction=fraction,
                 pnl_usd=float(trade["pnl_usd"]),
                 cash=cash,
+                equity=float(state.get("equity", 0)),
                 sold_usd=sold_usd,
             ),
             f"✅ מכרת {symbol}",
@@ -2587,6 +2611,17 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "buy_usd": float(buy_cmd.group(2)),
         }
 
+    natural_sell = re.fullmatch(
+        rf"(?:מכירה|מכיר|למכור)\s+(\d+|{_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if natural_sell:
+        return {
+            "kind": "sell_confirmation",
+            "ref": natural_sell.group(1),
+        }
+
     sell_match = re.fullmatch(
         r"(?:מכור|sell)\s+(?:(\d+(?:\.\d+)?)%\s+)?([A-Za-z][A-Za-z0-9.\-^]{0,9})",
         raw.strip(),
@@ -2775,11 +2810,17 @@ def telegram_help_text() -> str:
 
 
 def telegram_unknown_reply() -> str:
-    from trading_pulse.telegram.telegram_format import user_guide_full, user_guide_step1, user_guide_step2
+    from trading_pulse.telegram.telegram_format import user_guide_step2
 
     if allocation_choice_pending_for_active_plan():
         return "\n".join(["❓ <b>לא הבנתי.</b> אולי התכוונת לחלוקה?", "", user_guide_step2()])
-    return "\n".join(["❓ <b>לא הבנתי.</b>", "", user_guide_full()])
+    return "\n".join(
+        [
+            "❓ <b>לא הבנתי את הפקודה.</b>",
+            "דוגמאות: <code>תיק</code> · <code>תוכנית</code> · <code>מכור U</code>",
+            "לכל האפשרויות: <code>עזרה</code>",
+        ]
+    )
 
 
 def resend_plan_telegram(cfg: AgentConfig, plan: dict[str, Any]) -> None:
@@ -3251,6 +3292,28 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                         )
 
                 threading.Thread(target=_run_weekly_scan, daemon=True).start()
+                handled += 1
+                continue
+            elif kind == "sell_confirmation":
+                ref = str(parsed.get("ref") or "")
+                symbol = resolve_sell_target(ref)
+                if symbol:
+                    reply = (
+                        f"❓ <b>התכוונת למכור את {symbol}?</b>\n"
+                        f"לביצוע המכירה שלח: <code>מכור {symbol}</code>\n"
+                        "<i>לא בוצעה פעולה.</i>"
+                    )
+                else:
+                    reply = (
+                        "❌ <b>לא מצאתי את המניה בתיק</b>\n"
+                        "שלח <code>תיק</code> כדי לראות את המספר או הסימבול."
+                    )
+                send_telegram_message(
+                    cfg,
+                    reply,
+                    context="reply:sell_confirmation",
+                    parse_mode="HTML",
+                )
                 handled += 1
                 continue
             elif kind == "sell":
@@ -3933,6 +3996,18 @@ def generate_plan(
         r.to_dict()
         for r in review_holdings(holdings, cfg, universe_scores, recommendations)
     ]
+    no_cash = deployable < 1
+    no_slots = open_slots <= 0 or new_trade_slots <= 0
+    if market_regime and float(market_regime.get("exposure_multiplier", 1.0)) <= 0:
+        blocked_reason = "market_regime"
+    elif no_cash and no_slots:
+        blocked_reason = "no_cash_and_slots"
+    elif no_slots:
+        blocked_reason = "no_open_slots"
+    elif no_cash:
+        blocked_reason = "no_cash"
+    else:
+        blocked_reason = None
 
     plan = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -3963,6 +4038,14 @@ def generate_plan(
             "min_volume_ratio": float(cfg.min_volume_ratio or 0),
             **filter_stats,
         },
+        "capacity": {
+            "open_slots": open_slots,
+            "new_trade_slots": new_trade_slots,
+            "cash_free_usd": round(deployable, 2),
+            "positions_open": len(holdings),
+            "max_positions": int(cfg.max_open_positions),
+            "blocked_reason": blocked_reason,
+        },
     }
     if recommendations:
         plan["status"] = "draft"
@@ -3980,6 +4063,16 @@ def generate_plan(
                 )
             else:
                 plan["no_picks_reason"] = "הסינון האיכותי לא מצא מניה שעומדת בכל התנאים."
+        elif not candidates.empty and (new_trade_slots <= 0 or deployable < 1):
+            plan["no_picks_reason"] = (
+                f"{len(candidates)} מניות עברו את סף האיכות, "
+                "אך אין כרגע מזומן או מקום פנוי בתיק."
+            )
+        elif not candidates.empty:
+            plan["no_picks_reason"] = (
+                f"{len(candidates)} מניות עברו את סף האיכות, "
+                "אך האסטרטגיות הפעילות לא נתנו אות כניסה מתאים."
+            )
         else:
             plan["no_picks_reason"] = "לא נמצאו מועמדים בסריקת האותות להיום."
     if speculative:
@@ -4034,7 +4127,9 @@ def revert_prior_simulation(state: dict[str, Any], trading_day: date) -> None:
     prior = [h for h in history if h.get("trading_day") == day_str]
     if not prior:
         return
-    pnl_total = sum(float(h.get("pnl_usd", 0)) for h in prior)
+    pnl_total = sum(
+        float(h.get("pnl_applied_at_eod", h.get("pnl_usd", 0))) for h in prior
+    )
     state["equity"] = round(float(state["equity"]) - pnl_total, 2)
     state["history"] = [h for h in history if h.get("trading_day") != day_str]
     remaining = state["history"]
@@ -4048,31 +4143,39 @@ def _merge_intraday_floor_exits(
 ) -> list[dict[str, Any]]:
     day_str = trading_day.isoformat()
     merged = list(executed)
-    seen = {str(t.get("symbol")) for t in merged}
     for row in state.get("intraday_floor_exits") or []:
         if row.get("trading_day") != day_str:
             continue
         symbol = str(row.get("symbol", ""))
-        if not symbol or symbol in seen:
+        if not symbol:
             continue
         merged.insert(
             0,
             {
+                **row,
                 "symbol": symbol,
-                "entry_price": row.get("entry_price"),
-                "exit_price": row.get("exit_price"),
                 "exit_reason": row.get("exit_reason", "floor_price"),
-                "capital_usd": row.get("capital_usd"),
-                "pnl_pct": row.get("pnl_pct"),
-                "pnl_usd": row.get("pnl_usd"),
-                "days_held": row.get("days_held"),
-                "entry_day": row.get("entry_day"),
-                "fees_usd": row.get("fees_usd", 0),
                 "intraday_exit": True,
+                "manual_exit": bool(row.get("manual_exit")),
             },
         )
-        seen.add(symbol)
     return merged
+
+
+def _booked_exits_summary(
+    state: dict[str, Any],
+    trading_day: date,
+) -> tuple[float, float]:
+    """PnL already applied to equity before the EOD simulation runs."""
+    rows = [
+        row
+        for row in (state.get("intraday_floor_exits") or [])
+        if row.get("trading_day") == trading_day.isoformat()
+    ]
+    return (
+        round(sum(float(row.get("pnl_usd", 0)) for row in rows), 2),
+        round(sum(float(row.get("fees_usd", 0)) for row in rows), 2),
+    )
 
 
 def run_entry_simulation(
@@ -4184,6 +4287,7 @@ def simulate_day(
         executed, held_eod, pnl_total, fees_total = simulate_swing_day(
             cfg, state, trading_day, approved, eod_only=skip_entries
         )
+        booked_pnl, booked_fees = _booked_exits_summary(state, trading_day)
         executed = _merge_intraday_floor_exits(state, trading_day, executed)
         if not executed and not approved and not held_eod:
             report = {
@@ -4199,17 +4303,21 @@ def simulate_day(
             save_json(report_path(trading_day), report)
             return report
 
+        day_pnl_total = round(pnl_total + booked_pnl, 2)
+        day_fees_total = round(fees_total + booked_fees, 2)
         equity_after = equity_before + pnl_total
+        report_equity_before = equity_after - day_pnl_total
         held_eod, unrealized_pnl_usd = enrich_held_unrealized(held_eod, trading_day)
         report = {
             "trading_day": trading_day.isoformat(),
             "executed": executed,
             "held_eod": held_eod,
-            "pnl_usd": round(pnl_total, 2),
-            "fees_usd": fees_total,
+            "pnl_usd": day_pnl_total,
+            "pnl_applied_at_eod": round(pnl_total, 2),
+            "fees_usd": day_fees_total,
             "unrealized_pnl_usd": unrealized_pnl_usd,
             "equity_marked_usd": round(equity_after + unrealized_pnl_usd, 2),
-            "equity_before": round(equity_before, 2),
+            "equity_before": round(report_equity_before, 2),
             "equity_after": round(equity_after, 2),
             "max_daily_loss_usd": round(daily_loss_limit, 2),
             "hold_mode": "swing",

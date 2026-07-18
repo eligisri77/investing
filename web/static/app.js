@@ -124,8 +124,8 @@ function destroyCharts() {
   while (charts.length) charts.pop().destroy();
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url);
+async function fetchJson(url, options = undefined) {
+  const res = await fetch(url, options);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -706,6 +706,11 @@ async function renderActivePlan() {
   const day = data.trading_day;
   const recs = plan.recommendations || [];
   const symbols = recs.map((r) => r.symbol).join(" · ");
+  const syncNote = plan.last_manual_action
+    ? plan.portfolio_snapshot_stale
+      ? `<p class="plan-simple-sub">⚠️ התיק השתנה לאחר ${escapeHtml(plan.last_manual_action)}. ההזמנה שכבר אושרה לא שונתה.</p>`
+      : `<p class="plan-simple-sub">🔄 התוכנית עודכנה לאחר ${escapeHtml(plan.last_manual_action)}.</p>`
+    : "";
 
   if (data.confirmed && !data.bought) {
     const entryWhen = data.entry_when ? escapeHtml(data.entry_when) : "";
@@ -715,6 +720,7 @@ async function renderActivePlan() {
         <h1>✅ מאושר — ממתין לפתיחת השוק</h1>
         <p><b>${escapeHtml(symbols)}</b> — $${recs.reduce((s, r) => s + Number(r.capital_usd || 0), 0).toFixed(0)} סה״כ</p>
         <p class="plan-simple-sub">⏰ כניסה לשוק: <b>${entryWhen}</b></p>
+        ${syncNote}
         <a href="#/portfolio" class="btn btn-start plan-cta">צפה בתיק →</a>
       </section>
       <details class="plan-details">
@@ -746,6 +752,7 @@ async function renderActivePlan() {
       <h1>📋 המלצות ליום ${escapeHtml(day)}</h1>
       <p>${recs.length} מניות: <b>${escapeHtml(symbols)}</b></p>
       <p class="plan-simple-sub">אישור = הזמנה לפתיחת השוק. הקנייה במחיר פתיחה.</p>
+      ${syncNote}
       <button type="button" class="btn btn-start plan-cta" id="planStartBtn">אשר הזמנה</button>
     </section>
     <details class="plan-details" open>
@@ -767,6 +774,7 @@ async function renderActivePlan() {
     <section class="hero plan-simple">
       <h1>📋 אין המלצות פעילות</h1>
       <p>ממתין לסריקת ערב (~23:15) או שלח <code>תוכנית עכשיו</code> בטלגרם.</p>
+      ${syncNote}
     </section>`;
 }
 
@@ -980,21 +988,57 @@ function renderMessages(data) {
           m.parse_mode === "HTML" ? stripHtml(m.text) : m.text;
         const preview =
           body.length > 1200 ? body.slice(0, 1200) + "…" : body;
+        const telegramStatus = m.metadata?.delivery?.telegram?.status;
+        const deliveryHtml = isOut && telegramStatus
+          ? `<span class="msg-tag">${
+              telegramStatus === "delivered"
+                ? "אפליקציה ✓ · טלגרם ✓"
+                : telegramStatus === "failed"
+                  ? "אפליקציה ✓ · טלגרם נכשל"
+                  : telegramStatus === "pending"
+                    ? "טלגרם בהמתנה"
+                    : "באפליקציה בלבד"
+            }</span>`
+          : "";
         return `
           <div class="msg-bubble ${isOut ? "out" : "in"}">
             <div class="msg-meta">
               <span class="msg-ctx">${contextLabel(m.context)}</span>
               <span class="msg-time">${formatMsgTime(m.timestamp)}</span>
               ${m.backfilled ? '<span class="msg-tag">ארכיון</span>' : ""}
+              ${deliveryHtml}
             </div>
             ${
               m.metadata?.image_id
                 ? `<img class="msg-image" src="/api/telegram/images/${encodeURIComponent(m.metadata.image_id)}" alt="" loading="lazy" />`
                 : `<pre class="msg-body">${escapeHtml(preview)}</pre>`
             }
+            ${
+              telegramStatus === "failed"
+                ? `<button type="button" class="btn msg-retry" data-message-id="${escapeHtml(m.id)}">נסה שוב בטלגרם</button>`
+                : ""
+            }
           </div>`;
       })
       .join("");
+    thread.querySelectorAll(".msg-retry").forEach((btn) => {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = "שולח…";
+        try {
+          const result = await fetchJson(
+            `/api/telegram/messages/${encodeURIComponent(btn.dataset.messageId)}/retry`,
+            { method: "POST" }
+          );
+          if (!result.ok) throw new Error("השליחה נכשלה");
+          await renderMessages(await fetchJson("/api/telegram/messages"));
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "נסה שוב בטלגרם";
+          alert(`שגיאה: ${err.message}`);
+        }
+      };
+    });
     thread.scrollTop = thread.scrollHeight;
   }
 

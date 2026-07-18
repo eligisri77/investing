@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from trading_pulse.telegram.telegram_store import append_message as log_inbox_message
+from trading_pulse.telegram.telegram_store import update_message_metadata
 
 from trading_pulse.core.app_paths import INBOX_STATE_FILE
 
@@ -103,14 +104,66 @@ def notify_user(
             "requires_action": requires_action,
         }
 
+    telegram_requested = (
+        uses_telegram_notifications(cfg) and telegram_sender is not False
+    )
+    app_entry: dict[str, Any] | None = None
     if uses_app_notifications(cfg):
         plain = strip_html(text) if parse_mode == "HTML" else text
-        log_inbox_message("out", context, plain, parse_mode=None, metadata=metadata)
+        now = datetime.now(timezone.utc).isoformat()
+        metadata["delivery"] = {
+            "app": {"status": "delivered", "at": now},
+            "telegram": {
+                "status": "pending" if telegram_requested else "not_requested",
+                "at": None,
+            },
+        }
+        app_entry = log_inbox_message(
+            "out",
+            context,
+            plain,
+            parse_mode=None,
+            metadata=metadata,
+        )
         bump_inbox(requires_action=requires_action, trading_day=trading_day)
         sent = True
 
-    if uses_telegram_notifications(cfg) and telegram_sender is not False:
-        if telegram_sender is not None and telegram_sender(cfg, text, context, parse_mode=parse_mode):
+    telegram_delivered = False
+    if telegram_requested:
+        telegram_delivered = bool(
+            telegram_sender is not None
+            and telegram_sender(cfg, text, context, parse_mode=parse_mode)
+        )
+        if app_entry:
+            delivery = dict(
+                (app_entry.get("metadata") or {}).get("delivery") or {}
+            )
+            delivery["telegram"] = {
+                "status": "delivered" if telegram_delivered else "failed",
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            update_message_metadata(
+                str(app_entry["id"]),
+                {"delivery": delivery},
+            )
+        if telegram_delivered:
             sent = True
+        elif uses_app_notifications(cfg):
+            warning = (
+                "⚠️ ההודעה נשמרה באפליקציה, אך לא נמסרה לטלגרם. "
+                "בדוק את החיבור והגדרות הבוט."
+            )
+            log_inbox_message(
+                "out",
+                "delivery:telegram_failed",
+                warning,
+                parse_mode=None,
+                metadata={
+                    "delivery_status": "failed",
+                    "channel": "telegram",
+                    "original_context": context,
+                },
+            )
+            bump_inbox()
 
     return sent

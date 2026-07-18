@@ -61,6 +61,29 @@ def append_message(
     return entry
 
 
+def get_message(message_id: str) -> dict[str, Any] | None:
+    return next(
+        (message for message in load_messages() if message.get("id") == message_id),
+        None,
+    )
+
+
+def update_message_metadata(
+    message_id: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    messages = load_messages()
+    for message in messages:
+        if message.get("id") != message_id:
+            continue
+        current = dict(message.get("metadata") or {})
+        current.update(metadata)
+        message["metadata"] = current
+        save_messages(messages)
+        return message
+    return None
+
+
 def merge_backfill(entries: list[dict[str, Any]]) -> int:
     messages = load_messages()
     existing = {m.get("id") for m in messages}

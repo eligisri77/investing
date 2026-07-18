@@ -14,6 +14,7 @@ from trading_pulse.agent.plan_engine import (
     normalize_status,
     pending_buy_symbols,
     plan_is_protected,
+    sync_active_plan_after_manual_action,
     supersede_other_plans,
 )
 
@@ -136,3 +137,86 @@ def test_cancel_plan_no_active_returns_reason(tmp_path, monkeypatch):
     result = cancel_plan(as_of=date(2099, 1, 4))
     assert result["ok"] is False
     assert result["reason"] == "no_active_plan"
+
+
+def test_manual_action_refreshes_draft_plan_snapshot(tmp_path, monkeypatch):
+    plan_file = tmp_path / "plan.json"
+    save_json(
+        plan_file,
+        {
+            "for_trading_day": "2026-07-20",
+            "status": STATUS_DRAFT,
+            "equity_snapshot": 1000,
+            "holdings": [{"symbol": "U", "capital_usd": 200}],
+            "recommendations": [{"symbol": "NVDA", "capital_usd": 300}],
+        },
+    )
+    state = {
+        "equity": 1012.5,
+        "open_positions": [
+            {
+                "symbol": "U",
+                "capital_usd": 100,
+                "entry_price": 50,
+                "entry_day": "2026-07-15",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "trading_pulse.agent.plan_engine.active_trading_day",
+        lambda: "2026-07-20",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.plan_path",
+        lambda _day: plan_file,
+    )
+
+    assert sync_active_plan_after_manual_action(
+        AgentConfig(), state, action="מכירה ידנית של U"
+    )
+    updated = __import__(
+        "trading_pulse.agent.dryrun_agent", fromlist=["read_json"]
+    ).read_json(plan_file)
+    assert updated["holdings"][0]["capital_usd"] == 100
+    assert updated["equity_snapshot"] == 1012.5
+    assert updated["portfolio_snapshot_stale"] is False
+    assert updated["last_manual_action"] == "מכירה ידנית של U"
+    assert "portfolio_synced_at" in updated
+
+
+def test_manual_action_marks_confirmed_plan_stale_without_reallocating(
+    tmp_path, monkeypatch
+):
+    plan_file = tmp_path / "plan.json"
+    original = {
+        "for_trading_day": "2026-07-20",
+        "status": STATUS_CONFIRMED,
+        "equity_snapshot": 1000,
+        "holdings": [{"symbol": "U", "capital_usd": 200}],
+        "recommendations": [
+            {"symbol": "NVDA", "capital_usd": 300, "approved": True}
+        ],
+        "allocation": {"status": "applied", "amounts": {"NVDA": 300}},
+    }
+    save_json(plan_file, original)
+    monkeypatch.setattr(
+        "trading_pulse.agent.plan_engine.active_trading_day",
+        lambda: "2026-07-20",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.plan_path",
+        lambda _day: plan_file,
+    )
+
+    assert sync_active_plan_after_manual_action(
+        AgentConfig(),
+        {"equity": 1010, "open_positions": []},
+        action="מכירה ידנית של U",
+    )
+    updated = __import__(
+        "trading_pulse.agent.dryrun_agent", fromlist=["read_json"]
+    ).read_json(plan_file)
+    assert updated["portfolio_snapshot_stale"] is True
+    assert updated["recommendations"] == original["recommendations"]
+    assert updated["allocation"] == original["allocation"]
+    assert updated["equity_snapshot"] == 1000

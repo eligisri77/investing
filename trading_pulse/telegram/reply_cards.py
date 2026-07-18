@@ -234,16 +234,20 @@ def card_sell(
     fraction: float,
     pnl_usd: float,
     cash: float,
+    equity: float | None = None,
     sold_usd: float | None = None,
 ) -> bytes:
     pct = int(round(fraction * 100))
-    sign = "+" if pnl_usd >= 0 else ""
+    outcome = "רווח ממומש" if pnl_usd >= 0 else "הפסד ממומש"
+    amount = f"+${abs(pnl_usd):.2f}" if pnl_usd >= 0 else f"-${abs(pnl_usd):.2f}"
     rows = [
         ("מניה", symbol),
         ("נמכר", f"{pct}%" + (f" · ${sold_usd:.0f}" if sold_usd else "")),
-        ("רווח/הפסד ממומש", f"{sign}${abs(pnl_usd):.2f}"),
+        (outcome, amount),
         ("מזומן פנוי", f"${cash:.0f}"),
     ]
+    if equity is not None:
+        rows.append(("הון לאחר המכירה", f"${equity:.2f}"))
     return render_reply_card(
         f"מכרת {symbol}",
         accent="green" if pnl_usd >= 0 else "red",

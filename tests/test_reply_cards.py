@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from trading_pulse.telegram.reply_cards import (
     card_buy,
     card_entry,
@@ -50,6 +52,43 @@ def test_trade_cards():
         [{"symbol": "BEAM", "capital_usd": 320, "entry_price": 36.6}],
         trading_day="2026-07-09",
     ).startswith(b"\x89PNG")
+
+
+@pytest.mark.parametrize(
+    ("pnl_usd", "outcome", "amount", "accent"),
+    [
+        (-3.25, "הפסד ממומש", "-$3.25", "red"),
+        (3.25, "רווח ממומש", "+$3.25", "green"),
+        (0.0, "רווח ממומש", "+$0.00", "green"),
+    ],
+)
+def test_sell_card_preserves_sign_and_names_outcome(
+    monkeypatch, pnl_usd, outcome, amount, accent
+):
+    captured = {}
+
+    def fake_render(title, **kwargs):
+        captured.update(title=title, **kwargs)
+        return b"png"
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.render_reply_card",
+        fake_render,
+    )
+
+    assert (
+        card_sell(
+            "RIVN",
+            fraction=0.5,
+            pnl_usd=pnl_usd,
+            cash=120,
+            equity=996.75,
+        )
+        == b"png"
+    )
+    assert (outcome, amount) in captured["rows"]
+    assert ("הון לאחר המכירה", "$996.75") in captured["rows"]
+    assert captured["accent"] == accent
 
 
 def test_portfolio_card():

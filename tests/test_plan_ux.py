@@ -5,8 +5,22 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import patch
 
-from trading_pulse.agent.dryrun_agent import AgentConfig, apply_risk_profile, ensure_month_tracking, generate_plan, load_config, plan_is_protected, save_json
-from trading_pulse.telegram.telegram_format import format_plan
+from trading_pulse.agent.dryrun_agent import (
+    AgentConfig,
+    apply_risk_profile,
+    ensure_month_tracking,
+    generate_plan,
+    load_config,
+    plan_is_protected,
+    risk_profile_summary,
+    save_json,
+)
+from trading_pulse.telegram.telegram_format import (
+    format_days_he,
+    format_heartbeat,
+    format_plan,
+    format_report,
+)
 
 
 def test_apply_risk_profile_respects_config_overrides():
@@ -349,3 +363,74 @@ def test_generate_plan_skips_locked_plan(tmp_path, monkeypatch):
     assert plan["_regeneration_skipped"] is True
     assert plan["recommendations"][0]["symbol"] == "LABU"
     mock_fetch.assert_not_called()
+
+
+def test_weekend_heartbeat_explains_closed_market_and_next_session():
+    cfg = AgentConfig()
+    text = format_heartbeat(
+        cfg,
+        {"equity": 1000},
+        summary_fn=lambda *_args: "סיכון שמרני",
+        monthly_fn=lambda *_args: "",
+        speculative_fn=lambda _cfg: False,
+        market_day=False,
+        next_trading_day="2026-07-20",
+    )
+    assert "וול סטריט סגורה היום" in text
+    assert "אין כניסות או דוח מסחר" in text
+    assert "2026-07-20" in text
+    assert "תוכנית 20:15" not in text
+    assert "דוח 20:20" not in text
+
+
+def test_hebrew_day_grammar_and_report_outcomes():
+    assert format_days_he(1) == "יום אחד"
+    assert format_days_he(2) == "2 ימים"
+    report = {
+        "trading_day": "2026-07-17",
+        "pnl_usd": 0,
+        "equity_before": 1000,
+        "equity_after": 1000,
+        "held_eod": [{"symbol": "U", "capital_usd": 100, "days_held": 1}],
+        "executed": [],
+    }
+    text = format_report(report)
+    assert "ללא שינוי $0.00" in text
+    assert "יום אחד" in text
+    assert "1 ימים" not in text
+
+
+def test_risk_summary_uses_hebrew_labels_only():
+    text = risk_profile_summary(AgentConfig(), equity=1000)
+    assert "עד " in text
+    assert "מההון מושקע" in text
+    assert "עסקאות" in text
+    assert "לעסקה" in text
+    assert "up to" not in text
+    assert "trades" not in text
+    assert "conservative" not in text
+
+
+def test_plan_copy_distinguishes_synced_draft_from_stale_confirmed():
+    base = {
+        "for_trading_day": "2026-07-20",
+        "generated_at": "2026-07-18T17:00:00+00:00",
+        "equity_snapshot": 1000,
+        "available_capital_usd": 1000,
+        "deployed_capital_usd": 0,
+        "recommendations": [],
+        "holdings": [],
+        "last_manual_action": "מכירה ידנית של U",
+    }
+    synced = format_plan(
+        {**base, "portfolio_snapshot_stale": False},
+        rec_formatter=lambda *_args: "",
+    )
+    stale = format_plan(
+        {**base, "portfolio_snapshot_stale": True},
+        rec_formatter=lambda *_args: "",
+    )
+    assert "התוכנית עודכנה לאחר מכירה ידנית של U" in synced
+    assert "ההזמנה שכבר אושרה לא שונתה" not in synced
+    assert "התיק השתנה לאחר מכירה ידנית של U" in stale
+    assert "ההזמנה שכבר אושרה לא שונתה" in stale

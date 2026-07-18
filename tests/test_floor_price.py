@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from trading_pulse.agent.intraday_monitor import analyze_position
 from trading_pulse.agent.positions import (
@@ -10,6 +11,7 @@ from trading_pulse.agent.positions import (
     floor_closed_today,
     holdings_snapshot,
     new_position_from_rec,
+    partial_sell_position,
     position_floor_price,
     rec_floor_price,
     trade_from_close,
@@ -125,3 +127,44 @@ def test_close_position_at_floor_updates_state():
     assert state["open_positions"] == []
     assert state["equity"] < 1000.0
     assert floor_closed_today(state, "IONQ", "2026-06-30")
+
+
+def test_partial_sells_persist_unique_booked_exits_without_reapplying_equity(
+    monkeypatch,
+):
+    cfg = FakeCfg()
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "U",
+                "entry_price": 100.0,
+                "capital_usd": 200.0,
+                "entry_day": "2026-07-15",
+                "days_held": 2,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.fetch_day_ohlc",
+        lambda *_args: {"close": 110.0},
+    )
+
+    first = partial_sell_position(
+        cfg, state, "U", 0.25, trading_day=date(2026, 7, 17)
+    )
+    second = partial_sell_position(
+        cfg, state, "U", 0.25, trading_day=date(2026, 7, 17)
+    )
+
+    assert first is not None and second is not None
+    assert first["exit_id"].startswith("manual:")
+    assert second["exit_id"].startswith("manual:")
+    assert first["exit_id"] != second["exit_id"]
+    assert first["trading_day"] == second["trading_day"] == "2026-07-17"
+    assert first["closed_at"].endswith("+00:00")
+    assert first["manual_exit"] is second["manual_exit"] is True
+    assert state["intraday_floor_exits"] == [first, second]
+    booked_pnl = sum(row["pnl_usd"] for row in state["intraday_floor_exits"])
+    assert state["equity"] == 1000.0 + booked_pnl
+    assert state["open_positions"][0]["capital_usd"] == 112.5

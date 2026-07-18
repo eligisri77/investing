@@ -14,7 +14,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from trading_pulse.telegram.telegram_store import load_messages, merge_backfill
+from trading_pulse.telegram.telegram_store import (
+    get_message,
+    load_messages,
+    merge_backfill,
+    update_message_metadata,
+)
 
 from trading_pulse.core.app_settings import get_settings_payload, update_settings
 from trading_pulse.core.app_update import download_and_launch_installer, list_upgrade_options
@@ -686,6 +691,34 @@ def api_telegram_messages() -> dict[str, Any]:
         "total": len(messages),
         "messages": messages,
     }
+
+
+@app.post("/api/telegram/messages/{message_id}/retry")
+def api_retry_telegram_message(message_id: str) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+
+    from trading_pulse.agent.dryrun_agent import _send_telegram_as_card
+
+    message = get_message(message_id)
+    if not message or message.get("direction") != "out":
+        raise HTTPException(status_code=404, detail="message not found")
+    cfg = load_agent_config()
+    ok = _send_telegram_as_card(
+        cfg,
+        str(message.get("text") or ""),
+        context=str(message.get("context") or "message"),
+        parse_mode=None,
+    )
+    metadata = dict(message.get("metadata") or {})
+    delivery = dict(metadata.get("delivery") or {})
+    delivery["telegram"] = {
+        "status": "delivered" if ok else "failed",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    update_message_metadata(message_id, {"delivery": delivery})
+    return {"ok": ok, "delivery": delivery}
 
 
 @app.get("/api/telegram/images/{image_id}")

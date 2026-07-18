@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import yfinance as yf
@@ -489,7 +490,16 @@ def partial_sell_position(
         else:
             pos["capital_usd"] = remaining
             state["open_positions"][i] = pos
-        return trade
+        record = {
+            **trade,
+            "exit_id": f"manual:{uuid4().hex[:12]}",
+            "trading_day": day.isoformat(),
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "manual_exit": True,
+        }
+        state.setdefault("intraday_floor_exits", []).append(record)
+        _record_loss_cooldown_if_needed(state, record, cfg, day)
+        return record
     return None
 
 
@@ -565,9 +575,11 @@ def format_holdings_lines(holdings: list[dict[str, Any]], *, html: bool = False)
         return []
     lines = ["", "📂 מחזיקים כרגע (לא נמכרים אוטומטית):"]
     for h in holdings:
+        days = int(h.get("days_held", 0))
+        days_text = "יום אחד" if days == 1 else f"{days} ימים"
         text = (
             f"  {h['symbol']} · ${h['capital_usd']:.0f} · מ-{h['entry_day']} · "
-            f"{h['days_held']} ימים"
+            f"{days_text}"
         )
         lines.append(text)
     return lines

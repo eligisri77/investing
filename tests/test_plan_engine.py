@@ -184,7 +184,7 @@ def test_manual_action_refreshes_draft_plan_snapshot(tmp_path, monkeypatch):
     assert "portfolio_synced_at" in updated
 
 
-def test_manual_action_marks_confirmed_plan_stale_without_reallocating(
+def test_swap_sync_marks_confirmed_plan_stale_without_reallocating(
     tmp_path, monkeypatch
 ):
     plan_file = tmp_path / "plan.json"
@@ -211,7 +211,7 @@ def test_manual_action_marks_confirmed_plan_stale_without_reallocating(
     assert sync_active_plan_after_manual_action(
         AgentConfig(),
         {"equity": 1010, "open_positions": []},
-        action="מכירה ידנית של U",
+        action="החלפה ידנית של U ב־NVDA",
     )
     updated = __import__(
         "trading_pulse.agent.dryrun_agent", fromlist=["read_json"]
@@ -220,3 +220,4 @@ def test_manual_action_marks_confirmed_plan_stale_without_reallocating(
     assert updated["recommendations"] == original["recommendations"]
     assert updated["allocation"] == original["allocation"]
     assert updated["equity_snapshot"] == 1000
+    assert updated["last_manual_action"] == "החלפה ידנית של U ב־NVDA"

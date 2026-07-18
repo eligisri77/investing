@@ -1182,7 +1182,11 @@ def send_telegram_photo(
     replies), pass log_inbox=False so the app inbox is not duplicated — only
     the existing row is tagged with image_id.
     """
-    from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
+    from trading_pulse.telegram.app_notify import (
+        notify_user,
+        uses_app_notifications,
+        uses_telegram_notifications,
+    )
 
     token = str(cfg.telegram_bot_token).strip()
     chat_id = str(cfg.telegram_chat_id).strip()
@@ -1204,7 +1208,12 @@ def send_telegram_photo(
 
     if not token or not chat_id:
         logging.warning("Telegram photo skip (%s): missing token or chat_id", context)
-        return bool(image_id)
+        if uses_app_notifications(cfg):
+            _tag_last_message_delivery(
+                context,
+                "failed" if uses_telegram_notifications(cfg) else "not_requested",
+            )
+        return bool(image_id) and not uses_telegram_notifications(cfg)
 
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
 
@@ -1230,11 +1239,15 @@ def send_telegram_photo(
                 parse_mode=None,
                 metadata={"image": True, "image_id": image_id},
             )
+        else:
+            _tag_last_message_delivery(context, "delivered")
         return True
     except Exception as ex:
         from trading_pulse.core.log_redact import redact_secrets
 
         logging.warning("Telegram photo send failed (%s): %s", context, redact_secrets(ex))
+        if uses_app_notifications(cfg):
+            _tag_last_message_delivery(context, "failed")
         return False
 
 
@@ -1265,6 +1278,33 @@ def _tag_last_message_image(context: str, image_id: str) -> None:
                 return
     except Exception as ex:
         logging.debug("Could not tag message image: %s", ex)
+
+
+def _tag_last_message_delivery(context: str, status: str) -> None:
+    try:
+        from trading_pulse.telegram.telegram_store import (
+            load_messages,
+            update_message_metadata,
+        )
+
+        for message in load_messages():
+            if (
+                message.get("direction") == "out"
+                and message.get("context") == context
+            ):
+                metadata = dict(message.get("metadata") or {})
+                delivery = dict(metadata.get("delivery") or {})
+                delivery["telegram"] = {
+                    "status": status,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
+                update_message_metadata(
+                    str(message["id"]),
+                    {"delivery": delivery},
+                )
+                return
+    except Exception as ex:
+        logging.debug("Could not tag message delivery: %s", ex)
 
 
 def send_telegram_table_image(
@@ -1415,10 +1455,21 @@ def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
                 f"📋 תוכנית {day}",
                 context="plan",
                 parse_mode="HTML",
+                log_inbox=False,
             )
         except Exception as ex:
             logging.warning("Plan summary card failed, HTML fallback: %s", ex)
-            _send_telegram_api(cfg, format_plan_message(plan), context="plan", parse_mode="HTML")
+            fallback_ok = _send_telegram_api(
+                cfg,
+                format_plan_message(plan),
+                context="plan",
+                parse_mode="HTML",
+            )
+            if uses_app_notifications(cfg):
+                _tag_last_message_delivery(
+                    "plan",
+                    "delivered" if fallback_ok else "failed",
+                )
     send_plan_portfolio_image(cfg)
     send_plan_table_image(cfg, plan)
     send_plan_stock_charts(cfg, plan)
@@ -1708,6 +1759,21 @@ def resolve_buy_target(ref: str) -> str:
     return ref.upper()
 
 
+def _sync_plan_after_manual_action(
+    cfg: AgentConfig,
+    state: dict[str, Any],
+    action: str,
+) -> None:
+    try:
+        from trading_pulse.agent.plan_engine import (
+            sync_active_plan_after_manual_action,
+        )
+
+        sync_active_plan_after_manual_action(cfg, state, action=action)
+    except OSError as ex:
+        logging.warning("Could not refresh active plan after manual action: %s", ex)
+
+
 def _buy_symbol_usd(
     cfg: AgentConfig,
     state: dict[str, Any],
@@ -1784,6 +1850,11 @@ def execute_buy_command(
     if pos is None:
         return f"❌ <b>לא הצלחתי לקנות {symbol}</b> — נסה שוב או בדוק מחיר"
     save_json(STATE_FILE, state)
+    _sync_plan_after_manual_action(
+        cfg,
+        state,
+        f"קנייה ידנית של {symbol}",
+    )
     cash_after = free_cash(state, cfg)
     html = format_buy_reply(
         symbol,
@@ -1844,18 +1915,11 @@ def execute_sell_command(
             return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
         sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
-    try:
-        from trading_pulse.agent.plan_engine import (
-            sync_active_plan_after_manual_action,
-        )
-
-        sync_active_plan_after_manual_action(
-            cfg,
-            state,
-            action=f"מכירה ידנית של {symbol.upper()}",
-        )
-    except OSError as ex:
-        logging.warning("Could not refresh active plan after sell: %s", ex)
+    _sync_plan_after_manual_action(
+        cfg,
+        state,
+        f"מכירה ידנית של {symbol.upper()}",
+    )
     cash = free_cash(state)
     html = format_sell_reply(
         symbol,
@@ -1953,6 +2017,11 @@ def execute_swap_command(
         return f"❌ <b>אין פוזיציה ב-{from_symbol}</b>"
     sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
+    _sync_plan_after_manual_action(
+        cfg,
+        state,
+        f"מכירה ידנית של {from_symbol} כחלק מהחלפה",
+    )
 
     trading_day = resolve_trading_day(None)
     td = date.fromisoformat(trading_day)
@@ -1975,6 +2044,11 @@ def execute_swap_command(
                     f"❌ לא הצלחתי לקנות {to_symbol}"
                 )
             save_json(STATE_FILE, state)
+            _sync_plan_after_manual_action(
+                cfg,
+                state,
+                f"החלפה ידנית של {from_symbol} ב־{to_symbol}",
+            )
             return format_swap_completed(
                 from_symbol=from_symbol,
                 to_symbol=to_symbol,
@@ -2014,6 +2088,11 @@ def execute_swap_command(
             )
         save_json(STATE_FILE, state)
         save_json(path, plan)
+        _sync_plan_after_manual_action(
+            cfg,
+            state,
+            f"החלפה ידנית של {from_symbol} ב־{to_symbol}",
+        )
         return format_swap_completed(
             from_symbol=from_symbol,
             to_symbol=to_symbol,
@@ -2025,6 +2104,10 @@ def execute_swap_command(
         )
 
     indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol]
+    plan["last_manual_action"] = (
+        f"החלפה ידנית של {from_symbol} ב־{to_symbol}"
+    )
+    plan["portfolio_snapshot_stale"] = False
     save_json(path, plan)
     approve_reply = set_plan_status(trading_day, "APPROVE", indices, cfg=cfg)
     return (

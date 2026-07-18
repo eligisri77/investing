@@ -98,6 +98,12 @@ def test_swap_buys_intraday_target_not_in_plan(tmp_path, monkeypatch):
         "trading_pulse.agent.trading_flow.before_market_entry",
         lambda _cfg, _day: False,
     )
+    sync_actions: list[str] = []
+    monkeypatch.setattr(
+        agent,
+        "_sync_plan_after_manual_action",
+        lambda _cfg, _state, action: sync_actions.append(action),
+    )
 
     reply = agent.execute_swap_command(Cfg(), "LABD", "BEAM")
 
@@ -117,6 +123,10 @@ def test_swap_buys_intraday_target_not_in_plan(tmp_path, monkeypatch):
     assert beam["approved"] is True
     labd = next(r for r in saved_plan["recommendations"] if r["symbol"] == "LABD")
     assert labd["approved"] is False
+    assert sync_actions == [
+        "מכירה ידנית של LABD כחלק מהחלפה",
+        "החלפה ידנית של LABD ב־BEAM",
+    ]
 
 
 def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
@@ -171,11 +181,23 @@ def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
         "set_plan_status",
         lambda *a, **k: "תוכנית מאושרת",
     )
+    sync_actions: list[str] = []
+    monkeypatch.setattr(
+        agent,
+        "_sync_plan_after_manual_action",
+        lambda _cfg, _state, action: sync_actions.append(action),
+    )
 
     reply = agent.execute_swap_command(Cfg(), "LABD", "RIVN", buy_usd=100.0)
     assert sold_amounts == [100.0]
     assert "100" in reply
     assert "333" not in reply.split("מכרת")[1].split("\n")[0]
+    assert sync_actions == ["מכירה ידנית של LABD כחלק מהחלפה"]
+    saved_plan = __import__("json").loads(
+        (tmp_path / "plans" / "plan_2026-07-08.json").read_text()
+    )
+    assert saved_plan["last_manual_action"] == "החלפה ידנית של LABD ב־RIVN"
+    assert saved_plan["portfolio_snapshot_stale"] is False
 
 
 def test_swap_rejects_same_symbol():

@@ -119,3 +119,60 @@ def test_simulate_day_merges_manual_exits_once_and_keeps_equity_transition(
     assert report["equity_after"] == 1000.0 + booked_pnl - 2.0
     assert state["equity"] == report["equity_after"]
     assert state["history"] == [report]
+
+
+def test_successful_manual_buy_syncs_active_plan(monkeypatch):
+    from trading_pulse.telegram import reply_cards
+
+    cfg = AgentConfig(notification_mode="telegram")
+    state = {"equity": 1000.0, "open_positions": [], "history": []}
+    sync_calls = []
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _day: "2026-07-20")
+    monkeypatch.setattr(
+        agent,
+        "_buy_symbol_usd",
+        lambda _cfg, st, symbol, amount, _day: (
+            st["open_positions"].append(
+                {
+                    "symbol": symbol,
+                    "capital_usd": amount,
+                    "entry_price": 25.0,
+                }
+            )
+            or st["open_positions"][-1]
+        ),
+    )
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(
+        agent,
+        "_sync_plan_after_manual_action",
+        lambda _cfg, synced_state, action: sync_calls.append(
+            (synced_state, action)
+        ),
+    )
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_buy", lambda *_args, **_kwargs: b"png")
+
+    assert agent.execute_buy_command(cfg, "u", 100) == ""
+    assert sync_calls == [(state, "קנייה ידנית של U")]
+
+
+def test_failed_manual_buy_does_not_sync_plan(monkeypatch):
+    cfg = AgentConfig(notification_mode="telegram")
+    state = {"equity": 1000.0, "open_positions": [], "history": []}
+    sync_calls = []
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _day: "2026-07-20")
+    monkeypatch.setattr(
+        agent, "_buy_symbol_usd", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        agent,
+        "_sync_plan_after_manual_action",
+        lambda *_args: sync_calls.append(True),
+    )
+
+    reply = agent.execute_buy_command(cfg, "U", 100)
+    assert "לא הצלחתי לקנות U" in reply
+    assert sync_calls == []

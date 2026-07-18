@@ -8,9 +8,11 @@ from trading_pulse.agent.intraday_monitor import analyze_position
 from trading_pulse.agent.positions import (
     close_position_at_price,
     floor_closed_today,
+    holdings_snapshot,
     new_position_from_rec,
     position_floor_price,
     rec_floor_price,
+    trade_from_close,
 )
 
 
@@ -75,6 +77,34 @@ def test_new_position_owns_contributor_list_copy():
     contributors.append("method2")
 
     assert pos["contributing_strategies"] == ["score_momentum"]
+
+
+def test_position_attribution_survives_snapshots_and_close():
+    rec = {
+        "symbol": "AMD",
+        "capital_usd": 100,
+        "stop_loss_pct": 0.08,
+        "strategy": "rising_three_methods",
+        "strategy_id": "rising_three",
+        "strategy_version": "1.0",
+        "contributing_strategies": ["score_momentum", "rising_three"],
+    }
+    pos = new_position_from_rec(rec, 50.0, "2026-07-20")
+
+    snapshot = holdings_snapshot({"open_positions": [pos]})[0]
+    trade = trade_from_close(pos, 55.0, "take_profit")
+
+    assert snapshot["strategy_id"] == "rising_three"
+    assert snapshot["contributing_strategies"] == [
+        "score_momentum",
+        "rising_three",
+    ]
+    assert trade["strategy_id"] == "rising_three"
+    assert trade["strategy_version"] == "1.0"
+    assert trade["contributing_strategies"] == [
+        "score_momentum",
+        "rising_three",
+    ]
 
 
 def test_analyze_floor_breach_triggers_sell_alert():

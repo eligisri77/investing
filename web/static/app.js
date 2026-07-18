@@ -783,6 +783,8 @@ function strategyLabel(p) {
   }
   if (strat === "score" || strat === "score_momentum") return "מומנטום וציון";
   if (strat === "trend_pullback") return "תיקון במגמה · ניסיוני";
+  if (strat === "vcp_breakout") return "VCP · התכווצות ופריצה · ניסיוני";
+  if (strat === "relative_strength") return "חוזק יחסי מול SPY · ניסיוני";
   return strategyIdLabel(strat);
 }
 
@@ -793,6 +795,8 @@ function strategyIdLabel(id) {
     rising_three_methods: "Rising Three",
     method2: "שיטה 2",
     trend_pullback: "Trend Pullback · ניסיוני",
+    vcp_breakout: "VCP · ניסיוני",
+    relative_strength: "חוזק יחסי מול SPY · ניסיוני",
   };
   return labels[String(id || "")] || String(id || "");
 }

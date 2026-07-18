@@ -115,7 +115,20 @@ def reconcile_shadow_with_state(
                 or trade.get("_history_day")
                 or ""
             )
-            if entry_day and entry_day < str(row.get("trading_day") or ""):
+            if entry_day and entry_day != str(row.get("trading_day") or ""):
+                continue
+            trade_strategies = {
+                str(value)
+                for value in (
+                    trade.get("contributing_strategies")
+                    or [trade.get("strategy_id")]
+                )
+                if value
+            }
+            if (
+                trade_strategies
+                and str(row.get("strategy_id") or "") not in trade_strategies
+            ):
                 continue
             row.update(
                 {

@@ -366,6 +366,8 @@ def walk_forward_portfolio(
         row = df.iloc[-1]
         close_position(symbol, float(row["Close"]), "end_of_backtest", final_day)
     final_equity = cash
+    if equity_curve:
+        equity_curve[-1]["equity"] = round(final_equity, 2)
     return _portfolio_metrics(
         initial_capital=float(initial_capital),
         final_equity=final_equity,

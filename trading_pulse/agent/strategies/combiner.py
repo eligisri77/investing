@@ -8,7 +8,9 @@ from trading_pulse.agent.strategies.registry import annotate_recommendation
 
 _PRIORITY = {
     "method2": 4,
+    "vcp_breakout": 3,
     "rising_three": 3,
+    "relative_strength": 2,
     "trend_pullback": 2,
     "score_momentum": 1,
 }
@@ -91,10 +93,22 @@ def allocate_combined_capital(
         if str(r.get("strategy_id") or "") == "method2" or r.get("sleeve")
     ]
     mains = [r for r in recommendations if r not in sleeves]
-    sleeve_total = min(
-        float(deployable),
-        sum(max(0.0, float(r.get("capital_usd") or 0)) for r in sleeves),
-    )
+    available = max(0.0, float(deployable))
+    requested = [
+        max(0.0, float(rec.get("capital_usd") or 0)) for rec in sleeves
+    ]
+    requested_total = sum(requested)
+    if requested_total > available and requested_total > 0:
+        scale = available / requested_total
+        allocated = [round(amount * scale, 2) for amount in requested]
+        if allocated:
+            allocated[-1] = round(
+                allocated[-1] + available - sum(allocated),
+                2,
+            )
+        for rec, amount in zip(sleeves, allocated):
+            rec["capital_usd"] = amount
+    sleeve_total = min(available, requested_total)
     main_budget = max(0.0, float(deployable) - sleeve_total)
     each = main_budget / len(mains) if mains else 0.0
     for rec in mains:

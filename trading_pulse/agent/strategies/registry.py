@@ -39,6 +39,22 @@ STRATEGY_SPECS: dict[str, StrategySpec] = {
         default_enabled=False,
         max_picks=1,
     ),
+    "vcp_breakout": StrategySpec(
+        id="vcp_breakout",
+        label_he="VCP · התכווצות ופריצה",
+        version="1.0",
+        entry_policy="market_open",
+        default_enabled=False,
+        max_picks=1,
+    ),
+    "relative_strength": StrategySpec(
+        id="relative_strength",
+        label_he="חוזק יחסי מול SPY",
+        version="1.0",
+        entry_policy="market_open",
+        default_enabled=False,
+        max_picks=1,
+    ),
 }
 
 STRATEGY_MODES: dict[str, tuple[str, ...]] = {
@@ -54,6 +70,10 @@ def enabled_strategy_ids(cfg: Any) -> tuple[str, ...]:
     enabled = list(STRATEGY_MODES.get(mode, STRATEGY_MODES["balanced_mix"]))
     if bool(getattr(cfg, "trend_pullback_enabled", False)):
         enabled.append("trend_pullback")
+    if bool(getattr(cfg, "vcp_breakout_enabled", False)):
+        enabled.append("vcp_breakout")
+    if bool(getattr(cfg, "relative_strength_enabled", False)):
+        enabled.append("relative_strength")
     return tuple(dict.fromkeys(enabled))
 
 
@@ -67,8 +87,8 @@ def canonical_strategy_id(rec: dict[str, Any], *, score_profile: str = "momentum
         return "method2"
     if raw in {"rising_three", "rising_three_methods"}:
         return "rising_three"
-    if raw == "trend_pullback":
-        return "trend_pullback"
+    if raw in {"trend_pullback", "vcp_breakout", "relative_strength"}:
+        return raw
     return "score_momentum"
 
 
@@ -78,7 +98,7 @@ def _confidence(strategy_id: str, native_score: float) -> float:
         return max(0.0, min(1.0, native_score / 10.0))
     if strategy_id == "rising_three":
         return max(0.0, min(1.0, native_score / 10.0))
-    if strategy_id == "trend_pullback":
+    if strategy_id in {"trend_pullback", "vcp_breakout", "relative_strength"}:
         return max(0.0, min(1.0, native_score / 10.0))
     return max(0.0, min(1.0, native_score / 12.0))
 

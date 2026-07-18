@@ -223,6 +223,20 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "hint": "מחפש תיקון במגמה עולה; לא הוכח, כבוי עד לצבירת נתוני סימולציה",
             },
             {
+                "key": "vcp_breakout_enabled",
+                "label": "VCP — התכווצות ופריצה · ניסיוני",
+                "type": "boolean",
+                "default": False,
+                "hint": "מחפש התכווצות בתנודתיות ובנפח ואחריה פריצה מאושרת; כבוי כברירת מחדל",
+            },
+            {
+                "key": "relative_strength_enabled",
+                "label": "חוזק יחסי מול SPY — ניסיוני",
+                "type": "boolean",
+                "default": False,
+                "hint": "מחפש מגמה עולה וביצועי יתר מול SPY בשלושה חודשים ובחודש האחרון; כבוי כברירת מחדל",
+            },
+            {
                 "key": "market_regime_filter_enabled",
                 "label": "מסנן מצב שוק — ניסיוני",
                 "type": "boolean",

@@ -195,6 +195,16 @@ def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -
         "days_held": int(pos.get("days_held", 0)),
         "entry_day": pos.get("entry_day"),
         "strategy": pos.get("strategy"),
+        "strategy_id": pos.get("strategy_id"),
+        "strategy_version": pos.get("strategy_version"),
+        "schema_version": pos.get("schema_version"),
+        "signal_id": pos.get("signal_id"),
+        "native_score": pos.get("native_score"),
+        "confidence": pos.get("confidence"),
+        "entry_policy": pos.get("entry_policy"),
+        "contributing_strategies": list(
+            pos.get("contributing_strategies") or []
+        ),
         "trigger": pos.get("trigger"),
         "pattern_weak": pos.get("pattern_weak"),
     }
@@ -526,6 +536,11 @@ def holdings_snapshot(state: dict[str, Any]) -> list[dict[str, Any]]:
                 "status": "holding",
                 "mark_price": float(pos["mark_price"]) if pos.get("mark_price") is not None else None,
                 "strategy": pos.get("strategy"),
+                "strategy_id": pos.get("strategy_id"),
+                "strategy_version": pos.get("strategy_version"),
+                "contributing_strategies": list(
+                    pos.get("contributing_strategies") or []
+                ),
                 "trigger": pos.get("trigger"),
                 "side": pos.get("side"),
                 "pattern_weak": pos.get("pattern_weak"),

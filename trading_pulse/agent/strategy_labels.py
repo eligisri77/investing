@@ -27,6 +27,10 @@ def strategy_label(obj: dict[str, Any] | None) -> str:
         return "מומנטום וציון"
     if strat == "trend_pullback":
         return "תיקון במגמה · ניסיוני"
+    if strat == "vcp_breakout":
+        return "VCP · התכווצות ופריצה · ניסיוני"
+    if strat == "relative_strength":
+        return "חוזק יחסי מול SPY · ניסיוני"
     return ""
 
 

@@ -8,6 +8,8 @@
   "initial_deploy_stocks": 4,
   "candle_fourth_enabled": true,
   "trend_pullback_enabled": false,
+  "vcp_breakout_enabled": false,
+  "relative_strength_enabled": false,
   "market_regime_filter_enabled": false,
   "method2_enabled": true,
   "method2_allow_short": true,

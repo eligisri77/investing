@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from trading_pulse.agent.dryrun_agent import _experimental_scan_pool
 from trading_pulse.agent.symbol_cooldown import (
     filter_candidates_dataframe,
     is_symbol_in_cooldown,
@@ -69,3 +70,34 @@ def test_leveraged_etf_cap_one_per_plan():
     lev = [s for s in out["symbol"] if s in {"SOXL", "LABU", "TQQQ"}]
     assert len(lev) == 1
     assert lev[0] == "SOXL"
+
+
+def test_experimental_scans_recompute_leveraged_cap_after_first_hit():
+    pool, excluded = _experimental_scan_pool(
+        ["SOXL", "LABU", "NVDA"],
+        state={},
+        held=set(),
+        selected={"SOXL"},
+        max_leveraged=1,
+        as_of=date(2026, 7, 1),
+    )
+
+    assert pool == ["SOXL", "NVDA"]
+    assert "LABU" in excluded
+    assert "SOXL" not in excluded
+
+
+def test_experimental_scan_pool_applies_symbol_cooldown():
+    state = {}
+    record_symbol_cooldown(state, "NVDA", days=5, as_of=date(2026, 7, 1))
+
+    pool, _ = _experimental_scan_pool(
+        ["NVDA", "AMD"],
+        state=state,
+        held=set(),
+        selected=set(),
+        max_leveraged=1,
+        as_of=date(2026, 7, 2),
+    )
+
+    assert pool == ["AMD"]

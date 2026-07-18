@@ -15,10 +15,14 @@ def test_settings_payload_exposes_strategy_defaults_and_metadata(monkeypatch):
     assert payload["values"]["strategy_mode"] == "balanced_mix"
     assert payload["values"]["candle_fourth_enabled"] is True
     assert payload["values"]["trend_pullback_enabled"] is False
+    assert payload["values"]["vcp_breakout_enabled"] is False
+    assert payload["values"]["relative_strength_enabled"] is False
     assert payload["values"]["market_regime_filter_enabled"] is False
     metadata = {row["id"]: row for row in payload["strategy_metadata"]}
     assert metadata["method2"]["entry_policy"] == "stop_breakout"
     assert metadata["trend_pullback"]["default_enabled"] is False
+    assert metadata["vcp_breakout"]["default_enabled"] is False
+    assert metadata["relative_strength"]["default_enabled"] is False
 
 
 def test_update_settings_validates_and_persists_strategy_fields(monkeypatch):
@@ -36,6 +40,8 @@ def test_update_settings_validates_and_persists_strategy_fields(monkeypatch):
             "strategy_mode": "method2_only",
             "candle_fourth_enabled": False,
             "trend_pullback_enabled": "true",
+            "vcp_breakout_enabled": "on",
+            "relative_strength_enabled": False,
             "market_regime_filter_enabled": "off",
         }
     )
@@ -45,7 +51,11 @@ def test_update_settings_validates_and_persists_strategy_fields(monkeypatch):
     assert stored["strategy_mode"] == "method2_only"
     assert stored["candle_fourth_enabled"] is False
     assert stored["trend_pullback_enabled"] is True
+    assert stored["vcp_breakout_enabled"] is True
+    assert stored["relative_strength_enabled"] is False
     assert stored["market_regime_filter_enabled"] is False
+    assert out["values"]["vcp_breakout_enabled"] is True
+    assert out["values"]["relative_strength_enabled"] is False
 
 
 def test_update_settings_rejects_unknown_strategy_mode(monkeypatch):

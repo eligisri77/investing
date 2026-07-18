@@ -146,3 +146,27 @@ def test_walk_forward_ranks_candidates_and_enforces_daily_cap():
     assert out["trade_count"] == 1
     assert out["trades"][0]["symbol"] == "HIGH"
     assert out["trades"][0]["strategy_id"] == "strategy_high"
+
+
+def test_walk_forward_final_curve_includes_liquidation_fee():
+    frame = _frame(
+        [
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),
+        ]
+    )
+
+    def signal(symbol, history):
+        return {"score": 9, "strategy_id": "score_momentum"} if len(history) == 1 else None
+
+    out = walk_forward_portfolio(
+        {"AAA": frame},
+        signal,
+        initial_capital=1000,
+        max_hold_days=10,
+        commission_per_side_usd=1,
+    )
+
+    assert out["final_equity"] == 998
+    assert out["equity_curve"][-1]["equity"] == out["final_equity"]

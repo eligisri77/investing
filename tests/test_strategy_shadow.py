@@ -137,3 +137,37 @@ def test_shadow_does_not_match_trade_entered_before_signal(tmp_path):
     row = strategy_performance(path=path)["strategies"][0]
     assert row["closed_trades"] == 0
     assert row["open_signals"] == 1
+
+
+def test_shadow_does_not_match_later_unrelated_entry(tmp_path):
+    path = tmp_path / "shadow.json"
+    record_shadow_plan(
+        {
+            "for_trading_day": "2026-07-20",
+            "recommendations": [
+                {"symbol": "NVDA", "strategy_id": "score_momentum"}
+            ],
+        },
+        path=path,
+    )
+    state = {
+        "history": [
+            {
+                "trading_day": "2026-07-25",
+                "executed": [
+                    {
+                        "symbol": "NVDA",
+                        "entry_day": "2026-07-24",
+                        "strategy_id": "trend_pullback",
+                        "contributing_strategies": ["trend_pullback"],
+                        "pnl_usd": 12,
+                        "pnl_pct": 1.2,
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert reconcile_shadow_with_state(state, path=path) == 0
+    row = strategy_performance(path=path)["strategies"][0]
+    assert row["closed_trades"] == 0

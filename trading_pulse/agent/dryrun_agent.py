@@ -139,6 +139,8 @@ class AgentConfig:
     strategy_mode: str = "balanced_mix"
     candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
     trend_pullback_enabled: bool = False
+    vcp_breakout_enabled: bool = False
+    relative_strength_enabled: bool = False
     market_regime_filter_enabled: bool = False
     method2_allow_short: bool = True
     method2_enabled: bool = True  # מניה חמישית — שיטה 2 (שרוול סיכון)
@@ -3411,6 +3413,38 @@ def fetch_signal_universe(tickers: list[str], cfg: AgentConfig) -> pd.DataFrame:
     )
 
 
+def _experimental_scan_pool(
+    symbols: list[str],
+    *,
+    state: dict[str, Any],
+    held: set[str],
+    selected: set[str],
+    max_leveraged: int,
+    as_of: date,
+) -> tuple[list[str], set[str]]:
+    """Apply portfolio guards before each experimental strategy scan."""
+    from trading_pulse.agent.symbol_cooldown import (
+        LEVERAGED_ETF_SYMBOLS,
+        is_symbol_in_cooldown,
+        leveraged_symbols,
+    )
+
+    normalized_selected = {str(symbol).upper() for symbol in selected}
+    excluded = {str(symbol).upper() for symbol in held}
+    if (
+        max_leveraged > 0
+        and len(leveraged_symbols(excluded | normalized_selected)) >= max_leveraged
+    ):
+        excluded |= set(LEVERAGED_ETF_SYMBOLS) - normalized_selected
+    eligible = [
+        str(symbol)
+        for symbol in symbols
+        if str(symbol).upper() not in excluded
+        and not is_symbol_in_cooldown(state, str(symbol), as_of=as_of)
+    ]
+    return eligible, excluded
+
+
 def generate_plan(
     cfg: AgentConfig,
     state: dict[str, Any],
@@ -3582,14 +3616,23 @@ def generate_plan(
         # Do not exclude other strategy picks: duplicate symbols become
         # confluence in combine_recommendations().
         exclude_m2 = set(held)
+        main_symbols = {
+            str(symbol).upper()
+            for symbol in (
+                ([] if picks.empty else picks["symbol"].tolist())
+                + ([candle_hit.symbol] if candle_hit else [])
+            )
+        }
         # Respect leveraged ETF cap across score + candle + method2
         max_lev = int(getattr(cfg, "max_leveraged_etf_positions", 1) or 0)
         if max_lev > 0:
-            already_lev = leveraged_symbols(exclude_m2 | set(held))
+            already_lev = leveraged_symbols(set(held) | main_symbols)
             if len(already_lev) >= max_lev:
-                exclude_m2 |= set(LEVERAGED_ETF_SYMBOLS)
+                # Keep a selected leveraged symbol eligible for confluence, but
+                # do not let Method2 add a different leveraged ETF.
+                exclude_m2 |= set(LEVERAGED_ETF_SYMBOLS) - main_symbols
         # Need a free open slot beyond main picks
-        main_count = len(picks) + (1 if candle_hit else 0)
+        main_count = len(main_symbols)
         if open_slots > main_count or (is_empty_portfolio(state) and main_count < int(cfg.max_open_positions)):
             scan_pool_m2 = [
                 str(s)
@@ -3784,6 +3827,68 @@ def generate_plan(
         if pullback:
             recommendations.append(signal_to_recommendation(pullback))
 
+    selected_symbols = {
+        str(rec.get("symbol") or "").upper() for rec in recommendations
+    }
+    max_leveraged = int(getattr(cfg, "max_leveraged_etf_positions", 1) or 0)
+    experimental_scan_pool, experimental_exclude = _experimental_scan_pool(
+        scan_tickers,
+        state=state,
+        held=set(held),
+        selected=selected_symbols,
+        max_leveraged=max_leveraged,
+        as_of=run_day,
+    )
+
+    if "vcp_breakout" in enabled_strategies and new_trade_slots > 0:
+        from trading_pulse.agent.strategies.vcp_breakout import (
+            scan_vcp_breakout,
+            signal_to_recommendation,
+        )
+
+        vcp = scan_vcp_breakout(
+            experimental_scan_pool,
+            exclude=experimental_exclude,
+            stop_loss_pct=min(float(cfg.stop_loss_pct), 0.08),
+            take_profit_pct=min(float(cfg.take_profit_pct), 0.18),
+            min_price_usd=float(getattr(cfg, "min_price_usd", 5.0)),
+            min_avg_volume_20d=float(
+                getattr(cfg, "min_avg_volume_20d", 500_000)
+            ),
+        )
+        if vcp:
+            recommendations.append(signal_to_recommendation(vcp))
+            selected_symbols.add(vcp.symbol.upper())
+            experimental_scan_pool, experimental_exclude = (
+                _experimental_scan_pool(
+                    scan_tickers,
+                    state=state,
+                    held=set(held),
+                    selected=selected_symbols,
+                    max_leveraged=max_leveraged,
+                    as_of=run_day,
+                )
+            )
+
+    if "relative_strength" in enabled_strategies and new_trade_slots > 0:
+        from trading_pulse.agent.strategies.relative_strength import (
+            scan_relative_strength,
+            signal_to_recommendation,
+        )
+
+        relative_strength = scan_relative_strength(
+            experimental_scan_pool,
+            exclude=experimental_exclude,
+            stop_loss_pct=min(float(cfg.stop_loss_pct), 0.09),
+            take_profit_pct=min(float(cfg.take_profit_pct), 0.20),
+            min_price_usd=float(getattr(cfg, "min_price_usd", 5.0)),
+            min_avg_volume_20d=float(
+                getattr(cfg, "min_avg_volume_20d", 500_000)
+            ),
+        )
+        if relative_strength:
+            recommendations.append(signal_to_recommendation(relative_strength))
+
     from trading_pulse.agent.strategies.combiner import (
         allocate_combined_capital,
         combine_recommendations,
@@ -3791,7 +3896,7 @@ def generate_plan(
 
     selection_cap = min(
         open_slots,
-        new_trade_slots + (1 if "method2" in enabled_strategies else 0),
+        new_trade_slots + (1 if method2_hit else 0),
     )
     if market_regime and float(market_regime.get("exposure_multiplier", 1.0)) <= 0:
         selection_cap = 0

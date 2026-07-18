@@ -15,7 +15,12 @@ from trading_pulse.agent.strategies.registry import (
 
 
 def test_balanced_mode_enables_existing_three_strategies():
-    cfg = SimpleNamespace(strategy_mode="balanced_mix", trend_pullback_enabled=False)
+    cfg = SimpleNamespace(
+        strategy_mode="balanced_mix",
+        trend_pullback_enabled=False,
+        vcp_breakout_enabled=False,
+        relative_strength_enabled=False,
+    )
     assert enabled_strategy_ids(cfg) == (
         "score_momentum",
         "rising_three",
@@ -40,6 +45,24 @@ def test_strategy_mode_presets_and_unknown_fallback(mode, expected):
 def test_experimental_strategy_is_only_appended_when_enabled():
     cfg = SimpleNamespace(strategy_mode="score_only", trend_pullback_enabled=True)
     assert enabled_strategy_ids(cfg) == ("score_momentum", "trend_pullback")
+
+
+@pytest.mark.parametrize(
+    ("flag", "strategy_id"),
+    [
+        ("vcp_breakout_enabled", "vcp_breakout"),
+        ("relative_strength_enabled", "relative_strength"),
+    ],
+)
+def test_new_experimental_strategies_are_default_off_and_individually_enabled(
+    flag,
+    strategy_id,
+):
+    cfg = SimpleNamespace(strategy_mode="score_only")
+    assert enabled_strategy_ids(cfg) == ("score_momentum",)
+
+    setattr(cfg, flag, True)
+    assert enabled_strategy_ids(cfg) == ("score_momentum", strategy_id)
 
 
 def test_legacy_recommendation_gets_versioned_attribution():
@@ -145,3 +168,21 @@ def test_combined_allocation_handles_only_sleeves_and_zero_cash():
     mains = [{"symbol": "A", "strategy_id": "score_momentum", "capital_usd": 10}]
     allocate_combined_capital(mains, deployable=0)
     assert mains[0]["capital_usd"] == 0
+
+
+def test_combined_allocation_caps_sleeve_at_deployable_cash():
+    rows = [
+        {
+            "symbol": "M2",
+            "strategy_id": "method2",
+            "capital_usd": 600,
+            "sleeve": True,
+        },
+        {"symbol": "A", "strategy_id": "score_momentum", "capital_usd": 0},
+    ]
+
+    allocate_combined_capital(rows, deployable=250)
+
+    assert rows[0]["capital_usd"] == 250
+    assert rows[1]["capital_usd"] == 0
+    assert sum(float(row["capital_usd"]) for row in rows) == 250

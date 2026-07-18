@@ -23,6 +23,12 @@ def test_rising_three_label():
     assert not is_candle_strategy({"strategy": "score"})
 
 
+def test_experimental_strategy_label_is_explicit():
+    label = strategy_label({"strategy_id": "trend_pullback"})
+    assert "תיקון במגמה" in label
+    assert "ניסיוני" in label
+
+
 def test_holdings_and_portfolio_show_strategy_tag():
     holdings = [
         {

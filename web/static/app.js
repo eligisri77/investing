@@ -661,6 +661,14 @@ async function generatePlanNow() {
 }
 
 function renderPlanRecCard(rec, idx) {
+  const label = strategyLabel(rec);
+  const contributors = Array.isArray(rec.contributing_strategies)
+    ? rec.contributing_strategies
+    : [];
+  const why =
+    contributors.length > 1
+      ? `זוהה בכמה שיטות: ${contributors.map(strategyIdLabel).join(" + ")}`
+      : label;
   return `
     <div class="plan-rec-card">
       <div class="plan-rec-head">
@@ -672,6 +680,8 @@ function renderPlanRecCard(rec, idx) {
         <span>TP +${(rec.take_profit_pct * 100).toFixed(0)}%</span>
         <span>ציון ${Number(rec.score).toFixed(1)}</span>
       </div>
+      ${why ? `<div class="muted">${escapeHtml(why)}</div>` : ""}
+      ${rec.reason ? `<div class="settings-hint">${escapeHtml(rec.reason)}</div>` : ""}
     </div>`;
 }
 
@@ -761,17 +771,30 @@ async function renderActivePlan() {
 }
 
 function strategyLabel(p) {
-  const strat = p && p.strategy;
+  const strat = p && (p.strategy_id || p.strategy);
   if (strat === "method2") {
     const parts = ["שיטה 2", "נרות סיניים"];
     if (p.trigger) parts.push(String(p.trigger));
     if (String(p.side || "").toUpperCase() === "SHORT") parts.push("שורט");
     return parts.join(" · ");
   }
-  if (strat === "rising_three_methods") {
+  if (strat === "rising_three" || strat === "rising_three_methods") {
     return p.pattern_weak ? "נרות Rising Three (חלש)" : "נרות Rising Three";
   }
-  return "";
+  if (strat === "score" || strat === "score_momentum") return "מומנטום וציון";
+  if (strat === "trend_pullback") return "תיקון במגמה · ניסיוני";
+  return strategyIdLabel(strat);
+}
+
+function strategyIdLabel(id) {
+  const labels = {
+    score_momentum: "מומנטום וציון",
+    rising_three: "Rising Three",
+    rising_three_methods: "Rising Three",
+    method2: "שיטה 2",
+    trend_pullback: "Trend Pullback · ניסיוני",
+  };
+  return labels[String(id || "")] || String(id || "");
 }
 
 function renderPortfolio(data) {
@@ -1700,11 +1723,47 @@ async function renderBotGuide() {
   `;
 }
 
+function renderStrategyPerformance(perf) {
+  const rows = Array.isArray(perf?.strategies) ? perf.strategies : [];
+  if (!rows.length) {
+    return `
+      <section class="settings-section">
+        <h2 class="section-title">מעקב סימולציה לפי אסטרטגיה</h2>
+        <p class="settings-section-note">נתוני shadow תיאורטיים, לא עסקאות שבוצעו. המעקב יתחיל מהתוכנית הבאה.</p>
+      </section>`;
+  }
+  const body = rows
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(row.label_he || row.strategy_id)}</td>
+        <td>${Number(row.signals || 0)}</td>
+        <td>${Number(row.closed_trades || 0)}</td>
+        <td>${Number(row.win_rate_pct || 0).toFixed(1)}%</td>
+        <td class="pnl ${Number(row.pnl_usd || 0) >= 0 ? "positive" : "negative"}">${fmtUsd(Number(row.pnl_usd || 0))}</td>
+        <td>${row.ready_for_comparison ? "מספיק להשוואה" : `נדרשות ${perf.minimum_closed_trades || 20} סגירות`}</td>
+      </tr>`
+    )
+    .join("");
+  return `
+    <section class="settings-section">
+      <h2 class="section-title">מעקב סימולציה לפי אסטרטגיה</h2>
+      <p class="settings-section-note">נתוני shadow תיאורטיים, לא עסקאות שבוצעו. השוואה ראשונית רק אחרי 20–30 סגירות ולפחות ${escapeHtml(perf.recommended_weeks || "4–6")} שבועות.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>אסטרטגיה</th><th>אותות</th><th>נסגרו</th><th>שיעור הצלחה</th><th>תוצאה מדומה</th><th>מדגם</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
 async function renderSettings() {
-  const [data, tg, updateInfo] = await Promise.all([
+  const [data, tg, updateInfo, strategyPerf] = await Promise.all([
     fetchJson("/api/settings"),
     fetchJson("/api/settings/telegram"),
     fetchJson("/api/update").catch(() => null),
+    fetchJson("/api/strategies/performance").catch(() => null),
   ]);
   const timeDual = data.time_dual || {};
   const sections = (data.sections || [])
@@ -1727,6 +1786,7 @@ async function renderSettings() {
       <p>הגדרות כלליות ב־config.json · בוט טלגרם ב־.env (לכל משתמש בוט משלו)</p>
     </section>
     ${renderUpdateSection(updateInfo)}
+    ${renderStrategyPerformance(strategyPerf)}
     ${renderTelegramSettingsSection(tg)}
     <div class="settings-meta">
       <span>מקור סודות: <b>${escapeHtml(data.secrets_source || "—")}</b></span>

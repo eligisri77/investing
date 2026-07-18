@@ -290,15 +290,25 @@ def _sell_recommendations(
         entry = float(h.get("entry_price") or h.get("entry_ref_price") or 0)
         last = float(quotes.get(sym, {}).get("last", 0))
         pnl_pct = (last / entry - 1) * 100 if entry > 0 and last > 0 else 0
-        pnl_txt = f"{pnl_pct:+.1f}% מהכניסה · " if entry > 0 and last > 0 else ""
+        # Avoid "+/-" signs inside Hebrew text — RTL scrambles them ("‎-9.0%").
+        if entry > 0 and last > 0:
+            if pnl_pct <= -0.05:
+                pnl_phrase = f"המניה ירדה {abs(pnl_pct):.1f}% מאז הקנייה"
+            elif pnl_pct >= 0.05:
+                pnl_phrase = f"המניה עלתה {pnl_pct:.1f}% מאז הקנייה"
+            else:
+                pnl_phrase = "המניה סביב מחיר הקנייה"
+        else:
+            pnl_phrase = ""
         if kinds & {"near_stop", "floor_breach"}:
-            lead = "קרוב לרף"
+            reason = "המחיר קרוב לרף המכירה"
         elif "heavy_loss" in kinds or (
             "intraday_drop" in kinds and day_pct <= SELL_STRONG_DROP_PCT
         ):
-            lead = "ירידה חדה"
+            reason = "ירידה חדה היום"
         else:
-            lead = "אזהרת מכירה"
+            reason = "אזהרת מכירה"
+        why = f"{reason}" + (f" — {pnl_phrase}" if pnl_phrase else "")
 
         replacement = _top_candidate(cfg, scores, set(skip) | {sym})
         if replacement is not None:
@@ -311,8 +321,8 @@ def _sell_recommendations(
                     score=float(to_data.get("score", 0)),
                     swap_from=sym,
                     message=(
-                        f"{lead} · {pnl_txt}מוכר ${sold_usd:.0f} מ-{sym} → קונה {to_sym} "
-                        f"(ציון {float(to_data.get('score', 0)):.1f})"
+                        f"{why}. ההצעה: למכור ${sold_usd:.0f} מ-{sym} "
+                        f"ולקנות במקומה {to_sym} (ציון {float(to_data.get('score', 0)):.1f})"
                     ),
                 )
             )
@@ -322,8 +332,8 @@ def _sell_recommendations(
                     kind="sell",
                     symbol=sym,
                     message=(
-                        f"{lead} · {pnl_txt}אין מועמדת חזקה — "
-                        f"מכירה למזומן עד הזדמנות"
+                        f"{why}. אין כרגע מניה חזקה להחלפה, "
+                        f"לכן ההצעה: למכור את {sym} ולשמור את הכסף במזומן להזדמנות הבאה"
                     ),
                 )
             )

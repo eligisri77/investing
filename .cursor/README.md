@@ -7,7 +7,7 @@
 | **AGENTS.md** | repo root | Always-on map of agents + pipeline |
 | **Rules** | `.cursor/rules/*.mdc` | Persistent constraints (secrets, Telegram sync, Python) |
 | **Skills** | `.cursor/skills/*/SKILL.md` | On-demand workflows (day review, ship check, conventions) |
-| **Subagents** | `.cursor/agents/*.md` | Isolated specialists (cracker, tests, guides, messages, verifier) |
+| **Subagents** | `.cursor/agents/*.md` | Isolated specialists (cracker, tests, guides, messages, verifier, releaser) |
 | **Hooks** | `.cursor/hooks.json` | Deterministic guards (session context, dangerous shell) |
 | **MCP** | `.cursor/mcp.json` (optional) | External tools (e.g. GitHub) — see example |
 

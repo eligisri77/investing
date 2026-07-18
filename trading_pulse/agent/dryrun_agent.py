@@ -136,7 +136,10 @@ class AgentConfig:
     send_heartbeat_on_startup: bool = True
     plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
     initial_deploy_stocks: int = 4  # יום ראשון — חלוקה על כמה מניות (כולל מניית נרות)
+    strategy_mode: str = "balanced_mix"
     candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
+    trend_pullback_enabled: bool = False
+    market_regime_filter_enabled: bool = False
     method2_allow_short: bool = True
     method2_enabled: bool = True  # מניה חמישית — שיטה 2 (שרוול סיכון)
     method2_risk_pct: float = 0.02
@@ -3444,6 +3447,9 @@ def generate_plan(
             existing["_regeneration_skipped"] = True
             return existing
     strategy = profile_strategy(cfg)
+    from trading_pulse.agent.strategies.registry import enabled_strategy_ids
+
+    enabled_strategies = enabled_strategy_ids(cfg)
     capital = float(state["equity"])
     held = held_symbols(state)
     holdings = holdings_snapshot(state)
@@ -3480,6 +3486,17 @@ def generate_plan(
     deployable = available_capital(cfg, state)
     if is_empty_portfolio(state):
         deployable = capital
+    market_regime = None
+    if bool(getattr(cfg, "market_regime_filter_enabled", False)):
+        from trading_pulse.agent.strategies.market_regime import fetch_market_regime
+
+        market_regime = fetch_market_regime()
+        deployable = round(
+            deployable * float(market_regime.get("exposure_multiplier", 1.0)),
+            2,
+        )
+        if float(market_regime.get("exposure_multiplier", 1.0)) <= 0:
+            new_trade_slots = 0
 
     if not candidates.empty and held:
         candidates = candidates[~candidates["symbol"].isin(held)]
@@ -3489,11 +3506,20 @@ def generate_plan(
         len(holdings),
         deployed_capital(state),
     )
-    candle_enabled = bool(getattr(cfg, "candle_fourth_enabled", True)) and new_trade_slots >= 2
-    score_slots = max(0, new_trade_slots - (1 if candle_enabled else 0))
+    score_enabled = "score_momentum" in enabled_strategies
+    candle_enabled = (
+        "rising_three" in enabled_strategies
+        and bool(getattr(cfg, "candle_fourth_enabled", True))
+        and new_trade_slots >= 1
+    )
+    score_slots = (
+        max(0, new_trade_slots - (1 if candle_enabled else 0))
+        if score_enabled
+        else 0
+    )
     picks = candidates.head(score_slots) if score_slots > 0 and not candidates.empty else pd.DataFrame()
     fallback_used = False
-    if picks.empty and score_slots > 0 and not raw_universe.empty:
+    if score_enabled and picks.empty and score_slots > 0 and not raw_universe.empty:
         from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
 
         pool = raw_universe[~raw_universe["symbol"].isin(held)]
@@ -3517,8 +3543,9 @@ def generate_plan(
         from trading_pulse.agent.candlestick_patterns import scan_rising_three_methods
         from trading_pulse.agent.symbol_cooldown import is_symbol_in_cooldown
 
-        picked_syms = {str(s).upper() for s in (picks["symbol"].tolist() if not picks.empty else [])}
-        exclude = set(held) | picked_syms
+        # Scan score picks too: the combiner records strategy agreement and
+        # keeps only one portfolio position per symbol.
+        exclude = set(held)
         scan_pool = [
             str(s)
             for s in scan_tickers
@@ -3533,7 +3560,7 @@ def generate_plan(
                 candle_hit.pattern_score,
                 candle_hit.pattern_weak,
             )
-        elif not candidates.empty and len(picks) < new_trade_slots:
+        elif score_enabled and not candidates.empty and len(picks) < new_trade_slots:
             # No candle signal — fill remaining slot from score pipeline.
             already = {str(s).upper() for s in picks["symbol"].tolist()} if not picks.empty else set()
             extra = candidates[~candidates["symbol"].astype(str).str.upper().isin(already)]
@@ -3544,7 +3571,7 @@ def generate_plan(
                 logging.info("No candle pattern — filled %d extra score pick(s)", len(more))
 
     method2_hit = None
-    if bool(getattr(cfg, "method2_enabled", True)):
+    if "method2" in enabled_strategies and bool(getattr(cfg, "method2_enabled", True)):
         from trading_pulse.agent.candle_method2 import scan_method2
         from trading_pulse.agent.symbol_cooldown import (
             LEVERAGED_ETF_SYMBOLS,
@@ -3552,10 +3579,9 @@ def generate_plan(
             leveraged_symbols,
         )
 
-        picked_syms = {str(s).upper() for s in (picks["symbol"].tolist() if not picks.empty else [])}
-        if candle_hit:
-            picked_syms.add(candle_hit.symbol.upper())
-        exclude_m2 = set(held) | picked_syms
+        # Do not exclude other strategy picks: duplicate symbols become
+        # confluence in combine_recommendations().
+        exclude_m2 = set(held)
         # Respect leveraged ETF cap across score + candle + method2
         max_lev = int(getattr(cfg, "max_leveraged_etf_positions", 1) or 0)
         if max_lev > 0:
@@ -3743,6 +3769,46 @@ def generate_plan(
             method2_rec["breakout_ok"] = True
         recommendations.append(method2_rec)
 
+    if "trend_pullback" in enabled_strategies and new_trade_slots > 0:
+        from trading_pulse.agent.strategies.trend_pullback import (
+            scan_trend_pullback,
+            signal_to_recommendation,
+        )
+
+        pullback = scan_trend_pullback(
+            scan_tickers,
+            exclude=set(held),
+            stop_loss_pct=min(float(cfg.stop_loss_pct), 0.08),
+            take_profit_pct=min(float(cfg.take_profit_pct), 0.16),
+        )
+        if pullback:
+            recommendations.append(signal_to_recommendation(pullback))
+
+    from trading_pulse.agent.strategies.combiner import (
+        allocate_combined_capital,
+        combine_recommendations,
+    )
+
+    selection_cap = min(
+        open_slots,
+        new_trade_slots + (1 if "method2" in enabled_strategies else 0),
+    )
+    if market_regime and float(market_regime.get("exposure_multiplier", 1.0)) <= 0:
+        selection_cap = 0
+    recommendations = combine_recommendations(
+        recommendations,
+        max_picks=selection_cap,
+        score_profile=strategy,
+    )
+    allocate_combined_capital(recommendations, deployable=deployable)
+    main_caps = [
+        float(r.get("capital_usd") or 0)
+        for r in recommendations
+        if str(r.get("strategy_id") or "") != "method2"
+    ]
+    if main_caps:
+        per_trade_cap = round(main_caps[0], 2)
+
     enrich_recommendations(recommendations, cfg, speculative=speculative)
     # Order: score picks → Rising Three → שיטה 2 (dedicated slots).
     special_order = ("rising_three_methods", "method2")
@@ -3768,6 +3834,9 @@ def generate_plan(
         "for_trading_day": target_day.isoformat(),
         "risk_profile": cfg.risk_profile,
         "strategy": strategy,
+        "strategy_mode": str(getattr(cfg, "strategy_mode", "balanced_mix")),
+        "enabled_strategies": list(enabled_strategies),
+        "market_regime": market_regime,
         "hold_mode": cfg.hold_mode,
         "risk_profile_summary": risk_profile_summary(cfg, capital),
         "equity_snapshot": round(capital, 2),
@@ -3818,6 +3887,12 @@ def generate_plan(
 
     supersede_other_plans(target_day)
     save_json(plan_path(target_day), plan)
+    try:
+        from trading_pulse.agent.strategies.shadow import record_shadow_plan
+
+        record_shadow_plan(plan)
+    except OSError as ex:
+        logging.warning("Could not update strategy shadow ledger: %s", ex)
     logging.info("Saved plan: %s", plan_path(target_day))
     return plan
 

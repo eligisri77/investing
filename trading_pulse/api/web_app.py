@@ -25,6 +25,7 @@ from trading_pulse.telegram.telegram_guide import get_telegram_guide
 from trading_pulse.telegram.telegram_bot_guide import get_telegram_bot_guide
 from trading_pulse.agent.health_tracker import collect_health
 from trading_pulse.agent.portfolio import build_portfolio
+from trading_pulse.agent.strategies.shadow import strategy_performance
 
 try:
     from trading_pulse.agent.dryrun_agent import (
@@ -209,6 +210,12 @@ def build_pick_record(plan: dict[str, Any], rec: dict[str, Any]) -> dict[str, An
         "approved": bool(rec.get("approved")),
         "invested": executed is not None,
         "side": rec.get("side", "LONG"),
+        "strategy": rec.get("strategy"),
+        "strategy_id": rec.get("strategy_id"),
+        "strategy_version": rec.get("strategy_version"),
+        "confidence": rec.get("confidence"),
+        "entry_policy": rec.get("entry_policy"),
+        "contributing_strategies": rec.get("contributing_strategies") or [],
         "capital_usd": float(rec.get("capital_usd", 0)),
         "entry_ref_price": float(rec.get("entry_ref_price", 0)),
         "stop_loss_pct": float(rec.get("stop_loss_pct", 0)),
@@ -380,6 +387,11 @@ def api_dashboard() -> dict[str, Any]:
 @app.get("/api/portfolio")
 def api_portfolio() -> dict[str, Any]:
     return build_portfolio()
+
+
+@app.get("/api/strategies/performance")
+def api_strategy_performance() -> dict[str, Any]:
+    return strategy_performance(load_state())
 
 
 @app.get("/api/picks")

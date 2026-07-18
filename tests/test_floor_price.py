@@ -32,6 +32,51 @@ def test_new_position_stores_floor():
     assert pos["floor_price"] == 44.0
 
 
+def test_new_position_preserves_strategy_attribution():
+    rec = {
+        "symbol": "NVDA",
+        "capital_usd": 250,
+        "stop_loss_pct": 0.08,
+        "strategy": "rising_three_methods",
+        "strategy_id": "rising_three",
+        "strategy_version": "1.0",
+        "schema_version": 2,
+        "signal_id": "signal-123",
+        "native_score": 8.25,
+        "confidence": 0.82,
+        "entry_policy": "market_open",
+        "contributing_strategies": ["score_momentum", "rising_three"],
+    }
+
+    pos = new_position_from_rec(rec, 100.0, "2026-07-20")
+
+    assert pos["strategy_id"] == "rising_three"
+    assert pos["strategy_version"] == "1.0"
+    assert pos["schema_version"] == 2
+    assert pos["signal_id"] == "signal-123"
+    assert pos["native_score"] == 8.25
+    assert pos["confidence"] == 0.82
+    assert pos["entry_policy"] == "market_open"
+    assert pos["contributing_strategies"] == [
+        "score_momentum",
+        "rising_three",
+    ]
+
+
+def test_new_position_owns_contributor_list_copy():
+    contributors = ["score_momentum"]
+    rec = {
+        "symbol": "AMD",
+        "capital_usd": 100,
+        "contributing_strategies": contributors,
+    }
+    pos = new_position_from_rec(rec, 50.0, "2026-07-20")
+
+    contributors.append("method2")
+
+    assert pos["contributing_strategies"] == ["score_momentum"]
+
+
 def test_analyze_floor_breach_triggers_sell_alert():
     cfg = FakeCfg()
     pos = {"symbol": "AMD", "entry_price": 100.0, "floor_price": 88.0, "stop_loss_pct": 0.12}

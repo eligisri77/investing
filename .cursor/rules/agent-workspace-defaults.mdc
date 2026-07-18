@@ -23,6 +23,7 @@ This repo is **Trading Pulse**. See root `AGENTS.md`.
 | Commands / flow → app guides | `@trading-pulse-guide-updater` (**required** when UX/commands change) |
 | Unclear / new bot messages | `@trading-pulse-bot-messages` |
 | Before saying «done» | skill `trading-pulse-ship-check` + `@trading-pulse-verifier` |
+| Publish Windows Setup / GitHub Release | `@trading-pulse-releaser` / `.\scripts\release.ps1` |
 | Optional GitHub MCP | copy `.cursor/mcp.json.example` → `mcp.json` (see `.cursor/README.md`) |
 
 ## Mandatory after product code changes

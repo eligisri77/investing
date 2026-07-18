@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -105,6 +106,8 @@ def test_sell_recommended_on_heavy_loss():
     sells = [s for s in suggestions if s.kind == "sell"]
     assert len(sells) == 1
     assert sells[0].symbol == "SOXL"
+    assert "ירידה חדה היום" in sells[0].message
+    assert "ירדה" in sells[0].message
 
 
 def test_sell_recommended_on_near_stop_without_scores():
@@ -115,8 +118,13 @@ def test_sell_recommended_on_near_stop_without_scores():
     suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
     sells = [s for s in suggestions if s.kind == "sell" and s.symbol == "MSTR"]
     assert len(sells) == 1
-    assert "קרוב לרף" in sells[0].message
-    assert "ירידה חדה" not in sells[0].message
+    msg = sells[0].message
+    assert msg.startswith("המחיר קרוב לרף המכירה")
+    assert "ירידה חדה" not in msg
+    assert "ירדה" in msg
+    assert "למכור את MSTR" in msg
+    assert "במזומן" in msg
+    assert not re.search(r"[+\-]\d+\.?\d*%", msg)
 
 
 def test_sell_recommendation_includes_redeploy_swap():
@@ -129,7 +137,11 @@ def test_sell_recommendation_includes_redeploy_swap():
     swaps = [s for s in suggestions if s.kind == "swap" and s.swap_from == "SOXL"]
     assert len(swaps) == 1
     assert swaps[0].symbol == "NVDA"
-    assert "$333" in swaps[0].message
+    msg = swaps[0].message
+    assert "$333" in msg
+    assert "ולקנות במקומה NVDA" in msg
+    assert "ירדה" in msg
+    assert not re.search(r"[+\-]\d+\.?\d*%", msg)
 
 
 def test_sell_recommendation_holds_cash_when_no_candidate():
@@ -140,7 +152,12 @@ def test_sell_recommendation_holds_cash_when_no_candidate():
     suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts)
     sells = [s for s in suggestions if s.kind == "sell"]
     assert len(sells) == 1
-    assert "מזומן" in sells[0].message
+    msg = sells[0].message
+    assert "למכור את SOXL" in msg
+    assert "במזומן" in msg
+    assert "ירדה" in msg
+    assert "מאז הקנייה" in msg
+    assert not re.search(r"[+\-]\d+\.?\d*%", msg)
 
 
 def test_format_intraday_howto_commands():

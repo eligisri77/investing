@@ -107,7 +107,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         {
             "time": _dual(entry_t),
             "label": "כניסה בפתיחה",
-            "detail": "סימולציית קנייה במחיר פתיחה + הודעה בטלגרם",
+            "detail": "סימולציית קנייה למניות שאושרו; שיטה 2 ממתינה לפריצה",
         },
         {
             "time": _dual(reminder_t),
@@ -265,7 +265,8 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "icon": "🚀",
                 "title": "פקודה אחת — התחל",
                 "detail": (
-                    f"יוצר תוכנית (עד {deploy_n} מניות: ציון + נרות), מאשר, ומחלק את ההון. "
+                    f"יוצר תוכנית (עד {deploy_n} מניות לפי מצב האסטרטגיה בהגדרות), "
+                    "מאשר ומחלק את ההון. "
                     "הכול כפוף לאישור שלך."
                 ),
                 "cmd": "התחל",

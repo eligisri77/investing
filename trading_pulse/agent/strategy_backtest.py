@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import math
+from collections import defaultdict
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
@@ -159,5 +162,298 @@ def _empty_backtest(lookback_days: int, note: str) -> dict[str, Any]:
         "avg_pnl_pct": 0.0,
         "total_pnl_pct": 0.0,
         "summary": f"{lookback_days} יום: אין מספיק נתונים",
+        "note": note,
+    }
+
+
+SignalFunction = Callable[[str, pd.DataFrame], dict[str, Any] | None]
+
+
+def score_signal_from_history(
+    symbol: str,
+    history: pd.DataFrame,
+    *,
+    speculative: bool = True,
+    min_score: float | None = None,
+) -> dict[str, Any] | None:
+    """Default no-lookahead score signal for portfolio walk-forward tests."""
+    metrics = _ohlcv_metrics(history)
+    if metrics is None:
+        return None
+    score = score_speculative(metrics) if speculative else score_momentum(metrics)
+    threshold = min_score if min_score is not None else (6.0 if speculative else 3.0)
+    if score < threshold:
+        return None
+    if speculative and not _qualifies_speculative(metrics, 1.0):
+        return None
+    if not speculative and not _qualifies_momentum(metrics, 1.0):
+        return None
+    return {
+        "symbol": symbol,
+        "score": float(score),
+        "strategy_id": "score_momentum",
+    }
+
+
+def walk_forward_portfolio(
+    frames: dict[str, pd.DataFrame],
+    signal_fn: SignalFunction,
+    *,
+    initial_capital: float = 10_000.0,
+    max_open_positions: int = 4,
+    max_trades_per_day: int = 2,
+    stop_loss_pct: float = 0.08,
+    take_profit_pct: float = 0.16,
+    max_hold_days: int = 5,
+    commission_per_side_usd: float = 1.0,
+) -> dict[str, Any]:
+    """Portfolio walk-forward simulation using only data known at each close.
+
+    Signals are computed at day D close and filled at day D+1 open. Existing
+    positions are evaluated before new entries. If stop and target both touch
+    in one daily bar, stop wins (pessimistic and deterministic).
+    """
+    prepared: dict[str, pd.DataFrame] = {}
+    for symbol, raw in frames.items():
+        if raw is None or raw.empty:
+            continue
+        df = raw.copy().sort_index()
+        if {"Open", "High", "Low", "Close"}.issubset(df.columns):
+            prepared[str(symbol).upper()] = df
+    all_days = sorted({day for df in prepared.values() for day in df.index})
+    if len(all_days) < 2:
+        return _empty_portfolio_backtest(initial_capital, "insufficient_data")
+
+    cash = float(initial_capital)
+    positions: dict[str, dict[str, Any]] = {}
+    trades: list[dict[str, Any]] = []
+    equity_curve: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    exposure_days = 0
+    strategy_pnl: dict[str, float] = defaultdict(float)
+
+    def close_position(symbol: str, exit_price: float, reason: str, day: Any) -> None:
+        nonlocal cash
+        pos = positions.pop(symbol)
+        shares = float(pos["shares"])
+        proceeds = shares * exit_price
+        gross = proceeds - float(pos["capital_usd"])
+        fees = float(commission_per_side_usd)
+        pnl = gross - fees
+        cash += proceeds - fees
+        trade = {
+            "symbol": symbol,
+            "strategy_id": pos["strategy_id"],
+            "entry_day": str(pos["entry_day"])[:10],
+            "exit_day": str(day)[:10],
+            "entry_price": round(float(pos["entry_price"]), 4),
+            "exit_price": round(float(exit_price), 4),
+            "capital_usd": round(float(pos["capital_usd"]), 2),
+            "pnl_usd": round(pnl, 2),
+            "pnl_pct": round((pnl / float(pos["capital_usd"])) * 100, 3),
+            "exit_reason": reason,
+            "days_held": int(pos["days_held"]),
+        }
+        trades.append(trade)
+        strategy_pnl[pos["strategy_id"]] += pnl
+
+    for day_idx, day in enumerate(all_days):
+        # 1) Manage positions using today's complete bar.
+        for symbol in list(positions):
+            df = prepared[symbol]
+            if day not in df.index:
+                continue
+            row = df.loc[day]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            pos = positions[symbol]
+            pos["days_held"] += 1
+            stop = float(pos["stop_price"])
+            target = float(pos["target_price"])
+            low, high = float(row["Low"]), float(row["High"])
+            if low <= stop:
+                close_position(symbol, stop, "stop_loss", day)
+            elif high >= target:
+                close_position(symbol, target, "take_profit", day)
+            elif int(pos["days_held"]) >= max_hold_days:
+                close_position(symbol, float(row["Close"]), "max_hold_days", day)
+
+        # 2) Fill signals created yesterday at today's open.
+        todays = pending
+        pending = []
+        free_slots = max(0, int(max_open_positions) - len(positions))
+        todays = [
+            sig
+            for sig in todays
+            if sig["symbol"] not in positions
+            and sig["symbol"] in prepared
+            and day in prepared[sig["symbol"]].index
+        ][: min(free_slots, int(max_trades_per_day))]
+        if todays:
+            budget_each = cash / len(todays)
+            for sig in todays:
+                symbol = sig["symbol"]
+                row = prepared[symbol].loc[day]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                entry = float(row["Open"])
+                fee = float(commission_per_side_usd)
+                capital = max(0.0, min(budget_each, cash) - fee)
+                if entry <= 0 or capital <= 0:
+                    continue
+                shares = capital / entry
+                cash -= capital + fee
+                positions[symbol] = {
+                    "symbol": symbol,
+                    "strategy_id": str(sig.get("strategy_id") or "unknown"),
+                    "entry_day": day,
+                    "entry_price": entry,
+                    "capital_usd": capital,
+                    "shares": shares,
+                    "stop_price": entry * (1 - stop_loss_pct),
+                    "target_price": entry * (1 + take_profit_pct),
+                    "days_held": 0,
+                }
+                # Entry-day intraday range is known only after that day closes.
+                # Apply the same pessimistic stop-before-target convention.
+                low, high = float(row["Low"]), float(row["High"])
+                if low <= float(positions[symbol]["stop_price"]):
+                    close_position(
+                        symbol,
+                        float(positions[symbol]["stop_price"]),
+                        "stop_loss",
+                        day,
+                    )
+                elif high >= float(positions[symbol]["target_price"]):
+                    close_position(
+                        symbol,
+                        float(positions[symbol]["target_price"]),
+                        "take_profit",
+                        day,
+                    )
+
+        # 3) Produce signals using history through today's close.
+        if day_idx < len(all_days) - 1:
+            candidates: list[dict[str, Any]] = []
+            for symbol, df in prepared.items():
+                if symbol in positions or day not in df.index:
+                    continue
+                history = df.loc[:day]
+                signal = signal_fn(symbol, history)
+                if signal:
+                    candidates.append({"symbol": symbol, **signal})
+            candidates.sort(key=lambda s: float(s.get("score") or 0), reverse=True)
+            pending = candidates[: int(max_trades_per_day)]
+
+        marked = cash
+        if positions:
+            exposure_days += 1
+        for symbol, pos in positions.items():
+            df = prepared[symbol]
+            if day in df.index:
+                row = df.loc[day]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                marked += float(pos["shares"]) * float(row["Close"])
+            else:
+                marked += float(pos["capital_usd"])
+        equity_curve.append({"day": str(day)[:10], "equity": round(marked, 2)})
+
+    # Liquidate remaining positions on their last known close.
+    final_day = all_days[-1]
+    for symbol in list(positions):
+        df = prepared[symbol]
+        row = df.iloc[-1]
+        close_position(symbol, float(row["Close"]), "end_of_backtest", final_day)
+    final_equity = cash
+    return _portfolio_metrics(
+        initial_capital=float(initial_capital),
+        final_equity=final_equity,
+        trades=trades,
+        equity_curve=equity_curve,
+        exposure_days=exposure_days,
+        total_days=len(all_days),
+        strategy_pnl=dict(strategy_pnl),
+    )
+
+
+def _portfolio_metrics(
+    *,
+    initial_capital: float,
+    final_equity: float,
+    trades: list[dict[str, Any]],
+    equity_curve: list[dict[str, Any]],
+    exposure_days: int,
+    total_days: int,
+    strategy_pnl: dict[str, float],
+) -> dict[str, Any]:
+    wins = [t for t in trades if float(t["pnl_usd"]) > 0]
+    losses = [t for t in trades if float(t["pnl_usd"]) <= 0]
+    gross_profit = sum(float(t["pnl_usd"]) for t in wins)
+    gross_loss = abs(sum(float(t["pnl_usd"]) for t in losses))
+    peak = float(initial_capital)
+    max_drawdown = 0.0
+    monthly: dict[str, list[float]] = defaultdict(list)
+    for point in equity_curve:
+        eq = float(point["equity"])
+        peak = max(peak, eq)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - eq) / peak * 100)
+        monthly[str(point["day"])[:7]].append(eq)
+    positive_months = 0
+    evaluated_months = 0
+    for values in monthly.values():
+        if len(values) >= 2:
+            evaluated_months += 1
+            positive_months += int(values[-1] > values[0])
+    stability = (
+        positive_months / evaluated_months * 100 if evaluated_months else 0.0
+    )
+    return {
+        "initial_capital": round(initial_capital, 2),
+        "final_equity": round(final_equity, 2),
+        "return_pct": round(
+            ((final_equity / initial_capital) - 1) * 100
+            if initial_capital > 0
+            else 0.0,
+            2,
+        ),
+        "max_drawdown_pct": round(max_drawdown, 2),
+        "trades": trades,
+        "trade_count": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": round(len(wins) / len(trades) * 100, 1)
+        if trades
+        else 0.0,
+        "profit_factor": round(gross_profit / gross_loss, 2)
+        if gross_loss > 0
+        else (math.inf if gross_profit > 0 else 0.0),
+        "exposure_pct": round(exposure_days / max(total_days, 1) * 100, 1),
+        "monthly_stability_pct": round(stability, 1),
+        "strategy_pnl_usd": {
+            key: round(value, 2) for key, value in strategy_pnl.items()
+        },
+        "equity_curve": equity_curve,
+        "note": None,
+    }
+
+
+def _empty_portfolio_backtest(initial_capital: float, note: str) -> dict[str, Any]:
+    return {
+        "initial_capital": float(initial_capital),
+        "final_equity": float(initial_capital),
+        "return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "trades": [],
+        "trade_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate_pct": 0.0,
+        "profit_factor": 0.0,
+        "exposure_pct": 0.0,
+        "monthly_stability_pct": 0.0,
+        "strategy_pnl_usd": {},
+        "equity_curve": [],
         "note": note,
     }

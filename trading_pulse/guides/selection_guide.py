@@ -13,6 +13,13 @@ RISK_PROFILE_LABELS = {
     "speculative": "ספקולטיבי",
 }
 
+STRATEGY_MODE_LABELS = {
+    "balanced_mix": "משולב מאוזן",
+    "score_only": "מומנטום וציון בלבד",
+    "rising_three_only": "Rising Three בלבד",
+    "method2_only": "שיטה 2 בלבד",
+}
+
 
 def _intraday_selection_block(cfg: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(cfg.get("intraday_check_enabled", True))
@@ -44,6 +51,8 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = cfg or {}
     risk = str(cfg.get("risk_profile", "speculative"))
     speculative = risk == "speculative"
+    strategy_mode = str(cfg.get("strategy_mode", "balanced_mix"))
+    strategy_mode_label = STRATEGY_MODE_LABELS.get(strategy_mode, STRATEGY_MODE_LABELS["balanced_mix"])
     signal_sources = cfg.get("signal_sources") or []
     tickers = cfg.get("tickers") or []
 
@@ -131,24 +140,22 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             },
             {
                 "step": 5,
-                "title": "ציון ודירוג",
+                "title": "הרצת מצב האסטרטגיה",
                 "detail": (
-                    "ציון משוקלל מכל המקורות + התאמת חדשות + מיון לפי ציון סופי. "
-                    "הגבוהות בראש הרשימה."
+                    f"בהגדרות נבחר כרגע ״{strategy_mode_label}״. "
+                    "אפשר לבחור גם מומנטום וציון בלבד, Rising Three בלבד או שיטה 2 בלבד. "
+                    "שיטה 2 נכנסת רק בפריצה, לא אוטומטית בפתיחה."
                 ),
             },
             {
                 "step": 6,
-                "title": "בחירת Top N + נרות + שיטה 2",
+                "title": "שילוב, דירוג ומגבלות תיק",
                 "detail": (
-                    f"יום ראשון: עד {deploy_n} מניות עיקריות בחלוקה שווה "
-                    f"(ציון + Rising Three Methods) "
-                    f"+ שרוול קטן לשיטה 2 (סיכון ~1–2% מהתיק) אם יש טריגר ממתין. "
-                    f"אחר כך: עד {max_trades} כניסות עיקריות ליום "
-                    f"(מקסימום {cfg.get('max_open_positions', 5)} פוזיציות). "
-                    "שיטה 2: כניסה רק בפריצה (לא בפתיחה), מסגרות זמן גדולות באותו כיוון "
-                    "(לונג/שורט), בלי קונפליקט שבועי; אחרי הבוקר — מעקב תוך־יומי "
-                    "(פריצת רמה יומית או טריגר 5ד/1ד). מעקב שעתי אחרי אישור. הכול כפוף ל־הכל."
+                    "במצב משולב, אותות כפולים לא יוצרים שתי פוזיציות: "
+                    "הסכמה על אותה מניה מקבלת עדיפות והכרטיס מציג אילו אסטרטגיות תמכו בה. "
+                    f"נבחרות עד {max_trades} כניסות עיקריות ליום ועד "
+                    f"{cfg.get('max_open_positions', 5)} פוזיציות, בכפוף למזומן ולסיכון. "
+                    f"בתיק ריק אפשר לפרוס את ההון על עד {deploy_n} מניות."
                 ),
             },
             {
@@ -166,8 +173,8 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "strategy": {
             "profile": risk,
             "profile_label": RISK_PROFILE_LABELS.get(risk, risk),
-            "mode": "speculative" if speculative else "momentum",
-            "mode_title": "ספקולטיבי — תנודתיות ופריצות" if speculative else "מומנטום — מגמה ונפח",
+            "mode": strategy_mode,
+            "mode_title": f"מצב בחירה: {strategy_mode_label}",
             "scoring": (
                 [
                     "ATR% — תנודתיות יומית (יותר גבוה = ציון גבוה יותר)",
@@ -183,9 +190,7 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 ]
             ),
             "must_pass": (
-                "לפחות אחד מ: נפח חריג · פריצה לשיא · ATR ≥ 3%"
-                if speculative
-                else "מומנטום חיובי (מעל MA20) או נפח מעל הסף"
+                "הסינון בפועל תלוי במצב האסטרטגיה; כל בחירה עדיין כפופה למגבלות הון וסיכון."
             ),
             "stops": (
                 f"מחיר תחתון -{int(float(cfg.get('stop_loss_pct', 0.12)) * 100)}% (מכירה אוטומטית) · "
@@ -210,6 +215,22 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         },
         "enrichment": [
             {
+                "icon": "🧩",
+                "title": "מצב משולב והסכמה",
+                "detail": (
+                    "משולב מאוזן הוא ברירת המחדל. כשכמה אסטרטגיות מזהות אותה מניה, "
+                    "היא נשארת פוזיציה אחת, מקבלת עדיפות ומוצג למה נבחרה."
+                ),
+            },
+            {
+                "icon": "🧪",
+                "title": "אפשרויות ניסיוניות",
+                "detail": (
+                    "Trend Pullback ומסנן מצב שוק לפי SPY/QQQ כבויים כברירת מחדל. "
+                    "אפשר להפעיל בהגדרות, אך הם עדיין ניסיוניים ולא הוכחו."
+                ),
+            },
+            {
                 "icon": "📰",
                 "title": "חדשות",
                 "detail": (
@@ -220,10 +241,20 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             },
             {
                 "icon": "📊",
-                "title": "Backtest קצר",
+                "title": "בדיקת עבר",
                 "detail": (
                     f"סימולציה על {cfg.get('backtest_days', 90)} ימים אחורה עם אותם סטופ/יעד — "
-                    "win rate וממוצע לעסקה מופיעים בהסבר המניה."
+                    "win rate וממוצע לעסקה מופיעים בהסבר המניה. "
+                    "בדיקת walk-forward לתיק מדמה כמה ימי מסחר, פוזיציות ומגבלות סיכון; "
+                    "זו סימולציה בלבד, ללא חיבור לברוקר."
+                ),
+            },
+            {
+                "icon": "📈",
+                "title": "ביצועי אסטרטגיות (shadow)",
+                "detail": (
+                    "הדוח בהגדרות מרכז אותות ותוצאות סגורות לפי אסטרטגיה. "
+                    "משווים רק אחרי 20–30 עסקאות סגורות ולפחות 4–6 שבועות."
                 ),
             },
             {

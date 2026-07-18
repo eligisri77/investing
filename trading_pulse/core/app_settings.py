@@ -121,6 +121,19 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
         "title": "מסחר וסיכון",
         "fields": [
             {
+                "key": "strategy_mode",
+                "label": "שיטת בחירת מניות (לא רמת סיכון)",
+                "type": "select",
+                "options": [
+                    {"value": "balanced_mix", "label": "שילוב אסטרטגיות"},
+                    {"value": "score_only", "label": "מומנטום וציון בלבד"},
+                    {"value": "rising_three_only", "label": "Rising Three בלבד"},
+                    {"value": "method2_only", "label": "שיטה 2 בלבד"},
+                ],
+                "default": "balanced_mix",
+                "hint": "קובע אילו שיטות מחפשות מועמדות. פרופיל הסיכון נקבע בנפרד",
+            },
+            {
                 "key": "risk_profile",
                 "label": "פרופיל סיכון",
                 "type": "select",
@@ -130,7 +143,7 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                     {"value": "aggressive", "label": "אגרסיבי"},
                     {"value": "speculative", "label": "ספקולטיבי"},
                 ],
-                "hint": "משפיע על גודל פוזיציה, מספר עסקאות וסטופים",
+                "hint": "משפיע על גודל פוזיציה, מספר עסקאות וסטופים — לא על שיטת הבחירה",
             },
             {
                 "key": "monthly_target_usd",
@@ -166,6 +179,13 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "step": 1,
             },
             {
+                "key": "candle_fourth_enabled",
+                "label": "Rising Three פעיל",
+                "type": "boolean",
+                "default": True,
+                "hint": "סריקת תבנית המשך יומית",
+            },
+            {
                 "key": "method2_enabled",
                 "label": "מניה חמישית — שיטה 2",
                 "type": "boolean",
@@ -194,6 +214,20 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "max": 0.05,
                 "step": 0.005,
                 "hint": "ברירת מחדל 0.02 = 2%",
+            },
+            {
+                "key": "trend_pullback_enabled",
+                "label": "Trend Pullback — ניסיוני",
+                "type": "boolean",
+                "default": False,
+                "hint": "מחפש תיקון במגמה עולה; לא הוכח, כבוי עד לצבירת נתוני סימולציה",
+            },
+            {
+                "key": "market_regime_filter_enabled",
+                "label": "מסנן מצב שוק — ניסיוני",
+                "type": "boolean",
+                "default": False,
+                "hint": "עשוי לצמצם כניסות לפי ממוצעי SPY ו־QQQ; לא הוכח",
             },
             {
                 "key": "commission_per_side_usd",
@@ -321,9 +355,12 @@ def get_settings_payload() -> dict[str, Any]:
         secrets = secrets_source()
     except Exception:
         secrets = "config"
+    from trading_pulse.agent.strategies.registry import strategy_metadata
+
     return {
         "sections": SETTINGS_SECTIONS,
         "values": values,
+        "strategy_metadata": strategy_metadata(),
         "time_dual": dual_times_from_config(cfg),
         "restart_required_keys": restart_keys,
         "secrets_source": secrets,

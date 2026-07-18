@@ -52,9 +52,18 @@ User then opens **Settings** or **Bot guide** to connect Telegram.
 
 ## Publishing a release (for the in-app updater)
 
-1. Bump `APP_VERSION` in `trading_pulse/core/app_paths.py`
-2. `.\installer\build.ps1 -Package`
-3. Create a GitHub Release tagged `vX.Y.Z` and upload `TradingPulse-Setup-X.Y.Z.exe`
+**Preferred (agent or one command):**
+
+```powershell
+.\scripts\release.ps1              # build + GitHub Release for current APP_VERSION
+.\scripts\release.ps1 -BumpPatch   # 0.1.0 → 0.1.1, then publish
+```
+
+Or ask Cursor: `@trading-pulse-releaser`
+
+Needs: [Inno Setup 6](https://jrsoftware.org/isinfo.php) + [GitHub CLI](https://cli.github.com/) (`gh auth login`).
+
+**Manual:** bump `APP_VERSION` → `.\installer\build.ps1 -Package` → upload `TradingPulse-Setup-X.Y.Z.exe` to a Release tagged `vX.Y.Z`.
 
 The app settings page lists up to **3 newer** releases (forward-only) from `eligisri77/investing`.
 

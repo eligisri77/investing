@@ -183,6 +183,9 @@ def test_format_intraday_howto_commands():
     assert "החלף LABD PYPL" in text
     assert "תקנה NVDA" in text
     assert "מכור SOXL" in text
+    assert "מהכניסה" in text
+    assert "+5.0%" in text
+    assert "היום +1.0%" in text
 
 
 def test_format_no_entries_morning():

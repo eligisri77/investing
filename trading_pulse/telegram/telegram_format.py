@@ -247,16 +247,46 @@ def format_weekly_watchlist(result: dict[str, Any]) -> str:
     scanned = int(result.get("scanned", 0))
     universe = int(result.get("universe_size", 0))
     symbols = result.get("symbols") or []
+    # symbols may be list[str] or list[dict]
+    sym_names: list[str] = []
+    for item in symbols:
+        if isinstance(item, dict):
+            sym_names.append(str(item.get("symbol") or ""))
+        else:
+            sym_names.append(str(item))
+    sym_names = [s for s in sym_names if s]
+    strategies = result.get("strategies_used") or []
+    strategy_hits = int(result.get("strategy_hit_symbols", 0) or 0)
     lines = [
         f"<b>🗓️ רשימת המסחר לשבוע {week}</b>",
         SEP,
-        f"נסרקו <b>{scanned}</b> מתוך {universe} · נבחרו <b>{selected}</b>",
-        "",
-        escape_html(", ".join(symbols)),
-        "",
-        "<i>התוכנית היומית תיסרק רק על הרשימה הזו. אפשר לערוך עם</i> "
-        "<code>הוסף SYMBOL</code> / <code>הסר SYMBOL</code>.",
+        f"נסרקו בהצלחה <b>{scanned}</b> מתוך {universe} · נבחרו <b>{selected}</b>",
+        "<i>דירוג: מומנטום + תנודתיות + נפח"
+        + (" + אותות אסטרטגיה" if strategies else "")
+        + "</i>",
     ]
+    if strategies:
+        lines.append(
+            f"אותות אסטרטגיה בנבחרות: <b>{strategy_hits}</b> · "
+            f"{escape_html(', '.join(str(s) for s in strategies))}"
+        )
+    preview = sym_names[:10]
+    more = max(0, len(sym_names) - len(preview))
+    lines.extend(
+        [
+            "",
+            "<b>Top 10:</b> " + escape_html(", ".join(preview)),
+        ]
+    )
+    if more:
+        lines.append(f"<i>ועוד {more} ברשימה המלאה בדשבורד / config</i>")
+    lines.extend(
+        [
+            "",
+            "<i>התוכנית היומית תיסרק רק על הרשימה הזו. אפשר לערוך עם</i> "
+            "<code>הוסף SYMBOL</code> / <code>הסר SYMBOL</code>.",
+        ]
+    )
     return finalize("\n".join(lines))
 
 
@@ -402,7 +432,7 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
                 )
                 lines.append(
                     "   → אחרי אישור: כניסה <b>רק אם נפרצת הרמה</b> "
-                    "(בוקר או תוך־יום). בלי פריצה — אין קנייה."
+                    "(בוקר או תוך־יום). בלי פריצה — אין כניסה."
                 )
             elif r.get("below_bar"):
                 lines.append(
@@ -489,8 +519,10 @@ def format_what_all_does(
         method2 = [r for r in new_recs if str(r.get("strategy")) == "method2"]
         if method2:
             names = ", ".join(escape_html(str(r["symbol"])) for r in method2)
+            shorts = [r for r in method2 if str(r.get("side") or "").upper() == "SHORT"]
+            side_note = " (כולל שורט — רווח כשהמחיר יורד)" if shorts else ""
             lines.append(
-                f"• שיטה 2 ({names}): אחרי אישור — כניסה <b>רק אם נפרצת הרמה</b> "
+                f"• שיטה 2 ({names}){side_note}: אחרי אישור — כניסה <b>רק אם נפרצת הרמה</b> "
                 "(בוקר או תוך־יום), לא חובה בפתיחה"
             )
         if held:
@@ -969,10 +1001,19 @@ def format_entry_notification(
         from trading_pulse.agent.strategy_labels import strategy_suffix_html
 
         tag = strategy_suffix_html(e)
+        entry_px = float(e.get("entry_price") or 0)
         lines.append(
             f"• <b>{escape_html(e['symbol'])}</b>{tag}{side_tag} "
-            f"${float(e['capital_usd']):.0f} @ <b>${float(e['entry_price']):.2f}</b>{extra}"
+            f"${float(e['capital_usd']):.0f} @ <b>${entry_px:.2f}</b>{extra}"
         )
+        ref = float(e.get("entry_ref_price") or e.get("evening_ref_price") or 0)
+        if ref > 0 and entry_px > 0:
+            gap_pct = (entry_px / ref - 1.0) * 100.0
+            if abs(gap_pct) >= 3.0:
+                lines.append(
+                    f"   <i>נפתח בפער מול ייחוס הערב (~${ref:.2f}): "
+                    f"{gap_pct:+.1f}%</i>"
+                )
     lines.extend(["", "דוח סוף יום יישלח אחרי סגירת וול סטריט"])
     return finalize("\n".join(lines))
 
@@ -1129,7 +1170,13 @@ def format_approval_reply(
                 extra = ""
                 if str(rec.get("strategy") or "") == "method2":
                     trig = escape_html(str(rec.get("trigger") or ""))
-                    extra = f" · שיטה 2 · נרות סיניים ({trig}) — כניסה בפריצה בלבד"
+                    side = str(rec.get("side") or "LONG").upper()
+                    side_he = "שורט" if side == "SHORT" else "לונג"
+                    extra = (
+                        f" · שיטה 2 {side_he} · נרות סיניים ({trig}) — כניסה בפריצה בלבד"
+                    )
+                    if side == "SHORT":
+                        extra += " · רווח כשהמחיר יורד"
                 elif str(rec.get("strategy") or "") == "rising_three_methods":
                     extra = " · נרות Rising Three — כניסה בפתיחה"
                 lines.append(f"• <b>{escape_html(sym)}</b> — <b>${amt:.0f}</b>{extra}")
@@ -1142,9 +1189,30 @@ def format_approval_reply(
                     "<i>שיטה 2: אם לא נפרץ בבוקר — נשאר במעקב תוך־יומי; בלי פריצה אין כניסה</i>"
                 )
         if held:
-            lines.extend(["", "<b>📂 נשאר בתיק (ללא שינוי):</b>"])
+            lines.extend(["", "<b>📂 נשאר בתיק (ללא שינוי אוטומטי):</b>"])
             for sym, amt in held:
                 lines.append(f"• <b>{escape_html(sym)}</b> — ${amt:.0f} מושקע")
+        # Remind about unfinished sell/swap holding actions after «הכל»
+        pending_actions = [
+            a
+            for a in (plan.get("holding_actions") or [])
+            if str(a.get("verdict")) in {"swap", "sell", "take_profit"}
+        ]
+        if pending_actions and full_confirm:
+            lines.extend(["", "<b>⚠️ עדיין ידני (הכל לא ביצע):</b>"])
+            for a in pending_actions[:6]:
+                verdict = str(a.get("verdict"))
+                raw_sym = str(a.get("symbol") or "")
+                sym = escape_html(raw_sym)
+                if verdict == "swap":
+                    to_raw = str(a.get("swap_to") or "")
+                    to_sym = escape_html(to_raw)
+                    lines.append(
+                        f"• החלף <b>{sym}</b> → <b>{to_sym}</b>: "
+                        f"<code>החלף {raw_sym} {to_raw}</code>"
+                    )
+                else:
+                    lines.append(f"• מכור <b>{sym}</b>: <code>מכור {raw_sym}</code>")
         if not new_buys and held:
             lines.extend(["", "<i>אין קניות חדשות — רק המשך החזקה</i>"])
         elif new_buys and held:
@@ -1404,7 +1472,8 @@ def format_intraday_monitor(report: Any) -> str:
             tag = strategy_suffix_html(h)
             lines.append(
                 f"• <b>{escape_html(h['symbol'])}</b>{tag} — {cap_txt}"
-                f"${h.get('last', 0):.2f}{floor_txt} · {sign}{pnl:.1f}% · היום {day:+.1f}%"
+                f"${h.get('last', 0):.2f}{floor_txt} · "
+                f"מהכניסה {sign}{pnl:.1f}% · היום {day:+.1f}%"
             )
 
     floor_sells = getattr(report, "floor_sells", None) or []

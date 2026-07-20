@@ -192,7 +192,92 @@ def test_format_approval_reply_new_vs_held():
     assert "לא נקנה שוב" in text
 
 
-def test_apply_confirm_syncs_holdings_from_state():
+def test_format_approval_reply_lists_unfinished_holding_actions():
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {"symbol": "BEAM", "approved": True, "capital_usd": 400},
+        ],
+        "holdings": [],
+        "holding_actions": [
+            {"symbol": "LABD", "verdict": "sell"},
+            {"symbol": "RIVN", "verdict": "swap", "swap_to": "NVDA"},
+        ],
+        "allocation": {"status": "applied", "amounts": {"BEAM": 400}, "holdings": []},
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-20",
+        picked_symbols=["BEAM"],
+        all_approved_symbols=["BEAM"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "תוכנית מאושרת" in text
+    assert "עדיין ידני" in text
+    assert "הכל לא ביצע" in text
+    assert "מכור LABD" in text
+    assert "החלף RIVN NVDA" in text
+
+
+def test_format_approval_reply_method2_short_wording():
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {
+                "symbol": "SHORT1",
+                "approved": True,
+                "capital_usd": 200,
+                "strategy": "method2",
+                "side": "SHORT",
+                "trigger": "2-1-2",
+            },
+        ],
+        "holdings": [],
+        "allocation": {"status": "applied", "amounts": {"SHORT1": 200}, "holdings": []},
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-20",
+        picked_symbols=["SHORT1"],
+        all_approved_symbols=["SHORT1"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "שורט" in text
+    assert "שיטה 2" in text
+    assert "רווח כשהמחיר יורד" in text
+
+
+def test_format_entry_notification_gap_note_when_open_differs():
+    from trading_pulse.telegram.telegram_format import format_entry_notification
+
+    with_gap = format_entry_notification(
+        [
+            {
+                "symbol": "GAP",
+                "capital_usd": 300,
+                "entry_price": 110.0,
+                "entry_ref_price": 100.0,
+            }
+        ],
+        trading_day="2026-07-20",
+    )
+    assert "נפתח בפער" in with_gap
+    assert "+10.0%" in with_gap
+
+    no_gap = format_entry_notification(
+        [
+            {
+                "symbol": "OK",
+                "capital_usd": 300,
+                "entry_price": 101.0,
+                "entry_ref_price": 100.0,
+            }
+        ],
+        trading_day="2026-07-20",
+    )
+    assert "נפתח בפער" not in no_gap
     from trading_pulse.agent.plan_engine import apply_confirm
 
     state = {

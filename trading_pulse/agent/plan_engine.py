@@ -142,9 +142,22 @@ def sync_plan_portfolio_snapshot(plan: dict[str, Any], state: dict[str, Any], cf
     held_syms = {str(h["symbol"]) for h in holdings}
     new_recs = [r for r in plan.get("recommendations", []) or [] if str(r["symbol"]) not in held_syms]
     if new_recs:
-        cap = per_trade_cap_for_plan(cfg, state, len(new_recs))
-        for rec in new_recs:
-            rec["capital_usd"] = cap
+        # Same sleeve-aware split as «הכל» — do not flatten Method2 into equal caps.
+        from trading_pulse.agent.capital_allocation import (
+            _round_amounts,
+            _sleeve_aware_equal_amounts,
+        )
+
+        deployable = float(plan.get("available_capital_usd") or 0)
+        amounts = _sleeve_aware_equal_amounts(new_recs, deployable)
+        if amounts:
+            rounded = _round_amounts(amounts, deployable)
+            for rec, amt in zip(new_recs, rounded, strict=False):
+                rec["capital_usd"] = round(float(amt), 2)
+        else:
+            cap = per_trade_cap_for_plan(cfg, state, len(new_recs))
+            for rec in new_recs:
+                rec["capital_usd"] = cap
     return plan
 
 
@@ -278,6 +291,13 @@ def _auto_watch_method2(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -
         if isinstance(meta, dict):
             meta["label"] = "שיטה 2"
             meta["trigger"] = rec.get("trigger")
+            meta["side"] = str(rec.get("side") or "LONG").upper()
+            meta["entry_ref"] = float(
+                rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0
+            )
+            meta["stop_ref"] = float(
+                rec.get("method2_stop_ref") or rec.get("floor_price") or 0
+            )
         mark_price_watch_sent(state, sym)
         watched = True
         logging.info("Method2 auto price-watch: %s (added=%s)", sym, result.get("added"))

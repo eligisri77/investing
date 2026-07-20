@@ -87,12 +87,35 @@ def update_message_metadata(
 def merge_backfill(entries: list[dict[str, Any]]) -> int:
     messages = load_messages()
     existing = {m.get("id") for m in messages}
+    # Skip archive rows when a live (non-backfilled) message already covers
+    # the same context + trading day — avoids duplicate plan/report/heartbeat.
+    live_keys: set[tuple[str, str]] = set()
+    for message in messages:
+        if message.get("backfilled"):
+            continue
+        ctx = str(message.get("context") or "")
+        if ctx not in {"plan", "report", "heartbeat"}:
+            continue
+        meta = message.get("metadata") or {}
+        day = str(meta.get("trading_day") or "")
+        if not day:
+            day = str(message.get("timestamp") or "")[:10]
+        if day:
+            live_keys.add((ctx, day))
+
     added = 0
     for entry in entries:
         if entry.get("id") in existing:
             continue
+        ctx = str(entry.get("context") or "")
+        meta = entry.get("metadata") or {}
+        day = str(meta.get("trading_day") or "")
+        if not day:
+            day = str(entry.get("timestamp") or "")[:10]
+        if ctx in {"plan", "report", "heartbeat"} and day and (ctx, day) in live_keys:
+            continue
         messages.append(entry)
-        existing.add(entry["id"])
+        existing.add(entry.get("id"))
         added += 1
     if added:
         messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)

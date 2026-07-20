@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from trading_pulse.agent.dryrun_agent import parse_telegram_user_command
+from trading_pulse.agent.dryrun_agent import (
+    clear_pending_sell_confirm,
+    parse_telegram_user_command,
+    pending_sell_confirm_symbol,
+    set_pending_sell_confirm,
+    try_confirm_pending_sell,
+)
 
 
 @pytest.mark.parametrize(
@@ -63,3 +71,44 @@ def test_natural_sell_wording_is_confirmation_not_execution(text: str) -> None:
     parsed = parse_telegram_user_command(text)
     assert parsed == {"kind": "sell_confirmation", "ref": "U"}
     assert parsed["kind"] != "sell"
+
+
+def test_set_pending_sell_confirm_stores_symbol() -> None:
+    state: dict = {}
+    set_pending_sell_confirm(state, "u")
+    assert state["pending_sell_confirm"]["symbol"] == "U"
+    assert pending_sell_confirm_symbol(state) == "U"
+
+
+@pytest.mark.parametrize("word", ["כן", "אישור", "yes", "מאשר"])
+def test_try_confirm_pending_sell_accepts_confirm_words(word: str) -> None:
+    state: dict = {}
+    set_pending_sell_confirm(state, "SOXL")
+    assert try_confirm_pending_sell(state, word) == "SOXL"
+    assert "pending_sell_confirm" not in state
+
+
+def test_try_confirm_pending_sell_rejects_other_text() -> None:
+    state: dict = {}
+    set_pending_sell_confirm(state, "SOXL")
+    assert try_confirm_pending_sell(state, "לא") is None
+    assert pending_sell_confirm_symbol(state) == "SOXL"
+
+
+def test_pending_sell_confirm_expires() -> None:
+    state: dict = {
+        "pending_sell_confirm": {
+            "symbol": "NVDA",
+            "at": (datetime.now(timezone.utc) - timedelta(seconds=2000)).isoformat(),
+        }
+    }
+    assert pending_sell_confirm_symbol(state, max_age_sec=1800) is None
+    assert "pending_sell_confirm" not in state
+    assert try_confirm_pending_sell(state, "כן") is None
+
+
+def test_clear_pending_sell_confirm() -> None:
+    state: dict = {}
+    set_pending_sell_confirm(state, "AAPL")
+    clear_pending_sell_confirm(state)
+    assert pending_sell_confirm_symbol(state) is None

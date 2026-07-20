@@ -153,12 +153,18 @@ def _quick_score_line(cfg: Any, symbol: str) -> str:
         return ""
 
 
-def format_price_watch_update(cfg: Any, symbol: str, *, include_score: bool = True) -> str | None:
+def format_price_watch_update(
+    cfg: Any,
+    symbol: str,
+    *,
+    include_score: bool = True,
+    watch_meta: dict[str, Any] | None = None,
+) -> str | None:
     quote = fetch_intraday_quote(symbol)
     if not quote:
         return None
     last = float(quote["last"])
-    day_chg = float(quote.get("day_change_pct", 0))
+    day_chg = float(quote.get("day_change_pct", 0) or 0)
     sign = "+" if day_chg >= 0 else ""
     high = float(quote.get("high", last))
     low = float(quote.get("low", last))
@@ -167,6 +173,9 @@ def format_price_watch_update(cfg: Any, symbol: str, *, include_score: bool = Tr
         f"מחיר <b>${last:.2f}</b> · היום <b>{sign}{day_chg:.2f}%</b>",
         f"טווח היום ${low:.2f}–${high:.2f}",
     ]
+    m2_line = _method2_distance_line(watch_meta, last)
+    if m2_line:
+        lines.append(m2_line)
     if include_score:
         score_line = _quick_score_line(cfg, symbol)
         if score_line:
@@ -174,6 +183,63 @@ def format_price_watch_update(cfg: Any, symbol: str, *, include_score: bool = Tr
     interval = int(getattr(cfg, "intraday_check_interval_minutes", 60))
     lines.append(f"<i>עדכון כל {interval} דק׳ בזמן מסחר · הפסק מעקב {symbol}</i>")
     return "\n".join(lines)
+
+
+def _method2_distance_line(watch_meta: dict[str, Any] | None, last: float) -> str:
+    if not watch_meta:
+        return ""
+    entry_ref = float(watch_meta.get("entry_ref") or 0)
+    if entry_ref <= 0:
+        return ""
+    side = str(watch_meta.get("side") or "LONG").upper()
+    stop = float(watch_meta.get("stop_ref") or 0)
+    if side == "SHORT":
+        to_break = (last / entry_ref - 1.0) * 100.0
+        status = "מעל הפריצה" if last > entry_ref else "מתחת לפריצה"
+        line = (
+            f"שיטה 2 שורט · פריצה ~${entry_ref:.2f} · "
+            f"רחוק <b>{to_break:+.2f}%</b> ({status})"
+        )
+    else:
+        if last >= entry_ref:
+            line = (
+                f"שיטה 2 · פריצה ~${entry_ref:.2f} · "
+                f"<b>נפרץ</b> (+{(last / entry_ref - 1) * 100:.2f}%)"
+            )
+        else:
+            to_break = (entry_ref / last - 1.0) * 100.0 if last > 0 else 0.0
+            line = f"שיטה 2 · פריצה ~${entry_ref:.2f} · חסר <b>{to_break:.2f}%</b>"
+    if stop > 0:
+        line += f" · סטופ ~${stop:.2f}"
+    return line
+
+
+def should_send_method2_price_tick(
+    watch_meta: dict[str, Any] | None,
+    quote: dict[str, Any],
+) -> bool:
+    """Skip noisy flat ticks; always send when near breakout or price moved."""
+    last = float(quote.get("last") or 0)
+    day_chg = abs(float(quote.get("day_change_pct") or 0))
+    if last <= 0:
+        return False
+    meta = watch_meta or {}
+    entry_ref = float(meta.get("entry_ref") or 0)
+    near_breakout = False
+    if entry_ref > 0:
+        near_breakout = abs(last / entry_ref - 1.0) <= 0.015  # within 1.5%
+    prev = meta.get("last_price")
+    moved = True
+    if prev is not None:
+        try:
+            moved = abs(last / float(prev) - 1.0) >= 0.004  # ≥0.4%
+        except (TypeError, ValueError, ZeroDivisionError):
+            moved = True
+    if near_breakout:
+        return True
+    if day_chg < 0.05 and not moved:
+        return False
+    return moved or day_chg >= 0.15
 
 
 def format_watch_added(cfg: Any, result: dict[str, Any]) -> str:
@@ -296,7 +362,7 @@ def send_price_watch_snapshot(cfg: Any, symbol: str) -> bool:
     return ok
 
 
-def send_price_only_tick(cfg: Any, symbol: str) -> bool:
+def send_price_only_tick(cfg: Any, symbol: str, state: dict[str, Any] | None = None) -> bool:
     """Hourly tick: price only (no full analysis / no chart)."""
     from trading_pulse.agent.dryrun_agent import send_telegram_photo, send_user_notification
     from trading_pulse.telegram.reply_cards import render_reply_card
@@ -307,37 +373,68 @@ def send_price_only_tick(cfg: Any, symbol: str) -> bool:
         logging.info("Price tick %s: no quote", symbol)
         return False
 
+    watches = (state or {}).get("price_watches") or {}
+    meta = watches.get(symbol) if isinstance(watches, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
+
+    if meta.get("label") == "שיטה 2" or meta.get("entry_ref"):
+        if not should_send_method2_price_tick(meta, quote):
+            logging.info("Price tick %s: skipped (flat / far from breakout)", symbol)
+            # Still remember last price so we don't spam after tiny noise
+            meta["last_price"] = float(quote["last"])
+            return False
+
     last = float(quote["last"])
-    day_chg = float(quote.get("day_change_pct", 0))
-    sign = "+" if day_chg >= 0 else ("-" if day_chg < 0 else "")
+    day_chg = float(quote.get("day_change_pct", 0) or 0)
+    sign = "+" if day_chg > 0 else ("-" if day_chg < 0 else "")
     high = float(quote.get("high", last))
     low = float(quote.get("low", last))
     interval = int(getattr(cfg, "intraday_check_interval_minutes", 60))
+    m2_line = _method2_distance_line(meta, last)
+    day_label = f"{sign}{abs(day_chg):.2f}%" if abs(day_chg) >= 0.005 else "0.00%"
+
+    rows = [
+        ("מחיר", f"${last:.2f}"),
+        ("שינוי היום", day_label),
+        ("טווח היום", f"${low:.2f} – ${high:.2f}"),
+    ]
+    if m2_line:
+        # Strip HTML for card row
+        plain_m2 = (
+            m2_line.replace("<b>", "")
+            .replace("</b>", "")
+            .replace("&lt;", "<")
+        )
+        rows.append(("שיטה 2", plain_m2.replace("שיטה 2 · ", "").replace("שיטה 2 שורט · ", "")))
 
     try:
         png = render_reply_card(
             f"מחיר {symbol}",
             accent="cyan",
-            rows=[
-                ("מחיר", f"${last:.2f}"),
-                ("שינוי היום", f"{sign}{abs(day_chg):.2f}%"),
-                ("טווח היום", f"${low:.2f} – ${high:.2f}"),
-            ],
+            rows=rows,
             footer=f"עדכון כל {interval} דק׳ · הפסק מעקב {symbol}",
         )
+        inbox = f"{symbol} ${last:.2f} ({day_label})"
+        if m2_line:
+            inbox += " · " + m2_line.replace("<b>", "").replace("</b>", "")
         send_telegram_photo(
             cfg,
             png,
             f"{symbol} ${last:.2f}",
             context=f"price_tick:{symbol}",
-            inbox_text=f"{symbol} ${last:.2f} ({sign}{abs(day_chg):.2f}%)",
+            inbox_text=inbox,
         )
+        meta["last_price"] = last
         return True
     except Exception as ex:
         logging.warning("Price tick card failed for %s: %s", symbol, ex)
-        text = format_price_watch_update(cfg, symbol, include_score=False)
+        text = format_price_watch_update(cfg, symbol, include_score=False, watch_meta=meta)
         if text:
-            return bool(send_user_notification(cfg, text, context=f"price_tick:{symbol}", parse_mode="HTML"))
+            ok = bool(send_user_notification(cfg, text, context=f"price_tick:{symbol}", parse_mode="HTML"))
+            if ok:
+                meta["last_price"] = last
+            return ok
         return False
 
 
@@ -362,11 +459,18 @@ def send_price_watch_updates(cfg: Any, state: dict[str, Any]) -> int:
             if not due_for_price_tick(state, symbol, interval):
                 logging.debug("Price watch %s: skipped (within %s min)", symbol, interval)
                 continue
-            if send_price_only_tick(cfg, symbol):
+            if send_price_only_tick(cfg, symbol, state):
                 mark_price_watch_sent(state, symbol)
                 sent += 1
+            else:
+                # Method2 noise-skip still advances the interval (last_price stored in meta).
+                watches = state.get("price_watches")
+                meta = watches.get(symbol) if isinstance(watches, dict) else None
+                if isinstance(meta, dict) and (
+                    meta.get("label") == "שיטה 2" or meta.get("entry_ref")
+                ):
+                    mark_price_watch_sent(state, symbol)
         except Exception as ex:
             logging.warning("Price watch update failed for %s: %s", symbol, ex)
-    if sent:
-        save_json(STATE_FILE, state)
+    save_json(STATE_FILE, state)
     return sent

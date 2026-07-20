@@ -39,7 +39,7 @@ def _intraday_selection_block(cfg: dict[str, Any]) -> dict[str, Any]:
         "title": "מעקב במהלך יום המסחר",
         "detail": (
             f"בין {open_t} ל-{close_t} UTC ({freq}) נבדקות מניות מושקעות — "
-            "חריגות (סטופ, ירידה חדה) והצעות רכישה/החלפה. "
+            "«מהכניסה» מול «היום», חריגות (סטופ, ירידה חדה) והצעות רכישה/החלפה. "
             "התראות בטלגרם רק כשיש מה לדווח. הגדרות: #/settings."
         ),
         "interval_minutes": interval,
@@ -102,11 +102,32 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         ],
         "pipeline": [
             {
+                "step": 0,
+                "title": "סריקה שבועית (יקום גדול)",
+                "detail": (
+                    "בסוף השבוע (או בפקודה סריקה שבועית) נסרקות כ־420 מניות/ETF. "
+                    "דירוג: מומנטום + תנודתיות (ATR) + נפח"
+                    + (
+                        " + אותות מהאסטרטגיות הפעילות "
+                        "(Rising Three, שיטה 2, ואם הופעלו — גם ניסיוניות)."
+                        if cfg.get("weekly_strategy_rank_enabled", True)
+                        else " (דירוג אסטרטגיה כבוי)."
+                    )
+                    + f" נשמרות {int(cfg.get('weekly_watchlist_size', 60))} הראשונות "
+                    "לרשימת המסחר היומית. "
+                    "בטלגרם: נסרקו בהצלחה X מתוך Y · Top 10 + «ועוד N» "
+                    "(הרשימה המלאה בדשבורד / config). "
+                    "הגדרות (#/settings · לוח זמנים): "
+                    "weekly_scan_enabled · weekly_watchlist_size · weekly_strategy_rank_enabled."
+                ),
+            },
+
+            {
                 "step": 1,
                 "title": "סריקת רשימת מניות",
                 "detail": (
-                    f"בכל ערב (~{plan_dual}) נסרקות {len(tickers)} מניות/ETF מהרשימה. "
-                    "ניתן לעדכן בטלגרם: הוסף / הסר / חפש מניות."
+                    f"בכל ערב (~{plan_dual}) נסרקות {len(tickers)} מניות/ETF מהרשימה השבועית בלבד. "
+                    "עריכה ידנית: הוסף / הסר · חפש מניות מוסיף עד 3 (לא מחליף את הסריקה השבועית)."
                 ),
             },
             {
@@ -147,9 +168,12 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                     "VCP מחפשת התכווצות בתנודתיות ובנפח ואחריה פריצה מאושרת; "
                     "חוזק יחסי מחפש מגמה עולה וביצועי יתר מול SPY בשלושה חודשים ובחודש האחרון. "
                     "שתיהן הרחבות ניסיוניות וכבויות כברירת מחדל. "
-                    "שיטה 2 נכנסת רק בפריצה, לא אוטומטית בפתיחה."
+                    "שיטה 2 נכנסת רק בפריצה, לא אוטומטית בפתיחה. "
+                    "שורט בשיטה 2: רווח כשהמחיר יורד. "
+                    "מעקב מחיר לשיטה 2 שקט יותר ומציג מרחק לפריצה."
                 ),
             },
+
             {
                 "step": 6,
                 "title": "שילוב, דירוג ומגבלות תיק",
@@ -166,8 +190,10 @@ def get_selection_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "title": "אישור שלך",
                 "detail": (
                     "המלצות מגיעות בטלגרם או בדשבורד — שלח הכל לאישור (#/plan). "
+                    "סכומי הדולר בתוכנית = מה ש«הכל» מקצה לקניות ממזומן. "
                     "יום ראשון: ההון מתחלק על כמה מניות. "
-                    "מניה חדשה בלי מזומן: מכור / החלף ואז הכל. "
+                    "מניה חדשה בלי מזומן: מכור / החלף ואז הכל "
+                    "(אחרי הכל — תזכורת לפעולות מכירה/החלפה שלא בוצעו). "
                     "יש מזומן פנוי: אפשר גם להוסיף למניה שכבר בתיק עם תקנה."
                 ),
             },
@@ -380,7 +406,10 @@ def format_selection_guide_messages(cfg: dict[str, Any] | None = None) -> list[s
         if more > 0:
             tickers_str += f" … +{more}"
         lim_lines.append(f"<b>רשימת סריקה ({g['tickers_total']}):</b> {tickers_str}")
-    lim_lines.append("<i>עדכון רשימה: <code>מניות</code> · <code>הוסף SYM</code> · <code>חפש מניות</code></i>")
+    lim_lines.append(
+        "<i>עדכון רשימה: <code>מניות</code> · <code>סריקה שבועית</code> · "
+        "<code>הוסף SYM</code> · <code>חפש מניות</code></i>"
+    )
     parts.append("\n".join(lim_lines))
 
     return chunk_telegram_html(parts)

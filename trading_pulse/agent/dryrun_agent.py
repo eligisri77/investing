@@ -182,6 +182,8 @@ class AgentConfig:
     weekly_watchlist_size: int = 60
     weekly_scan_chunk: int = 20
     weekly_scan_throttle_sec: float = 1.5
+    weekly_strategy_rank_enabled: bool = True
+    weekly_strategy_enrich_cap: int = 150
     tickers: list[str] = None
 
     def __post_init__(self) -> None:
@@ -300,6 +302,54 @@ def load_state(cfg: AgentConfig) -> dict[str, Any]:
     backfill_position_floors(state, cfg)
     ensure_month_tracking(cfg, state)
     return state
+
+
+_SELL_CONFIRM_WORDS = frozenset(
+    {"כן", "yes", "ok", "אוקי", "אישור", "יאללה", "מאשר", "אשר"}
+)
+
+
+def set_pending_sell_confirm(state: dict[str, Any], symbol: str) -> None:
+    state["pending_sell_confirm"] = {
+        "symbol": str(symbol).upper(),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def clear_pending_sell_confirm(state: dict[str, Any]) -> None:
+    state.pop("pending_sell_confirm", None)
+
+
+def pending_sell_confirm_symbol(state: dict[str, Any], *, max_age_sec: int = 1800) -> str | None:
+    pending = state.get("pending_sell_confirm")
+    if not isinstance(pending, dict):
+        return None
+    symbol = str(pending.get("symbol") or "").upper()
+    if not symbol:
+        return None
+    raw_at = pending.get("at")
+    if raw_at:
+        try:
+            at = datetime.fromisoformat(str(raw_at).replace("Z", "+00:00"))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - at).total_seconds() > max_age_sec:
+                clear_pending_sell_confirm(state)
+                return None
+        except ValueError:
+            pass
+    return symbol
+
+
+def try_confirm_pending_sell(state: dict[str, Any], text: str) -> str | None:
+    """If user confirmed a pending natural-language sell, return the symbol."""
+    symbol = pending_sell_confirm_symbol(state)
+    if not symbol:
+        return None
+    if str(text).strip().lower() not in _SELL_CONFIRM_WORDS:
+        return None
+    clear_pending_sell_confirm(state)
+    return symbol
 
 
 def count_us_trading_days_remaining(from_day: date) -> int:
@@ -1246,6 +1296,31 @@ def send_telegram_photo(
         from trading_pulse.core.log_redact import redact_secrets
 
         logging.warning("Telegram photo send failed (%s): %s", context, redact_secrets(ex))
+        # Text fallback so the user still gets the content (report/heartbeat/etc.)
+        fallback = (inbox_text or caption or "").strip()
+        if fallback and uses_telegram_notifications(cfg) and token and chat_id:
+            try:
+                from trading_pulse.telegram.telegram_format import escape_html
+
+                # Prefer plain text if caption was already stripped; otherwise escape.
+                plain = re.sub(r"<[^>]+>", "", fallback).strip()
+                ok = _send_telegram_api(
+                    cfg,
+                    escape_html(plain) if plain else fallback,
+                    context=f"{context}:text_fallback",
+                    parse_mode="HTML",
+                )
+                if ok:
+                    logging.info("Telegram photo fallback text sent (%s)", context)
+                    if uses_app_notifications(cfg):
+                        _tag_last_message_delivery(context, "delivered")
+                    return True
+            except Exception as fallback_ex:
+                logging.warning(
+                    "Telegram photo text fallback failed (%s): %s",
+                    context,
+                    redact_secrets(fallback_ex),
+                )
         if uses_app_notifications(cfg):
             _tag_last_message_delivery(context, "failed")
         return False
@@ -1455,6 +1530,7 @@ def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
                 f"📋 תוכנית {day}",
                 context="plan",
                 parse_mode="HTML",
+                inbox_text=format_plan_message_for_app(plan),
                 log_inbox=False,
             )
         except Exception as ex:
@@ -3097,6 +3173,16 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
         reply_context = "reply"
         logging.info("Telegram command received: %s", text)
         try:
+            # Natural-language sell confirm: «מכירה X» then «כן» / «אישור»
+            state = load_state(cfg)
+            confirmed_sell = try_confirm_pending_sell(state, text)
+            if confirmed_sell:
+                save_json(STATE_FILE, state)
+                reply = execute_sell_command(cfg, confirmed_sell, 1.0)
+                send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
+                handled += 1
+                continue
+
             bare_digit_allocation = False
             if re.fullmatch(r"[1-5]", text.strip()) and allocation_choice_pending_for_active_plan():
                 bare_digit_allocation = True
@@ -3108,6 +3194,11 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
             else:
                 parsed = parse_telegram_user_command(text)
             kind = parsed.get("kind", "")
+
+            # Any other command clears a stale sell confirm (except repeating sell_confirmation)
+            if kind not in {"sell_confirmation", "sell"} and pending_sell_confirm_symbol(state):
+                clear_pending_sell_confirm(state)
+                save_json(STATE_FILE, state)
 
             if kind == "help":
                 reply = telegram_help_text()
@@ -3381,10 +3472,14 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 ref = str(parsed.get("ref") or "")
                 symbol = resolve_sell_target(ref)
                 if symbol:
+                    state = load_state(cfg)
+                    set_pending_sell_confirm(state, symbol)
+                    save_json(STATE_FILE, state)
                     reply = (
-                        f"❓ <b>התכוונת למכור את {symbol}?</b>\n"
-                        f"לביצוע המכירה שלח: <code>מכור {symbol}</code>\n"
-                        "<i>לא בוצעה פעולה.</i>"
+                        f"❓ <b>למכור את {escape_html(symbol)}?</b>\n"
+                        f"שלח <code>כן</code> / <code>אישור</code> לביצוע\n"
+                        f"או <code>מכור {escape_html(symbol)}</code>\n"
+                        "<i>לא בוצעה פעולה עדיין.</i>"
                     )
                 else:
                     reply = (
@@ -3408,6 +3503,9 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 if not symbol:
                     reply = "❌ <b>מספר מניה לא תקין</b> — שלח <code>תיק</code> לרשימה"
                 else:
+                    state = load_state(cfg)
+                    clear_pending_sell_confirm(state)
+                    save_json(STATE_FILE, state)
                     reply = execute_sell_command(
                         cfg,
                         symbol,
@@ -4300,8 +4398,14 @@ def run_entry_simulation(
     save_json(STATE_FILE, state)
 
     new_entries: list[dict[str, Any]] = []
+    rec_by_sym = {str(r.get("symbol")): r for r in approved}
     for pos in still_open:
         if str(pos["symbol"]) not in held_before and pos.get("entry_day") == trading_day.isoformat():
+            rec = rec_by_sym.get(str(pos["symbol"])) or {}
+            if "entry_ref_price" not in pos:
+                ref = rec.get("entry_ref_price") or rec.get("method2_entry_ref")
+                if ref:
+                    pos["entry_ref_price"] = float(ref)
             new_entries.append(pos)
 
     from trading_pulse.agent.method2_intraday import stamp_method2_after_morning

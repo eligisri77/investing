@@ -357,3 +357,77 @@ def test_plan_card_updates_prelogged_plan_row_without_duplicate(
         messages[0]["metadata"]["delivery"]["telegram"]["status"]
         == "delivered"
     )
+
+
+def test_merge_backfill_skips_when_live_plan_exists_for_same_day(tmp_path, monkeypatch):
+    store = _isolated_message_store(tmp_path, monkeypatch)
+    store.append_message(
+        "out",
+        "plan",
+        "live plan",
+        metadata={"trading_day": "2026-07-20"},
+    )
+    messages = store.load_messages()
+    assert messages[0].get("backfilled") in (None, False)
+
+    added = store.merge_backfill(
+        [
+            {
+                "id": "bf:plan:2026-07-20",
+                "timestamp": "2026-07-20T20:00:00+00:00",
+                "direction": "out",
+                "text": "archived plan",
+                "context": "plan",
+                "backfilled": True,
+                "metadata": {"trading_day": "2026-07-20"},
+            },
+            {
+                "id": "bf:report:2026-07-20",
+                "timestamp": "2026-07-20T21:00:00+00:00",
+                "direction": "out",
+                "text": "archived report",
+                "context": "report",
+                "backfilled": True,
+                "metadata": {"trading_day": "2026-07-20"},
+            },
+        ]
+    )
+    # Report has no live twin → added; plan skipped
+    assert added == 1
+    contexts = {m["context"] for m in store.load_messages()}
+    assert "plan" in contexts
+    assert "report" in contexts
+    plan_rows = [m for m in store.load_messages() if m["context"] == "plan"]
+    assert len(plan_rows) == 1
+    assert plan_rows[0]["text"] == "live plan"
+
+
+def test_merge_backfill_allows_when_only_backfilled_exists(tmp_path, monkeypatch):
+    store = _isolated_message_store(tmp_path, monkeypatch)
+    store.save_messages(
+        [
+            {
+                "id": "old:bf",
+                "timestamp": "2026-07-19T20:00:00+00:00",
+                "direction": "out",
+                "text": "old backfill",
+                "context": "plan",
+                "backfilled": True,
+                "metadata": {"trading_day": "2026-07-19"},
+            }
+        ]
+    )
+    added = store.merge_backfill(
+        [
+            {
+                "id": "bf:plan:2026-07-20",
+                "timestamp": "2026-07-20T20:00:00+00:00",
+                "direction": "out",
+                "text": "new backfill plan",
+                "context": "plan",
+                "backfilled": True,
+                "metadata": {"trading_day": "2026-07-20"},
+            }
+        ]
+    )
+    assert added == 1

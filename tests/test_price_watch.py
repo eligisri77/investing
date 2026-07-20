@@ -89,3 +89,76 @@ def test_due_for_price_tick_respects_interval():
         datetime.now(timezone.utc) - timedelta(minutes=61)
     ).isoformat()
     assert due_for_price_tick(state, "AAPL", 60) is True
+
+
+def test_should_send_method2_price_tick_skips_flat_far_from_breakout():
+    from trading_pulse.agent.price_watch import should_send_method2_price_tick
+
+    meta = {"entry_ref": 100.0, "side": "LONG", "last_price": 90.0}
+    flat_far = {"last": 90.05, "day_change_pct": 0.02}
+    assert should_send_method2_price_tick(meta, flat_far) is False
+
+    near = {"last": 99.0, "day_change_pct": 0.0}
+    assert should_send_method2_price_tick(meta, near) is True
+
+    moved = {"last": 91.0, "day_change_pct": 0.02}  # ~1% vs last_price
+    assert should_send_method2_price_tick(meta, moved) is True
+
+
+def test_method2_distance_line_shows_distance():
+    from trading_pulse.agent.price_watch import _method2_distance_line
+
+    long_line = _method2_distance_line(
+        {"entry_ref": 100.0, "side": "LONG", "stop_ref": 95.0},
+        last=97.0,
+    )
+    assert "שיטה 2" in long_line
+    assert "חסר" in long_line
+    assert "100.00" in long_line
+    assert "סטופ" in long_line
+
+    short_line = _method2_distance_line(
+        {"entry_ref": 50.0, "side": "SHORT"},
+        last=52.0,
+    )
+    assert "שורט" in short_line
+    assert "רחוק" in short_line
+
+
+def test_format_price_watch_handles_zero_day_change():
+    from trading_pulse.agent.price_watch import format_price_watch_update
+
+    cfg = SimpleNamespace(intraday_check_interval_minutes=60)
+    with patch(
+        "trading_pulse.agent.price_watch.fetch_intraday_quote",
+        return_value={"last": 42.0, "day_change_pct": 0.0, "high": 43.0, "low": 41.0},
+    ), patch(
+        "trading_pulse.agent.price_watch._quick_score_line",
+        return_value="",
+    ):
+        text = format_price_watch_update(cfg, "FLAT", include_score=False)
+    assert text is not None
+    assert "+0.00%" in text
+    assert "$42.00" in text
+
+
+def test_format_price_watch_handles_none_day_change():
+    from trading_pulse.agent.price_watch import format_price_watch_update
+
+    cfg = SimpleNamespace(intraday_check_interval_minutes=60)
+    with patch(
+        "trading_pulse.agent.price_watch.fetch_intraday_quote",
+        return_value={"last": 10.0, "day_change_pct": None, "high": 10.0, "low": 10.0},
+    ), patch(
+        "trading_pulse.agent.price_watch._quick_score_line",
+        return_value="",
+    ):
+        text = format_price_watch_update(
+            cfg,
+            "M2",
+            include_score=False,
+            watch_meta={"entry_ref": 11.0, "side": "LONG"},
+        )
+    assert text is not None
+    assert "+0.00%" in text
+    assert "חסר" in text

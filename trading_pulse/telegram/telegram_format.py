@@ -1193,10 +1193,25 @@ def format_approval_reply(
             for sym, amt in held:
                 lines.append(f"• <b>{escape_html(sym)}</b> — ${amt:.0f} מושקע")
         # Remind about unfinished sell/swap holding actions after «הכל»
+        # Only for symbols still held live (ignore PATH already closed at EOD).
+        live_held = {s for s, _ in held}
+        if cfg is not None:
+            try:
+                from trading_pulse.agent.positions import holdings_snapshot
+
+                # Prefer live state when available via plan holdings already synced
+                live_held |= {
+                    str(h.get("symbol"))
+                    for h in (plan.get("holdings") or [])
+                    if str(h.get("symbol") or "").strip()
+                }
+            except Exception:
+                pass
         pending_actions = [
             a
             for a in (plan.get("holding_actions") or [])
             if str(a.get("verdict")) in {"swap", "sell", "take_profit"}
+            and str(a.get("symbol") or "") in live_held
         ]
         if pending_actions and full_confirm:
             lines.extend(["", "<b>⚠️ עדיין ידני (הכל לא ביצע):</b>"])

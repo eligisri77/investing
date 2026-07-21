@@ -129,6 +129,7 @@ def fetch_intraday_quote(symbol: str) -> dict[str, float] | None:
             "high": high,
             "low": low,
             "change_pct": round((close / open_px - 1) * 100, 2),
+            "day_change_pct": round((close / open_px - 1) * 100, 2),
         }
     except Exception as ex:
         logging.warning("Intraday quote failed for %s: %s", symbol, ex)
@@ -238,6 +239,48 @@ def _score_map(universe: pd.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 SELL_STRONG_DROP_PCT = -7.0
+
+
+def _plan_sell_or_cooldown_symbols(
+    cfg: Any,
+    state: dict[str, Any] | None,
+) -> set[str]:
+    """Symbols we should not suggest buying mid-day (plan sell / cooldown / recent exit)."""
+    skip: set[str] = set()
+    try:
+        from trading_pulse.agent.plan_engine import active_trading_day
+        from trading_pulse.agent.dryrun_agent import plan_path, read_json
+
+        day = active_trading_day()
+        if day:
+            path = plan_path(date.fromisoformat(day))
+            if path.exists():
+                plan = read_json(path)
+                for action in plan.get("holding_actions") or []:
+                    if str(action.get("verdict")) in {"sell", "take_profit", "swap"}:
+                        sym = str(action.get("symbol") or "").upper()
+                        if sym:
+                            skip.add(sym)
+        if state is not None:
+            from trading_pulse.agent.symbol_cooldown import symbols_in_cooldown
+
+            skip |= {s.upper() for s in symbols_in_cooldown(state)}
+            from trading_pulse.core.schedule_tz import us_trading_session_date
+
+            today = us_trading_session_date().isoformat()
+            for trade in state.get("history") or []:
+                if str(trade.get("exit_day") or trade.get("day") or "") == today:
+                    sym = str(trade.get("symbol") or "").upper()
+                    if sym:
+                        skip.add(sym)
+            for trade in state.get("intraday_floor_exits") or []:
+                if str(trade.get("exit_day") or trade.get("day") or "") == today:
+                    sym = str(trade.get("symbol") or "").upper()
+                    if sym:
+                        skip.add(sym)
+    except Exception as ex:
+        logging.debug("Intraday buy-skip set failed: %s", ex)
+    return skip
 
 
 def _is_rising(cfg: Any, data: dict[str, Any]) -> bool:
@@ -352,6 +395,7 @@ def build_suggestions(
 ) -> list[TradeSuggestion]:
     held = {str(h["symbol"]) for h in holdings}
     skip = held | set(exclude_symbols or ())
+    skip |= _plan_sell_or_cooldown_symbols(cfg, state)
 
     suggestions: list[TradeSuggestion] = _sell_recommendations(
         cfg, holdings, quotes, alerts_by_symbol, scores, skip

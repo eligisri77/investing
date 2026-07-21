@@ -205,4 +205,66 @@ def review_holdings(
 ) -> list[HoldingReview]:
     recs = recommendations or []
     enriched = backfill_holding_scores(holdings, scores)
-    return [review_holding(h, cfg, enriched, recs) for h in holdings]
+    reviews = [review_holding(h, cfg, enriched, recs) for h in holdings]
+    return _dedupe_swap_targets(reviews)
+
+
+def _dedupe_swap_targets(
+    reviews: list[HoldingReview],
+    *,
+    max_swaps: int = 2,
+) -> list[HoldingReview]:
+    """Avoid spam like 4×«החלף → VLO» — keep the weakest holdings only."""
+    swaps = [r for r in reviews if r.verdict == "swap" and r.swap_to]
+    if len(swaps) <= max_swaps and len({r.swap_to for r in swaps}) == len(swaps):
+        return reviews
+
+    # Prefer unique targets; among same target keep lowest score / worst pnl first.
+    swaps_sorted = sorted(
+        swaps,
+        key=lambda r: (r.score, r.pnl_pct, -(r.swap_to_score or 0)),
+    )
+    kept: list[HoldingReview] = []
+    used_targets: set[str] = set()
+    for rev in swaps_sorted:
+        if len(kept) >= max_swaps:
+            break
+        target = str(rev.swap_to or "")
+        if target in used_targets:
+            continue
+        used_targets.add(target)
+        kept.append(rev)
+    # If still under max and duplicates remain with unused capacity, allow one shared target.
+    if len(kept) < max_swaps:
+        for rev in swaps_sorted:
+            if rev in kept:
+                continue
+            if len(kept) >= max_swaps:
+                break
+            kept.append(rev)
+
+    keep_ids = {id(r) for r in kept}
+    out: list[HoldingReview] = []
+    for rev in reviews:
+        if rev.verdict != "swap":
+            out.append(rev)
+            continue
+        if id(rev) in keep_ids:
+            out.append(rev)
+        else:
+            out.append(
+                HoldingReview(
+                    symbol=rev.symbol,
+                    verdict="hold",
+                    pnl_pct=rev.pnl_pct,
+                    days_held=rev.days_held,
+                    score=rev.score,
+                    reason=(
+                        f"מגמה תקינה ({rev.pnl_pct:+.1f}%, ציון {rev.score:.1f}) · "
+                        "המשך להחזיק (החלפה מרוכזת בהצעות אחרות)"
+                    ),
+                    capital_usd=rev.capital_usd,
+                    last_price=rev.last_price,
+                )
+            )
+    return out

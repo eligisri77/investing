@@ -199,12 +199,22 @@ def test_format_approval_reply_lists_unfinished_holding_actions():
         "recommendations": [
             {"symbol": "BEAM", "approved": True, "capital_usd": 400},
         ],
-        "holdings": [],
+        "holdings": [
+            {"symbol": "LABD", "capital_usd": 200},
+            {"symbol": "RIVN", "capital_usd": 200},
+        ],
         "holding_actions": [
             {"symbol": "LABD", "verdict": "sell"},
             {"symbol": "RIVN", "verdict": "swap", "swap_to": "NVDA"},
         ],
-        "allocation": {"status": "applied", "amounts": {"BEAM": 400}, "holdings": []},
+        "allocation": {
+            "status": "applied",
+            "amounts": {"BEAM": 400},
+            "holdings": [
+                {"symbol": "LABD", "capital_usd": 200},
+                {"symbol": "RIVN", "capital_usd": 200},
+            ],
+        },
     }
     text = format_approval_reply(
         trading_day="2026-07-20",
@@ -218,6 +228,44 @@ def test_format_approval_reply_lists_unfinished_holding_actions():
     assert "הכל לא ביצע" in text
     assert "מכור LABD" in text
     assert "החלף RIVN NVDA" in text
+
+
+def test_format_approval_reply_skips_holding_actions_not_in_plan_holdings():
+    """Closed positions (e.g. PATH at EOD) must not appear in «עדיין ידני»."""
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {"symbol": "BEAM", "approved": True, "capital_usd": 400},
+        ],
+        "holdings": [
+            {"symbol": "LABD", "capital_usd": 200},
+        ],
+        "holding_actions": [
+            {"symbol": "LABD", "verdict": "sell"},
+            {"symbol": "PATH", "verdict": "sell"},
+            {"symbol": "RIVN", "verdict": "swap", "swap_to": "NVDA"},
+        ],
+        "allocation": {
+            "status": "applied",
+            "amounts": {"BEAM": 400},
+            "holdings": [
+                {"symbol": "LABD", "capital_usd": 200},
+            ],
+        },
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-20",
+        picked_symbols=["BEAM"],
+        all_approved_symbols=["BEAM"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "מכור LABD" in text
+    assert "PATH" not in text
+    assert "מכור PATH" not in text
+    assert "החלף RIVN" not in text
+    assert "RIVN NVDA" not in text
 
 
 def test_format_approval_reply_method2_short_wording():

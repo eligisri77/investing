@@ -45,7 +45,7 @@ def format_watches_cleared(cleared: list[str]) -> str:
             logging.debug("EOD watch quote skip %s: %s", symbol, ex)
         if quote:
             last = float(quote["last"])
-            day_chg = float(quote.get("day_change_pct", 0))
+            day_chg = float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
             sign = "+" if day_chg >= 0 else ""
             high = float(quote.get("high", last))
             low = float(quote.get("low", last))
@@ -164,7 +164,7 @@ def format_price_watch_update(
     if not quote:
         return None
     last = float(quote["last"])
-    day_chg = float(quote.get("day_change_pct", 0) or 0)
+    day_chg = float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
     sign = "+" if day_chg >= 0 else ""
     high = float(quote.get("high", last))
     low = float(quote.get("low", last))
@@ -220,7 +220,9 @@ def should_send_method2_price_tick(
 ) -> bool:
     """Skip noisy flat ticks; always send when near breakout or price moved."""
     last = float(quote.get("last") or 0)
-    day_chg = abs(float(quote.get("day_change_pct") or 0))
+    day_chg = abs(
+        float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
+    )
     if last <= 0:
         return False
     meta = watch_meta or {}
@@ -386,7 +388,7 @@ def send_price_only_tick(cfg: Any, symbol: str, state: dict[str, Any] | None = N
             return False
 
     last = float(quote["last"])
-    day_chg = float(quote.get("day_change_pct", 0) or 0)
+    day_chg = float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
     sign = "+" if day_chg > 0 else ("-" if day_chg < 0 else "")
     high = float(quote.get("high", last))
     low = float(quote.get("low", last))

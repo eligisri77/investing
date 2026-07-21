@@ -105,6 +105,17 @@ def test_should_send_method2_price_tick_skips_flat_far_from_breakout():
     assert should_send_method2_price_tick(meta, moved) is True
 
 
+def test_should_send_method2_price_tick_falls_back_to_change_pct():
+    from trading_pulse.agent.price_watch import should_send_method2_price_tick
+
+    meta = {"entry_ref": 100.0, "side": "LONG", "last_price": 90.0}
+    # Quote shaped like fetch_intraday_quote before day_change_pct existed.
+    flat_far = {"last": 90.05, "change_pct": 0.02}
+    assert should_send_method2_price_tick(meta, flat_far) is False
+    moved = {"last": 91.0, "change_pct": 0.02}
+    assert should_send_method2_price_tick(meta, moved) is True
+
+
 def test_method2_distance_line_shows_distance():
     from trading_pulse.agent.price_watch import _method2_distance_line
 
@@ -162,3 +173,20 @@ def test_format_price_watch_handles_none_day_change():
     assert text is not None
     assert "+0.00%" in text
     assert "חסר" in text
+
+
+def test_format_price_watch_falls_back_to_change_pct():
+    from trading_pulse.agent.price_watch import format_price_watch_update
+
+    cfg = SimpleNamespace(intraday_check_interval_minutes=60)
+    with patch(
+        "trading_pulse.agent.price_watch.fetch_intraday_quote",
+        return_value={"last": 50.0, "change_pct": -1.25, "high": 51.0, "low": 49.0},
+    ), patch(
+        "trading_pulse.agent.price_watch._quick_score_line",
+        return_value="",
+    ):
+        text = format_price_watch_update(cfg, "FALLBACK", include_score=False)
+    assert text is not None
+    assert "-1.25%" in text
+    assert "$50.00" in text

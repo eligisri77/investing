@@ -4,7 +4,8 @@ const charts = [];
 
 function fmtUsd(n) {
   const v = Number(n);
-  const sign = v >= 0 ? "+" : "";
+  if (!Number.isFinite(v) || Math.abs(v) < 0.005) return "$0.00";
+  const sign = v > 0 ? "+" : "-";
   return `${sign}$${Math.abs(v).toFixed(2)}`;
 }
 
@@ -1780,26 +1781,43 @@ function renderStrategyPerformance(perf) {
         <p class="settings-section-note">נתוני shadow תיאורטיים, לא עסקאות שבוצעו. המעקב יתחיל מהתוכנית הבאה.</p>
       </section>`;
   }
+  const minClosed = Number(perf.minimum_closed_trades || 20);
   const body = rows
-    .map(
-      (row) => `
+    .map((row) => {
+      const pnl = Number(row.pnl_usd || 0);
+      const closed = Number(row.closed_trades || 0);
+      const signals = Number(row.signals || 0);
+      const win = Number(row.win_rate_pct || 0);
+      const sample = row.ready_for_comparison
+        ? "מספיק להשוואה"
+        : `${closed}/${minClosed} סגירות`;
+      return `
       <tr>
-        <td>${escapeHtml(row.label_he || row.strategy_id)}</td>
-        <td>${Number(row.signals || 0)}</td>
-        <td>${Number(row.closed_trades || 0)}</td>
-        <td>${Number(row.win_rate_pct || 0).toFixed(1)}%</td>
-        <td class="pnl ${Number(row.pnl_usd || 0) >= 0 ? "positive" : "negative"}">${fmtUsd(Number(row.pnl_usd || 0))}</td>
-        <td>${row.ready_for_comparison ? "מספיק להשוואה" : `נדרשות ${perf.minimum_closed_trades || 20} סגירות`}</td>
-      </tr>`
-    )
+        <td class="strat-name">${escapeHtml(row.label_he || row.strategy_id)}</td>
+        <td class="num">${signals}</td>
+        <td class="num">${closed}</td>
+        <td class="num">${closed > 0 ? `${win.toFixed(1)}%` : "—"}</td>
+        <td class="num pnl ${pnl > 0 ? "positive" : pnl < 0 ? "negative" : ""}">${fmtUsd(pnl)}</td>
+        <td class="sample muted">${escapeHtml(sample)}</td>
+      </tr>`;
+    })
     .join("");
   return `
     <section class="settings-section">
       <h2 class="section-title">מעקב סימולציה לפי אסטרטגיה</h2>
       <p class="settings-section-note">נתוני shadow תיאורטיים, לא עסקאות שבוצעו. השוואה ראשונית רק אחרי 20–30 סגירות ולפחות ${escapeHtml(perf.recommended_weeks || "4–6")} שבועות.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>אסטרטגיה</th><th>אותות</th><th>נסגרו</th><th>שיעור הצלחה</th><th>תוצאה מדומה</th><th>מדגם</th></tr></thead>
+      <div class="portfolio-table-wrap strategy-perf-wrap">
+        <table class="portfolio-table strategy-perf-table">
+          <thead>
+            <tr>
+              <th>אסטרטגיה</th>
+              <th>אותות</th>
+              <th>נסגרו</th>
+              <th>הצלחה</th>
+              <th>תוצאה</th>
+              <th>מדגם</th>
+            </tr>
+          </thead>
           <tbody>${body}</tbody>
         </table>
       </div>

@@ -221,3 +221,71 @@ def test_swap_sync_marks_confirmed_plan_stale_without_reallocating(
     assert updated["allocation"] == original["allocation"]
     assert updated["equity_snapshot"] == 1000
     assert updated["last_manual_action"] == "החלפה ידנית של U ב־NVDA"
+
+
+def test_prune_holding_actions_drops_symbols_not_held():
+    from trading_pulse.agent.plan_engine import _prune_holding_actions
+
+    state = {
+        "open_positions": [
+            {"symbol": "LABD", "capital_usd": 200, "entry_price": 10.0},
+        ]
+    }
+    actions = [
+        {"symbol": "LABD", "verdict": "sell"},
+        {"symbol": "PATH", "verdict": "sell"},
+        {"symbol": "RIVN", "verdict": "swap", "swap_to": "NVDA"},
+    ]
+    out = _prune_holding_actions(actions, state)
+    assert [a["symbol"] for a in out] == ["LABD"]
+
+
+def test_manual_action_prunes_holding_actions_for_closed_symbols(
+    tmp_path, monkeypatch
+):
+    plan_file = tmp_path / "plan.json"
+    save_json(
+        plan_file,
+        {
+            "for_trading_day": "2026-07-20",
+            "status": STATUS_DRAFT,
+            "equity_snapshot": 1000,
+            "holdings": [
+                {"symbol": "LABD", "capital_usd": 200},
+                {"symbol": "PATH", "capital_usd": 200},
+            ],
+            "holding_actions": [
+                {"symbol": "LABD", "verdict": "sell"},
+                {"symbol": "PATH", "verdict": "sell"},
+            ],
+            "recommendations": [{"symbol": "NVDA", "capital_usd": 300}],
+        },
+    )
+    state = {
+        "equity": 1000,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 200,
+                "entry_price": 10,
+                "entry_day": "2026-07-15",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "trading_pulse.agent.plan_engine.active_trading_day",
+        lambda: "2026-07-20",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.plan_path",
+        lambda _day: plan_file,
+    )
+
+    assert sync_active_plan_after_manual_action(
+        AgentConfig(), state, action="מכירה ידנית של PATH"
+    )
+    updated = __import__(
+        "trading_pulse.agent.dryrun_agent", fromlist=["read_json"]
+    ).read_json(plan_file)
+    assert [a["symbol"] for a in updated["holding_actions"]] == ["LABD"]
+    assert {h["symbol"] for h in updated["holdings"]} == {"LABD"}

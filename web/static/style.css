@@ -424,6 +424,52 @@ body {
   color: var(--red);
   font-weight: 700;
 }
+.portfolio-table .pnl.positive {
+  color: var(--green);
+  font-weight: 700;
+}
+.portfolio-table .pnl.negative {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.strategy-perf-wrap {
+  margin-top: 0.5rem;
+}
+.strategy-perf-table {
+  table-layout: fixed;
+}
+.strategy-perf-table th:nth-child(1),
+.strategy-perf-table td.strat-name {
+  width: 32%;
+}
+.strategy-perf-table th:nth-child(2),
+.strategy-perf-table th:nth-child(3),
+.strategy-perf-table th:nth-child(4),
+.strategy-perf-table td.num {
+  width: 11%;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.strategy-perf-table th:nth-child(5),
+.strategy-perf-table td.pnl {
+  width: 14%;
+  text-align: center;
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.strategy-perf-table th:nth-child(6),
+.strategy-perf-table td.sample {
+  width: 20%;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.strategy-perf-table td.strat-name {
+  font-weight: 600;
+  color: var(--text);
+}
 
 .nav a {
   color: var(--muted);

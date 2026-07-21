@@ -176,3 +176,123 @@ def test_failed_manual_buy_does_not_sync_plan(monkeypatch):
     reply = agent.execute_buy_command(cfg, "U", 100)
     assert "לא הצלחתי לקנות U" in reply
     assert sync_calls == []
+
+
+def test_execute_sell_clears_price_watch(monkeypatch):
+    """Full sell drops Method2 / hourly watch for that symbol only."""
+    from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
+    from trading_pulse.telegram import reply_cards
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 333.0,
+                "entry_price": 7.0,
+                "entry_day": "2026-07-08",
+            }
+        ],
+    }
+    add_price_watch(state, "LABD")
+    add_price_watch(state, "NVDA")
+
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+
+    def _fake_sell(_cfg, st, sym, frac, **_kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {"symbol": sym, "pnl_usd": 5.0, "capital_usd": 333.0}
+
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position", _fake_sell
+    )
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_sell", lambda *_a, **_k: b"png")
+
+    assert agent.execute_sell_command(AgentConfig(), "LABD") == ""
+    assert "LABD" not in list_price_watches(state)
+    assert "NVDA" in list_price_watches(state)
+
+
+def test_execute_sell_partial_keeps_price_watch(monkeypatch):
+    from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
+    from trading_pulse.telegram import reply_cards
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 333.0,
+                "entry_price": 7.0,
+                "entry_day": "2026-07-08",
+            }
+        ],
+    }
+    add_price_watch(state, "LABD")
+
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+
+    def _fake_sell(_cfg, st, sym, frac, **_kw):
+        for p in st.get("open_positions", []):
+            if p["symbol"] == sym.upper():
+                p["capital_usd"] = round(float(p["capital_usd"]) * (1.0 - frac), 2)
+                break
+        return {"symbol": sym, "pnl_usd": 1.0, "capital_usd": 100.0}
+
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position", _fake_sell
+    )
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_sell", lambda *_a, **_k: b"png")
+
+    assert agent.execute_sell_command(AgentConfig(), "LABD", fraction=0.3) == ""
+    assert list_price_watches(state) == ["LABD"]
+
+
+def test_execute_sell_html_goes_to_app_inbox_not_telegram(monkeypatch):
+    """Sell card is Telegram; detailed HTML is app-inbox only (telegram_sender=False)."""
+    from trading_pulse.telegram import app_notify, reply_cards
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "U",
+                "capital_usd": 200.0,
+                "entry_price": 40.0,
+                "entry_day": "2026-07-08",
+            }
+        ],
+    }
+    notify_kwargs: list[dict] = []
+
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    def _fake_sell(_cfg, st, sym, frac, **_kw):
+        st["open_positions"] = []
+        return {"symbol": sym, "pnl_usd": 2.0, "capital_usd": 200.0}
+
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position", _fake_sell
+    )
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_sell", lambda *_a, **_k: b"png")
+    monkeypatch.setattr(
+        app_notify,
+        "notify_user",
+        lambda *_a, **kw: notify_kwargs.append(kw) or True,
+    )
+
+    cfg = AgentConfig(notification_mode="both")
+    assert agent.execute_sell_command(cfg, "U") == ""
+    assert len(notify_kwargs) == 1
+    assert notify_kwargs[0].get("telegram_sender") is False
+    assert notify_kwargs[0].get("parse_mode") == "HTML"

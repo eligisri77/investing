@@ -203,3 +203,83 @@ def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
 def test_swap_rejects_same_symbol():
     reply = agent.execute_swap_command(Cfg(), "BEAM", "BEAM")
     assert reply.startswith("❌")
+
+
+def test_swap_clears_price_watch_for_sold_symbol(tmp_path, monkeypatch):
+    """Full swap sell removes Method2 / hourly watch on the sold symbol."""
+    from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 333.0,
+                "entry_price": 7.0,
+                "entry_day": "2026-07-08",
+                "stop_loss_pct": 0.12,
+                "take_profit_pct": 0.25,
+            }
+        ],
+    }
+    add_price_watch(state, "LABD")
+    add_price_watch(state, "NVDA")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+    _plan(tmp_path)
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: "2026-07-08")
+    monkeypatch.setattr(
+        agent,
+        "load_state",
+        lambda _cfg: __import__("json").loads(state_path.read_text()),
+    )
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(
+            __import__("json").dumps(data), encoding="utf-8"
+        ),
+    )
+    monkeypatch.setattr(
+        agent, "fetch_signal_universe", lambda _s, _c: __import__("pandas").DataFrame()
+    )
+    monkeypatch.setattr(
+        agent,
+        "_open_position_now",
+        lambda _cfg, st, rec, _day: (
+            st.setdefault("open_positions", []).append(
+                {
+                    "symbol": rec["symbol"],
+                    "entry_price": 36.5,
+                    "capital_usd": rec["capital_usd"],
+                }
+            )
+            or st["open_positions"][-1]
+        ),
+    )
+
+    def _fake_sell(_cfg, st, sym, frac, **kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {"symbol": sym, "pnl_usd": -12.0, "capital_usd": 333.0}
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell)
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.fetch_day_ohlc",
+        lambda sym, day: {"open": 7.0, "high": 7.2, "low": 6.8, "close": 7.1},
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: False,
+    )
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+
+    agent.execute_swap_command(Cfg(), "LABD", "BEAM")
+
+    saved = __import__("json").loads(state_path.read_text())
+    assert "LABD" not in list_price_watches(saved)
+    assert "NVDA" in list_price_watches(saved)

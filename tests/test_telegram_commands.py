@@ -44,6 +44,8 @@ from trading_pulse.agent.dryrun_agent import (
         ("חפש מניות", "tickers_discover", {}),
         ("מכירה U", "sell_confirmation", {"ref": "U"}),
         ("מכיר U", "sell_confirmation", {"ref": "U"}),
+        ("תמכור SOXL", "sell_confirmation", {"ref": "SOXL"}),
+        ("למכור NVDA", "sell_confirmation", {"ref": "NVDA"}),
     ],
 )
 def test_parse_known_commands(text: str, expected_kind: str, extra: dict) -> None:
@@ -66,7 +68,7 @@ def test_ch1_not_same_as_1() -> None:
     assert ch_one["option_id"] == 1
 
 
-@pytest.mark.parametrize("text", ["מכירה U", "מכיר U"])
+@pytest.mark.parametrize("text", ["מכירה U", "מכיר U", "תמכור U", "למכור U"])
 def test_natural_sell_wording_is_confirmation_not_execution(text: str) -> None:
     parsed = parse_telegram_user_command(text)
     assert parsed == {"kind": "sell_confirmation", "ref": "U"}

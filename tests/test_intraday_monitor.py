@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from unittest.mock import patch
+
+import pandas as pd
 
 from trading_pulse.agent.intraday_monitor import (
     IntradayReport,
@@ -256,3 +259,101 @@ def test_cooldown_filters_repeat_alerts():
     }
     filtered = filter_cooled_down(report, state, cooldown_minutes=120)
     assert filtered.alerts == []
+
+
+def test_fetch_intraday_quote_returns_change_pct_and_day_change_pct():
+    from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
+
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0],
+            "High": [102.0, 106.0],
+            "Low": [99.0, 100.0],
+            "Close": [101.0, 105.0],
+        }
+    )
+    with patch("trading_pulse.agent.intraday_monitor.yf.download", return_value=df):
+        quote = fetch_intraday_quote("AAPL")
+    assert quote is not None
+    assert quote["last"] == 105.0
+    assert quote["open"] == 100.0
+    assert quote["change_pct"] == 5.0
+    assert quote["day_change_pct"] == 5.0
+    assert quote["change_pct"] == quote["day_change_pct"]
+
+
+def test_plan_sell_or_cooldown_symbols_from_same_day_exits():
+    from trading_pulse.agent.intraday_monitor import _plan_sell_or_cooldown_symbols
+
+    state = {
+        "history": [{"symbol": "path", "exit_day": "2026-07-21"}],
+        "intraday_floor_exits": [{"symbol": "SOXL", "day": "2026-07-21"}],
+        "symbol_cooldowns": {},
+    }
+    with (
+        patch(
+            "trading_pulse.agent.plan_engine.active_trading_day",
+            return_value=None,
+        ),
+        patch(
+            "trading_pulse.core.schedule_tz.us_trading_session_date",
+            return_value=date(2026, 7, 21),
+        ),
+        patch(
+            "trading_pulse.agent.symbol_cooldown.symbols_in_cooldown",
+            return_value=set(),
+        ),
+    ):
+        skip = _plan_sell_or_cooldown_symbols(FakeCfg(), state)
+    assert "PATH" in skip
+    assert "SOXL" in skip
+
+
+def test_plan_sell_or_cooldown_symbols_from_plan_holding_actions(tmp_path):
+    from trading_pulse.agent.dryrun_agent import save_json
+    from trading_pulse.agent.intraday_monitor import _plan_sell_or_cooldown_symbols
+
+    plan_file = tmp_path / "plan.json"
+    save_json(
+        plan_file,
+        {
+            "holding_actions": [
+                {"symbol": "LABD", "verdict": "sell"},
+                {"symbol": "RIVN", "verdict": "swap", "swap_to": "NVDA"},
+                {"symbol": "META", "verdict": "hold"},
+            ]
+        },
+    )
+    with (
+        patch(
+            "trading_pulse.agent.plan_engine.active_trading_day",
+            return_value="2026-07-21",
+        ),
+        patch(
+            "trading_pulse.agent.dryrun_agent.plan_path",
+            return_value=plan_file,
+        ),
+    ):
+        skip = _plan_sell_or_cooldown_symbols(FakeCfg(), None)
+    assert "LABD" in skip
+    assert "RIVN" in skip
+    assert "META" not in skip
+
+
+def test_build_suggestions_skips_plan_sell_or_cooldown_symbols():
+    cfg = FakeCfg(max_open_positions=4)
+    holdings: list[dict] = []
+    scores = {
+        "LABU": {"score": 14.0, "ret_5d_pct": 8.0, "vol_ratio": 1.5, "volume_ok": True},
+        "NVDA": {"score": 12.0, "ret_5d_pct": 5.0, "vol_ratio": 1.2, "volume_ok": True},
+    }
+    with patch(
+        "trading_pulse.agent.intraday_monitor._plan_sell_or_cooldown_symbols",
+        return_value={"LABU"},
+    ):
+        suggestions = build_suggestions(
+            cfg, holdings, scores, {}, {}, state={"open_positions": []}
+        )
+    assert len(suggestions) == 1
+    assert suggestions[0].kind == "buy"
+    assert suggestions[0].symbol == "NVDA"

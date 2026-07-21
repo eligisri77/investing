@@ -1991,6 +1991,18 @@ def execute_sell_command(
             return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
         sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
+    # Drop Method2 / hourly watch when the position is gone (or fully sold).
+    if fraction >= 0.999 or not any(
+        str(p.get("symbol", "")).upper() == symbol.upper()
+        for p in state.get("open_positions", [])
+    ):
+        try:
+            from trading_pulse.agent.price_watch import remove_price_watch
+
+            remove_price_watch(state, symbol)
+            save_json(STATE_FILE, state)
+        except Exception:
+            pass
     _sync_plan_after_manual_action(
         cfg,
         state,
@@ -2022,6 +2034,7 @@ def execute_sell_command(
         )
         from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
 
+        # Card already went to Telegram; put the detailed HTML only in the app inbox.
         if uses_app_notifications(cfg):
             notify_user(cfg, html, "reply:sell", parse_mode="HTML", telegram_sender=False)
         return ""
@@ -2093,6 +2106,17 @@ def execute_swap_command(
         return f"❌ <b>אין פוזיציה ב-{from_symbol}</b>"
     sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
+    if sell_fraction >= 0.999 or not any(
+        str(p.get("symbol", "")).upper() == from_symbol
+        for p in state.get("open_positions", [])
+    ):
+        try:
+            from trading_pulse.agent.price_watch import remove_price_watch
+
+            remove_price_watch(state, from_symbol)
+            save_json(STATE_FILE, state)
+        except Exception:
+            pass
     _sync_plan_after_manual_action(
         cfg,
         state,
@@ -2278,6 +2302,13 @@ def set_plan_status(
         allocation_sent = True
 
     from trading_pulse.telegram.telegram_format import format_approval_reply
+    from trading_pulse.agent.plan_engine import _prune_holding_actions
+    from trading_pulse.agent.positions import holdings_snapshot
+
+    # Keep approval reminders in sync with live book (e.g. PATH closed at EOD).
+    plan["holdings"] = holdings_snapshot(state)
+    plan["holding_actions"] = _prune_holding_actions(plan.get("holding_actions") or [], state)
+    save_json(path, plan)
 
     return format_approval_reply(
         trading_day=trading_day,
@@ -2771,7 +2802,7 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         }
 
     natural_sell = re.fullmatch(
-        rf"(?:מכירה|מכיר|למכור)\s+(\d+|{_sym})\s*$",
+        rf"(?:מכירה|מכיר|למכור|תמכור)\s+(\d+|{_sym})\s*$",
         raw.strip(),
         flags=re.IGNORECASE,
     )
@@ -3179,7 +3210,8 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
             if confirmed_sell:
                 save_json(STATE_FILE, state)
                 reply = execute_sell_command(cfg, confirmed_sell, 1.0)
-                send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
+                if reply:
+                    send_telegram_message(cfg, reply, context="reply:sell", parse_mode="HTML")
                 handled += 1
                 continue
 
@@ -4262,6 +4294,13 @@ def generate_plan(
     gap = funding_gap(plan, state, cfg)
     if gap:
         plan["funding"] = gap
+    # Align displayed capital with what «הכל» will allocate (single source of truth).
+    try:
+        from trading_pulse.agent.plan_engine import sync_plan_portfolio_snapshot
+
+        sync_plan_portfolio_snapshot(plan, state, cfg)
+    except Exception as ex:
+        logging.debug("Plan amount sync skipped: %s", ex)
     from trading_pulse.agent.plan_engine import supersede_other_plans
 
     supersede_other_plans(target_day)

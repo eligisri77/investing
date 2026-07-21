@@ -211,10 +211,28 @@ def sync_active_plan_after_manual_action(
     else:
         # Never rewrite already-confirmed order amounts after a manual action.
         plan["portfolio_snapshot_stale"] = True
+        from trading_pulse.agent.positions import holdings_snapshot
+
+        plan["holdings"] = holdings_snapshot(state)
+    plan["holding_actions"] = _prune_holding_actions(
+        plan.get("holding_actions") or [],
+        state,
+    )
     plan["portfolio_changed_at"] = datetime.now(timezone.utc).isoformat()
     plan["last_manual_action"] = action
     save_json(path, plan)
     return True
+
+
+def _prune_holding_actions(
+    actions: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Drop sell/swap reminders for symbols no longer held."""
+    from trading_pulse.agent.positions import holdings_snapshot
+
+    held = {str(h["symbol"]) for h in holdings_snapshot(state)}
+    return [a for a in actions if str(a.get("symbol") or "") in held]
 
 
 def apply_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict[str, Any]:

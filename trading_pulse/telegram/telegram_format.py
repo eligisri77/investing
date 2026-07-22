@@ -93,7 +93,7 @@ def user_guide_full() -> str:
             "3. בערב אחרי סגירה — דוח יומי על הרווח/הפסד",
             "",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
-            "יש מזומן פנוי? הבוט מציע מה לעשות · חיזוק: <code>תקנה 1 $20</code> · <code>קנה BEAM $50</code>",
+            "יש מזומן פנוי? הבוט מציע מה לעשות · חיזוק: <code>תקנה 1</code> (כל המזומן) · <code>קנה BEAM $50</code>",
             "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
             "שני סכומים: <code>מכור 1 200$ קנה 2 100$</code>",
             "ניתוח מניה: <code>מניה NVDA</code> · <code>ציון AAPL</code>",
@@ -636,7 +636,8 @@ def format_cash_deploy_advice(
             )
     elif not new_buy_symbols:
         lines.append(
-            f"• לקנות מניה מהרשימה: <code>קנה SYMBOL ${suggest_usd}</code>"
+            f"• לקנות מניה מהרשימה: <code>קנה SYMBOL</code> "
+            f"(כל המזומן, ≈${suggest_usd}) או <code>קנה SYMBOL ${suggest_usd}</code>"
         )
     lines.append("• להשאיר במזומן — אין חובה לקנות היום")
     lines.append(
@@ -1473,7 +1474,7 @@ def format_intraday_monitor(report: Any) -> str:
 
     holdings = report.holdings or []
     if holdings:
-        from trading_pulse.agent.strategy_labels import strategy_suffix_html
+        from trading_pulse.agent.strategy_labels import strategy_label
 
         lines.append("<b>📌 מושקע עכשיו</b>")
         for h in holdings[:6]:
@@ -1481,15 +1482,22 @@ def format_intraday_monitor(report: Any) -> str:
             day = float(h.get("day_change_pct", 0))
             sign = "+" if pnl >= 0 else ""
             cap = float(h.get("capital_usd", 0))
-            cap_txt = f"<b>${cap:.0f}</b> מושקע · " if cap > 0 else ""
             floor = h.get("floor_price")
-            floor_txt = f" · רף ${float(floor):.2f}" if floor else ""
-            tag = strategy_suffix_html(h)
-            lines.append(
-                f"• <b>{escape_html(h['symbol'])}</b>{tag} — {cap_txt}"
-                f"${h.get('last', 0):.2f}{floor_txt} · "
-                f"מהכניסה {sign}{pnl:.1f}% · היום {day:+.1f}%"
-            )
+            sym = escape_html(str(h["symbol"]))
+            # Keep ticker LTR so it stays next to the bullet in RTL clients.
+            label = strategy_label(h)
+            head = f"• <b>\u200e{sym}\u200e</b>"
+            if label:
+                head += f" · <i>{escape_html(label)}</i>"
+            money_bits = []
+            if cap > 0:
+                money_bits.append(f"<b>${cap:.0f}</b> מושקע")
+            money_bits.append(f"מחיר ${float(h.get('last', 0)):.2f}")
+            if floor:
+                money_bits.append(f"רף ${float(floor):.2f}")
+            lines.append(head)
+            lines.append(f"   {' · '.join(money_bits)}")
+            lines.append(f"   מהכניסה {sign}{pnl:.1f}% · היום {day:+.1f}%")
 
     floor_sells = getattr(report, "floor_sells", None) or []
     if floor_sells:

@@ -55,6 +55,44 @@ def test_parse_known_commands(text: str, expected_kind: str, extra: dict) -> Non
         assert parsed.get(key) == value
 
 
+@pytest.mark.parametrize(
+    ("text", "to_ref"),
+    [
+        ("תקנה ARWR", "ARWR"),
+        ("קנה NVDA", "NVDA"),
+        ("לקנות BEAM", "BEAM"),
+        ("buy HOOD", "HOOD"),
+        ("תקנה 1", "1"),
+        ("קנה 3", "3"),
+    ],
+)
+def test_bare_buy_parses_as_all_cash(text: str, to_ref: str) -> None:
+    """Buy without $ amount → spend all free cash."""
+    parsed = parse_telegram_user_command(text)
+    assert parsed == {
+        "kind": "buy",
+        "to_ref": to_ref,
+        "buy_usd": None,
+        "all_cash": True,
+    }
+
+
+def test_buy_with_explicit_amount() -> None:
+    parsed = parse_telegram_user_command("תקנה ARWR $145")
+    assert parsed == {
+        "kind": "buy",
+        "to_ref": "ARWR",
+        "buy_usd": 145.0,
+    }
+    assert "all_cash" not in parsed
+    assert parse_telegram_user_command("קנה BEAM 50$")["buy_usd"] == 50.0
+    assert parse_telegram_user_command("buy 2 $100") == {
+        "kind": "buy",
+        "to_ref": "2",
+        "buy_usd": 100.0,
+    }
+
+
 def test_free_text_not_approve() -> None:
     assert parse_telegram_user_command("שלום")["kind"] == "unknown"
     assert parse_telegram_user_command("מה קורה")["kind"] == "unknown"

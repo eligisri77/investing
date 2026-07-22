@@ -29,6 +29,26 @@ def test_experimental_strategy_label_is_explicit():
     assert "ניסיוני" in label
 
 
+def test_relative_strength_label_avoids_spy_inside_rtl():
+    label = strategy_label({"strategy_id": "relative_strength"})
+    assert "חוזק יחסי" in label
+    assert "ניסיוני" in label
+    assert "SPY" not in label
+
+
+def test_strategy_suffix_has_no_ascii_parentheses():
+    html = strategy_suffix_html({"strategy": "score_momentum"})
+    assert "(" not in html and ")" not in html
+    assert "מומנטום וציון" in html
+    assert "·" in html
+
+
+def test_rising_three_weak_uses_middot_not_parens():
+    label = strategy_label({"strategy": "rising_three_methods", "pattern_weak": True})
+    assert "חלש" in label
+    assert "(" not in label
+
+
 def test_holdings_and_portfolio_show_strategy_tag():
     holdings = [
         {
@@ -69,4 +89,5 @@ def test_holdings_and_portfolio_show_strategy_tag():
     }
     port = format_portfolio(data)
     assert "נרות סיניים" in port
-    assert strategy_suffix_html({"strategy": "method2"}) 
+    assert "שיטה 2" in strategy_suffix_html({"strategy": "method2"})
+    assert "(" not in strategy_suffix_html({"strategy": "method2"})

@@ -178,6 +178,70 @@ def test_failed_manual_buy_does_not_sync_plan(monkeypatch):
     assert sync_calls == []
 
 
+def test_execute_buy_none_spends_all_free_cash(monkeypatch):
+    """buy_usd=None (bare תקנה SYMBOL) deploys all undeployed cash."""
+    from trading_pulse.telegram import reply_cards
+
+    cfg = AgentConfig(notification_mode="telegram")
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "LABD",
+                "capital_usd": 600.0,
+                "entry_price": 10.0,
+            }
+        ],
+        "history": [],
+    }
+    buy_amounts: list[float] = []
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _day: "2026-07-20")
+    monkeypatch.setattr(
+        agent,
+        "_buy_symbol_usd",
+        lambda _cfg, st, symbol, amount, _day: (
+            buy_amounts.append(amount)
+            or st["open_positions"].append(
+                {
+                    "symbol": symbol,
+                    "capital_usd": amount,
+                    "entry_price": 25.0,
+                }
+            )
+            or st["open_positions"][-1]
+        ),
+    )
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_buy", lambda *_args, **_kwargs: b"png")
+
+    assert agent.execute_buy_command(cfg, "ARWR", None) == ""
+    assert buy_amounts == [400.0]
+
+
+def test_execute_buy_none_with_no_cash_returns_error(monkeypatch):
+    cfg = AgentConfig(notification_mode="telegram")
+    state = {
+        "equity": 500.0,
+        "open_positions": [
+            {"symbol": "NVDA", "capital_usd": 500.0, "entry_price": 100.0}
+        ],
+        "history": [],
+    }
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _day: "2026-07-20")
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_card",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("skip card")),
+    )
+
+    reply = agent.execute_buy_command(cfg, "ARWR", None)
+    assert "אין מזומן פנוי" in reply
+
+
 def test_execute_sell_clears_price_watch(monkeypatch):
     """Full sell drops Method2 / hourly watch for that symbol only."""
     from trading_pulse.agent.price_watch import add_price_watch, list_price_watches

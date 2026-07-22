@@ -1880,20 +1880,27 @@ def _buy_symbol_usd(
 def execute_buy_command(
     cfg: AgentConfig,
     symbol: str,
-    buy_usd: float,
+    buy_usd: float | None = None,
 ) -> str:
-    """Buy (or add to) a symbol using free cash."""
+    """Buy (or add to) a symbol using free cash.
+
+    If buy_usd is None, spend all available free cash.
+    """
     from trading_pulse.agent.positions import free_cash, held_symbols
     from trading_pulse.telegram.reply_cards import card_buy, card_error
     from trading_pulse.telegram.telegram_format import format_buy_reply
 
     symbol = symbol.upper()
-    buy_usd = float(buy_usd)
-    if buy_usd < 1:
-        return "❌ <b>סכום קטן מדי</b> — מינימום $1"
-
     state = load_state(cfg)
     cash = free_cash(state, cfg)
+    if buy_usd is None:
+        if cash < 1:
+            buy_usd = 0.0
+        else:
+            buy_usd = float(cash)
+    else:
+        buy_usd = float(buy_usd)
+
     if cash < 1:
         html = (
             "❌ <b>אין מזומן פנוי</b>\n"
@@ -1914,10 +1921,13 @@ def execute_buy_command(
             return ""
         except Exception:
             return html
+    if buy_usd < 1:
+        return "❌ <b>סכום קטן מדי</b> — מינימום $1"
     if buy_usd > cash:
         return (
             f"❌ <b>אין מספיק מזומן</b> — פנוי <b>${cash:.0f}</b>, ביקשת ${buy_usd:.0f}\n"
-            f"נסה: <code>תקנה {symbol} ${cash:.0f}</code>"
+            f"נסה: <code>תקנה {symbol}</code> (כל המזומן) או "
+            f"<code>תקנה {symbol} ${cash:.0f}</code>"
         )
 
     trading_day = date.fromisoformat(resolve_trading_day(None))
@@ -1959,7 +1969,6 @@ def execute_buy_command(
         return ""
     except Exception:
         return html
-
 
 
 def execute_sell_command(
@@ -2801,6 +2810,20 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "buy_usd": float(buy_cmd.group(2)),
         }
 
+    # Bare buy: תקנה ARWR / קנה NVDA → spend all free cash
+    buy_bare = re.fullmatch(
+        rf"(?:תקנה|קנה|לקנות|buy)\s+(\d+|{_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if buy_bare:
+        return {
+            "kind": "buy",
+            "to_ref": buy_bare.group(1),
+            "buy_usd": None,
+            "all_cash": True,
+        }
+
     natural_sell = re.fullmatch(
         rf"(?:מכירה|מכיר|למכור|תמכור)\s+(\d+|{_sym})\s*$",
         raw.strip(),
@@ -3554,11 +3577,12 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 if not to_sym:
                     reply = "❌ <b>מספר/מניה לא תקינים</b> — שלח <code>תיק</code>"
                 else:
-                    reply = execute_buy_command(
-                        cfg,
-                        to_sym,
-                        float(parsed.get("buy_usd", 0)),
-                    )
+                    buy_usd = parsed.get("buy_usd")
+                    if buy_usd is None or parsed.get("all_cash"):
+                        buy_usd = None  # execute_buy_command uses all free cash
+                    else:
+                        buy_usd = float(buy_usd)
+                    reply = execute_buy_command(cfg, to_sym, buy_usd)
                 if reply:
                     send_telegram_message(cfg, reply, context="reply:buy", parse_mode="HTML")
                 handled += 1

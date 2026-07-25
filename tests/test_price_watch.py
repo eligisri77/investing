@@ -123,7 +123,7 @@ def test_method2_distance_line_shows_distance():
         {"entry_ref": 100.0, "side": "LONG", "stop_ref": 95.0},
         last=97.0,
     )
-    assert "שיטה 2" in long_line
+    assert "נרות סיניים 2" in long_line
     assert "חסר" in long_line
     assert "100.00" in long_line
     assert "סטופ" in long_line

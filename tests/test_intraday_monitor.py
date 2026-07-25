@@ -188,7 +188,146 @@ def test_format_intraday_howto_commands():
     assert "מכור SOXL" in text
     assert "מהכניסה" in text
     assert "+5.0%" in text
-    assert "היום +1.0%" in text
+    assert "היום" in text
+    assert "+1.0%" in text
+    assert "העתק את הפקודה" in text
+
+
+def test_format_intraday_bidi_safe_numbers_and_floor_loss():
+    from trading_pulse.telegram.telegram_format import format_intraday_monitor
+
+    report = IntradayReport(
+        checked_at="now",
+        holdings=[
+            {
+                "symbol": "ISRG",
+                "last": 331.09,
+                "pnl_pct": -4.5,
+                "day_change_pct": -2.2,
+                "capital_usd": 116,
+                "floor_price": 303.97,
+                "strategy_id": "score",
+            }
+        ],
+        floor_sells=[
+            {
+                "symbol": "LCID",
+                "exit_price": 6.35,
+                "floor_price": 6.48,
+                "pnl_usd": -11.85,
+            }
+        ],
+    )
+    text = format_intraday_monitor(report)
+    assert "<code>" in text
+    assert "\u200e" in text  # LRM islands inside <code>
+    assert "\u2212" in text  # unicode minus, not ASCII hyphen before %
+    assert "מהכניסה" in text and "4.5%" in text
+    assert "היום" in text and "2.2%" in text
+    assert "מושקע" in text and text.index("מושקע") < text.index("$116")
+    assert "שיטת כניסה · מומנטום וציון" in text
+    assert "LCID" in text
+    assert "הפסד" in text
+    assert "11.85" in text
+    assert "יציאה אוטומטית" in text
+    assert "העתק את הפקודה" not in text
+    # Negatives must not use ASCII hyphen-minus next to %/$
+    assert not re.search(r"-\d+\.\d+%", text)
+    assert not re.search(r"-\$", text)
+
+
+def test_format_intraday_ticker_on_own_line():
+    """Ticker never shares a line with $ / % (RTL BiDi scramble)."""
+    from trading_pulse.telegram.telegram_format import format_intraday_monitor
+
+    report = IntradayReport(
+        checked_at="now",
+        holdings=[
+            {
+                "symbol": "ISRG",
+                "last": 331.09,
+                "pnl_pct": -4.5,
+                "day_change_pct": 1.0,
+                "capital_usd": 116,
+                "floor_price": 303.97,
+            }
+        ],
+        floor_sells=[
+            {
+                "symbol": "LCID",
+                "exit_price": 6.35,
+                "floor_price": 6.48,
+                "pnl_usd": -11.85,
+            }
+        ],
+    )
+    text = format_intraday_monitor(report)
+    for line in text.splitlines():
+        if "ISRG" in line or "LCID" in line:
+            assert "$" not in line, line
+            assert "%" not in line, line
+            assert "מהכניסה" not in line
+            assert "יציאה" not in line
+
+
+def test_format_intraday_floor_sell_profit_and_watch_footer():
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+    from trading_pulse.telegram.telegram_format import format_intraday_monitor
+
+    profit_report = IntradayReport(
+        checked_at="now",
+        holdings=[],
+        floor_sells=[
+            {
+                "symbol": "NVDA",
+                "exit_price": 120.0,
+                "floor_price": 100.0,
+                "pnl_usd": 25.5,
+            }
+        ],
+    )
+    profit_text = format_intraday_monitor(profit_report)
+    assert "רווח" in profit_text
+    assert "+$25.50" in profit_text
+    assert "הפסד" not in profit_text
+    assert "יציאה אוטומטית" in profit_text
+
+    watch_report = IntradayReport(
+        checked_at="now",
+        holdings=[
+            {
+                "symbol": "AAPL",
+                "last": 190.0,
+                "pnl_pct": 0.0,
+                "day_change_pct": 0.0,
+                "capital_usd": 50,
+            }
+        ],
+        suggestions=[
+            TradeSuggestion(kind="watch", symbol="AAPL", message="לעקוב אחרי התאוששות"),
+        ],
+    )
+    watch_text = format_intraday_monitor(watch_report)
+    assert "לעקוב" in watch_text
+    assert "איך לבצע" not in watch_text
+    assert "למעקב בלבד" in watch_text
+    assert "0.0%" in watch_text
+    assert "יציאה אוטומטית" not in watch_text
+    assert "העתק את הפקודה" not in watch_text
+
+
+def test_fmt_signed_pct_and_usd_helpers():
+    from trading_pulse.telegram import telegram_format as tf
+
+    assert "\u2212" in tf._fmt_signed_pct(-1.25)
+    assert "+1.3%" in tf._fmt_signed_pct(1.26)
+    assert "0.0%" in tf._fmt_signed_pct(0.0)
+    assert "\u200e" in tf._fmt_signed_pct(-1.0)
+    assert "<code>" in tf._fmt_usd(12.5)
+    assert "\u2212$" in tf._fmt_usd(-3.2, signed=True)
+    assert "+$3.20" in tf._fmt_usd(3.2, signed=True)
+    assert "AAPL" in tf._fmt_ticker("aapl")
+    assert "<b>" in tf._fmt_ticker("aapl")
 
 
 def test_format_no_entries_morning():
@@ -357,3 +496,120 @@ def test_build_suggestions_skips_plan_sell_or_cooldown_symbols():
     assert len(suggestions) == 1
     assert suggestions[0].kind == "buy"
     assert suggestions[0].symbol == "NVDA"
+
+
+def test_card_intraday_monitor_png_has_holding_squares():
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+    from trading_pulse.telegram.reply_cards import card_intraday_monitor
+
+    report = IntradayReport(
+        checked_at="now",
+        holdings=[
+            {
+                "symbol": "ISRG",
+                "last": 331.09,
+                "pnl_pct": -4.5,
+                "day_change_pct": -2.2,
+                "capital_usd": 116,
+                "floor_price": 303.97,
+                "strategy_id": "score",
+            }
+        ],
+        floor_sells=[
+            {"symbol": "LCID", "exit_price": 6.35, "floor_price": 6.48, "pnl_usd": -11.85}
+        ],
+        suggestions=[TradeSuggestion(kind="sell", symbol="VLO", message="למכור")],
+    )
+    png = card_intraday_monitor(report)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(png) > 2000
+
+
+def _noteworthy_report() -> IntradayReport:
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+
+    return IntradayReport(
+        checked_at="now",
+        suggestions=[TradeSuggestion(kind="sell", symbol="VLO", message="למכור")],
+    )
+
+
+def test_run_intraday_check_sends_png_photo(tmp_path):
+    from trading_pulse.agent.intraday_monitor import run_intraday_check
+
+    cfg = FakeCfg()
+    state: dict = {}
+    photo_calls: list[dict] = []
+    notify_calls: list = []
+
+    def fake_photo(cfg_arg, img, caption, **kwargs):
+        photo_calls.append(
+            {"caption": caption, "img": img, "context": kwargs.get("context"), "inbox": kwargs.get("inbox_text")}
+        )
+        return True
+
+    with (
+        patch("trading_pulse.agent.dryrun_agent.is_us_trading_day", return_value=True),
+        patch("trading_pulse.core.schedule_tz.us_trading_session_date", return_value=date(2026, 7, 23)),
+        patch("trading_pulse.agent.intraday_monitor.is_within_market_hours", return_value=True),
+        patch(
+            "trading_pulse.agent.intraday_monitor.build_intraday_report",
+            return_value=_noteworthy_report(),
+        ),
+        patch("trading_pulse.agent.intraday_monitor.filter_cooled_down", side_effect=lambda r, *a, **k: r),
+        patch(
+            "trading_pulse.telegram.reply_cards.card_intraday_monitor",
+            return_value=b"\x89PNG\r\n\x1a\nfake",
+        ),
+        patch("trading_pulse.agent.dryrun_agent.send_telegram_photo", side_effect=fake_photo),
+        patch("trading_pulse.agent.dryrun_agent.send_user_notification", side_effect=lambda *a, **k: notify_calls.append(a) or True),
+        patch("trading_pulse.agent.dryrun_agent.plan_path", return_value=tmp_path / "missing.json"),
+        patch("trading_pulse.agent.dryrun_agent.save_json"),
+        patch("trading_pulse.agent.intraday_monitor.mark_cooldowns") as mark_cd,
+    ):
+        assert run_intraday_check(cfg, state) is True
+
+    assert len(photo_calls) == 1
+    assert photo_calls[0]["caption"] == "מעקב שעתי"
+    assert photo_calls[0]["context"] == "intraday"
+    assert photo_calls[0]["img"][:8] == b"\x89PNG\r\n\x1a\n"
+    assert notify_calls == []
+    mark_cd.assert_called_once()
+
+
+def test_run_intraday_check_falls_back_to_html_when_card_fails(tmp_path):
+    from trading_pulse.agent.intraday_monitor import run_intraday_check
+
+    cfg = FakeCfg()
+    state: dict = {}
+    notify_calls: list[dict] = []
+
+    def fake_notify(cfg_arg, text, **kwargs):
+        notify_calls.append({"text": text, "context": kwargs.get("context"), "parse_mode": kwargs.get("parse_mode")})
+        return True
+
+    with (
+        patch("trading_pulse.agent.dryrun_agent.is_us_trading_day", return_value=True),
+        patch("trading_pulse.core.schedule_tz.us_trading_session_date", return_value=date(2026, 7, 23)),
+        patch("trading_pulse.agent.intraday_monitor.is_within_market_hours", return_value=True),
+        patch(
+            "trading_pulse.agent.intraday_monitor.build_intraday_report",
+            return_value=_noteworthy_report(),
+        ),
+        patch("trading_pulse.agent.intraday_monitor.filter_cooled_down", side_effect=lambda r, *a, **k: r),
+        patch(
+            "trading_pulse.telegram.reply_cards.card_intraday_monitor",
+            side_effect=RuntimeError("pillow boom"),
+        ),
+        patch("trading_pulse.agent.dryrun_agent.send_telegram_photo", return_value=True),
+        patch("trading_pulse.agent.dryrun_agent.send_user_notification", side_effect=fake_notify),
+        patch("trading_pulse.agent.dryrun_agent.plan_path", return_value=tmp_path / "missing.json"),
+        patch("trading_pulse.agent.dryrun_agent.save_json"),
+        patch("trading_pulse.agent.intraday_monitor.mark_cooldowns"),
+    ):
+        assert run_intraday_check(cfg, state) is True
+
+    assert len(notify_calls) == 1
+    assert notify_calls[0]["context"] == "intraday"
+    assert notify_calls[0]["parse_mode"] == "HTML"
+    assert "VLO" in notify_calls[0]["text"] or "מעקב" in notify_calls[0]["text"]

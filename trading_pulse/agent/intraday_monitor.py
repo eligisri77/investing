@@ -689,12 +689,12 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
         plan_path,
         read_json,
         save_json,
+        send_entry_notifications,
         send_user_notification,
     )
     from trading_pulse.core.app_paths import STATE_FILE
     from trading_pulse.core.schedule_tz import us_trading_session_date
     from trading_pulse.telegram.telegram_format import (
-        format_entry_notification,
         format_intraday_monitor,
     )
 
@@ -719,15 +719,14 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
             if m2_fills:
                 save_json(path, plan)
                 save_json(STATE_FILE, state)
-                msg = format_entry_notification(
+                send_entry_notifications(
+                    cfg,
                     m2_fills,
                     trading_day=today.isoformat(),
-                    subtitle="שיטה 2 · פריצה תוך־יומית",
+                    subtitle="נרות סיניים 2 · פריצה תוך־יומית",
+                    context="entry:method2",
                 )
-                if msg and send_user_notification(
-                    cfg, msg, context="entry:method2", parse_mode="HTML"
-                ):
-                    sent_any = True
+                sent_any = True
                 logging.info("Method2 intraday: filled %d", len(m2_fills))
     except Exception as ex:
         logging.warning("Method2 intraday fill failed: %s", ex)
@@ -742,7 +741,23 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
         return sent_any
 
     text = format_intraday_monitor(report)
-    sent = send_user_notification(cfg, text, context="intraday", parse_mode="HTML")
+    sent = False
+    try:
+        from trading_pulse.agent.dryrun_agent import send_telegram_photo
+        from trading_pulse.telegram.reply_cards import card_intraday_monitor
+
+        img = card_intraday_monitor(report)
+        # Short caption only — details live in the PNG squares (RTL-safe).
+        sent = send_telegram_photo(
+            cfg,
+            img,
+            "מעקב שעתי",
+            context="intraday",
+            inbox_text=_strip_for_inbox(text),
+        )
+    except Exception as ex:
+        logging.warning("Intraday card failed, sending text: %s", ex)
+        sent = send_user_notification(cfg, text, context="intraday", parse_mode="HTML")
     if sent:
         mark_cooldowns(report, state)
         save_json(STATE_FILE, state)
@@ -753,3 +768,9 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
         )
         sent_any = True
     return sent_any
+
+
+def _strip_for_inbox(html: str) -> str:
+    import re
+
+    return re.sub(r"<[^>]+>", "", html or "").strip()[:500]

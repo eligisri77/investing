@@ -14,7 +14,7 @@ Dry-run swing trading agent (Telegram + desktop dashboard). Package: `trading_pu
 | App guides | `@trading-pulse-guide-updater` |
 | Tests for new code | `@trading-pulse-test-writer` |
 | Verify | `@trading-pulse-verifier` |
-| Publish Setup.exe to GitHub | `@trading-pulse-releaser` → `.\scripts\release.ps1` |
+| Publish Setup.exe to GitHub | `@trading-pulse-releaser` → `.\scripts\release.ps1` (then relaunch `dist\TradingPulse\TradingPulse.exe`) |
 
 ## Feature pipeline (mandatory)
 

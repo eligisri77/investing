@@ -2,8 +2,10 @@
 name: trading-pulse-releaser
 description: >-
   Builds TradingPulse-Setup-*.exe and publishes a GitHub Release for end-user
-  install + in-app updater. Use when the user asks to release, publish a version,
-  bump APP_VERSION, or upload Setup.exe to GitHub Releases.
+  install + in-app updater. After each successful release, relaunches
+  dist/TradingPulse/TradingPulse.exe (build stops the running app). Use when
+  the user asks to release, publish a version, bump APP_VERSION, or upload
+  Setup.exe to GitHub Releases.
 model: inherit
 readonly: false
 ---
@@ -39,9 +41,19 @@ You publish **Trading Pulse Windows releases**. You do not invent product featur
 
 4. If `TradingPulse.exe` / dist is locked, quit tray apps first; `build.ps1` tries to stop `TradingPulse.exe`.
 5. Never commit `.env`, tokens, or `instance/data/`.
-6. After success, report:
+6. After a successful build/publish (not DryRun), **always relaunch the new local app** — the build stops the running process, so start the fresh binary:
+
+```powershell
+$exe = Join-Path $ProjectRoot "dist\TradingPulse\TradingPulse.exe"
+# or from repo root:
+Start-Process -FilePath ".\dist\TradingPulse\TradingPulse.exe"
+```
+
+Confirm a `TradingPulse` process is running. If the exe is missing, say so; do not skip this step silently when the file exists.
+7. After success, report:
    - version + tag (`vX.Y.Z`)
    - Release URL
+   - that local `dist\TradingPulse\TradingPulse.exe` was started
    - reminder: users open Releases page or use Settings → עדכון גרסה (only newer than installed)
 
 ## Rules

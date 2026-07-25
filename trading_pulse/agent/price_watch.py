@@ -197,18 +197,18 @@ def _method2_distance_line(watch_meta: dict[str, Any] | None, last: float) -> st
         to_break = (last / entry_ref - 1.0) * 100.0
         status = "מעל הפריצה" if last > entry_ref else "מתחת לפריצה"
         line = (
-            f"שיטה 2 שורט · פריצה ~${entry_ref:.2f} · "
+            f"נרות סיניים 2 שורט · פריצה ~${entry_ref:.2f} · "
             f"רחוק <b>{to_break:+.2f}%</b> ({status})"
         )
     else:
         if last >= entry_ref:
             line = (
-                f"שיטה 2 · פריצה ~${entry_ref:.2f} · "
+                f"נרות סיניים 2 · פריצה ~${entry_ref:.2f} · "
                 f"<b>נפרץ</b> (+{(last / entry_ref - 1) * 100:.2f}%)"
             )
         else:
             to_break = (entry_ref / last - 1.0) * 100.0 if last > 0 else 0.0
-            line = f"שיטה 2 · פריצה ~${entry_ref:.2f} · חסר <b>{to_break:.2f}%</b>"
+            line = f"נרות סיניים 2 · פריצה ~${entry_ref:.2f} · חסר <b>{to_break:.2f}%</b>"
     if stop > 0:
         line += f" · סטופ ~${stop:.2f}"
     return line
@@ -380,7 +380,7 @@ def send_price_only_tick(cfg: Any, symbol: str, state: dict[str, Any] | None = N
     if not isinstance(meta, dict):
         meta = {}
 
-    if meta.get("label") == "שיטה 2" or meta.get("entry_ref"):
+    if meta.get("label") in {"שיטה 2", "נרות סיניים 2"} or meta.get("entry_ref"):
         if not should_send_method2_price_tick(meta, quote):
             logging.info("Price tick %s: skipped (flat / far from breakout)", symbol)
             # Still remember last price so we don't spam after tiny noise
@@ -408,7 +408,16 @@ def send_price_only_tick(cfg: Any, symbol: str, state: dict[str, Any] | None = N
             .replace("</b>", "")
             .replace("&lt;", "<")
         )
-        rows.append(("שיטה 2", plain_m2.replace("שיטה 2 · ", "").replace("שיטה 2 שורט · ", "")))
+        for prefix in (
+            "נרות סיניים 2 שורט · ",
+            "נרות סיניים 2 · ",
+            "שיטה 2 שורט · ",
+            "שיטה 2 · ",
+        ):
+            if plain_m2.startswith(prefix):
+                plain_m2 = plain_m2[len(prefix) :]
+                break
+        rows.append(("נרות סיניים 2", plain_m2))
 
     try:
         png = render_reply_card(
@@ -469,7 +478,7 @@ def send_price_watch_updates(cfg: Any, state: dict[str, Any]) -> int:
                 watches = state.get("price_watches")
                 meta = watches.get(symbol) if isinstance(watches, dict) else None
                 if isinstance(meta, dict) and (
-                    meta.get("label") == "שיטה 2" or meta.get("entry_ref")
+                    meta.get("label") in {"שיטה 2", "נרות סיניים 2"} or meta.get("entry_ref")
                 ):
                     mark_price_watch_sent(state, symbol)
         except Exception as ex:

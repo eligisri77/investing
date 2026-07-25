@@ -16,7 +16,7 @@ import pandas as pd
 import yfinance as yf
 
 STRATEGY_ID = "method2"
-STRATEGY_LABEL_HE = "שיטה 2"
+STRATEGY_LABEL_HE = "נרות סיניים 2"
 
 Side = Literal["LONG", "SHORT"]
 

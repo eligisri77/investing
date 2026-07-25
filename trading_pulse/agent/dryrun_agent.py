@@ -263,15 +263,24 @@ def apply_risk_profile(cfg: AgentConfig, raw: dict[str, Any] | None = None) -> N
 
 
 def risk_profile_summary(cfg: AgentConfig, equity: float | None = None) -> str:
+    parts = risk_profile_parts(cfg, equity)
+    return (
+        f"{parts['label']} · "
+        f"עד {parts['max_deploy_pct']}% מההון מושקע (${parts['max_deploy_usd']:.0f}) · "
+        f"עד {parts['max_trades']} עסקאות · כ־${parts['per_trade_usd']:.0f} לעסקה"
+    )
+
+
+def risk_profile_parts(cfg: AgentConfig, equity: float | None = None) -> dict[str, Any]:
     profile = RISK_PROFILES.get(cfg.risk_profile, RISK_PROFILES["conservative"])
     capital = float(equity if equity is not None else cfg.initial_capital)
-    max_deploy = capital * float(profile["max_deploy_pct"])
-    per_trade = capital * cfg.max_position_pct
-    return (
-        f"{profile['label']} | "
-        f"עד {int(profile['max_deploy_pct']*100)}% מההון מושקע (${max_deploy:.0f}) | "
-        f"עד {cfg.max_trades_per_day} עסקאות, כ־${per_trade:.0f} לעסקה"
-    )
+    return {
+        "label": str(profile["label"]),
+        "max_deploy_pct": int(float(profile["max_deploy_pct"]) * 100),
+        "max_deploy_usd": capital * float(profile["max_deploy_pct"]),
+        "max_trades": int(cfg.max_trades_per_day),
+        "per_trade_usd": capital * float(cfg.max_position_pct),
+    }
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -378,18 +387,35 @@ def ensure_month_tracking(cfg: AgentConfig, state: dict[str, Any]) -> None:
 
 
 def monthly_target_summary(cfg: AgentConfig, state: dict[str, Any]) -> str:
+    p = monthly_target_parts(cfg, state)
+    pnl_s = f"+${p['month_pnl']:.2f}" if p["month_pnl"] > 0 else (
+        f"-${abs(p['month_pnl']):.2f}" if p["month_pnl"] < 0 else "$0.00"
+    )
+    gap_s = f"${abs(p['gap_usd']):.0f}" if p["gap_usd"] <= 0 else f"${p['gap_usd']:.0f}"
+    gap_word = "מעל היעד" if p["gap_usd"] <= 0 else "נותר ליעד"
+    return (
+        f"יעד ${p['target_usd']:.0f} · נוכחי ${p['equity']:.2f} · "
+        f"חודש {pnl_s} ({p['month_pnl_pct']:+.1f}%) · "
+        f"{gap_word} {gap_s} · {p['trading_days_left']} ימי מסחר"
+    )
+
+
+def monthly_target_parts(cfg: AgentConfig, state: dict[str, Any]) -> dict[str, Any]:
     equity = float(state.get("equity", cfg.initial_capital))
     target = float(cfg.monthly_target_usd)
     start = float(state.get("month_start_equity", cfg.initial_capital))
     month_pnl = equity - start
     month_pnl_pct = (month_pnl / start * 100) if start > 0 else 0.0
     gap = target - equity
-    trading_days_left = count_us_trading_days_remaining(date.today())
-    return (
-        f"יעד חודשי: ${target:.0f} | נוכחי: ${equity:.2f} | "
-        f"חודש: {month_pnl:+.2f}$ ({month_pnl_pct:+.1f}%) | "
-        f"נותר: ${gap:+.0f} | {trading_days_left} ימי מסחר"
-    )
+    return {
+        "equity": equity,
+        "target_usd": target,
+        "month_start_equity": start,
+        "month_pnl": month_pnl,
+        "month_pnl_pct": month_pnl_pct,
+        "gap_usd": gap,
+        "trading_days_left": count_us_trading_days_remaining(date.today()),
+    }
 
 
 class _SafeConsoleFilter(logging.Filter):
@@ -887,7 +913,7 @@ def build_recommendation_explanation(rec: dict[str, Any], rank: int, speculative
         entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
         stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
         parts = [
-            f"דירוג #{rank} — שיטה 2 · טריגר {trig}",
+            f"דירוג #{rank} — נרות סיניים 2 · טריגר {trig}",
             f"כניסה ~${entry:.2f} · סטופ ~${stop:.2f}",
             f"שרוול ${float(rec.get('capital_usd', 0)):.0f}",
             str(rec.get("reason") or ""),
@@ -1141,7 +1167,37 @@ def send_heartbeat(cfg: AgentConfig, reason: str) -> None:
         return
     logging.info("Sending heartbeat (%s)", reason)
     message = format_heartbeat_message(cfg, state)
-    if send_user_notification(cfg, message, context="heartbeat", parse_mode="HTML"):
+    sent = False
+    try:
+        from trading_pulse.core.schedule_tz import us_trading_session_date
+        from trading_pulse.telegram.reply_cards import card_heartbeat
+
+        session_day = us_trading_session_date()
+        market_day = is_us_trading_day(session_day)
+        img = card_heartbeat(
+            cfg,
+            state,
+            market_day=market_day,
+            next_trading_day=(
+                get_next_us_trading_day(session_day).isoformat()
+                if not market_day
+                else None
+            ),
+        )
+        import re
+
+        plain = re.sub(r"<[^>]+>", "", message).strip()
+        sent = send_telegram_photo(
+            cfg,
+            img,
+            "הסוכן חי",
+            context="heartbeat",
+            inbox_text=plain[:500],
+        )
+    except Exception as ex:
+        logging.warning("Heartbeat card failed, HTML fallback: %s", ex)
+        sent = send_user_notification(cfg, message, context="heartbeat", parse_mode="HTML")
+    if sent:
         state["last_heartbeat_date"] = today
         state["last_heartbeat_at"] = datetime.now(timezone.utc).isoformat()
         save_json(STATE_FILE, state)
@@ -1577,9 +1633,96 @@ def send_report_table_image(cfg: AgentConfig, report: dict[str, Any]) -> None:
         day = report.get("trading_day", "")
         pnl = float(report.get("pnl_usd", 0))
         sign = "+" if pnl >= 0 else ""
-        send_telegram_table_image(cfg, img, f"📊 דוח {day}", "report")
+        send_telegram_photo(
+            cfg,
+            img,
+            f"דוח {day} · {sign}${pnl:.2f}",
+            context="report:table",
+            inbox_text=f"טבלת דוח {day}",
+        )
     except Exception as ex:
         logging.warning("Report table image failed: %s", ex)
+
+
+def send_report_notifications(cfg: AgentConfig, report: dict[str, Any]) -> None:
+    """Daily report as Hebrew HTML table image (one photo). Avoids RTL HTML walls."""
+    import re
+
+    day = str(report.get("trading_day") or "")
+    text = format_report_message(report)
+    plain = re.sub(r"<[^>]+>", "", text).strip()
+    try:
+        from trading_pulse.telegram.reply_cards import card_daily_report
+
+        send_telegram_photo(
+            cfg,
+            card_daily_report(report),
+            f"דוח יומי {day}",
+            context="report",
+            inbox_text=plain[:500] or f"דוח יומי {day}",
+        )
+    except Exception as ex:
+        logging.warning("Report card failed, HTML fallback: %s", ex)
+        send_user_notification(cfg, text, context="report", parse_mode="HTML")
+
+
+def send_entry_notifications(
+    cfg: AgentConfig,
+    entries: list[dict[str, Any]],
+    *,
+    trading_day: str,
+    subtitle: str | None = None,
+    pending_method2: list[str] | None = None,
+    context: str = "entry",
+) -> None:
+    """Morning / method2 fills as per-stock squares; short caption only."""
+    import re
+
+    from trading_pulse.telegram.telegram_format import format_entry_notification, escape_html
+
+    parts: list[str] = []
+    if entries:
+        parts.append(
+            format_entry_notification(entries, trading_day=trading_day, subtitle=subtitle)
+        )
+    if pending_method2:
+        syms = ", ".join(escape_html(s) for s in pending_method2)
+        parts.append(
+            f"<b>⏳ נרות סיניים 2 ממתין לפריצה</b>\n"
+            f"{syms}\n"
+            "כניסה אוטומטית אם תיפרץ הרמה (או טריגר 5ד/1ד) במהלך היום"
+        )
+    text = "\n\n".join(p for p in parts if p)
+    if not text:
+        return
+    plain = re.sub(r"<[^>]+>", "", text).strip()
+    if entries:
+        try:
+            from trading_pulse.telegram.reply_cards import card_entry
+
+            send_telegram_photo(
+                cfg,
+                card_entry(entries, trading_day=trading_day, subtitle=subtitle),
+                subtitle or f"קנית {trading_day}",
+                context=context,
+                inbox_text=plain[:500],
+            )
+            if pending_method2:
+                # Extra short HTML note for pending breakouts
+                send_user_notification(
+                    cfg,
+                    (
+                        f"<b>⏳ נרות סיניים 2 ממתין לפריצה</b>\n"
+                        f"{', '.join(escape_html(s) for s in pending_method2)}\n"
+                        "כניסה אוטומטית אם תיפרץ הרמה"
+                    ),
+                    context=f"{context}:method2_pending",
+                    parse_mode="HTML",
+                )
+            return
+        except Exception as ex:
+            logging.warning("Entry card failed, HTML fallback: %s", ex)
+    send_user_notification(cfg, text, context=context, parse_mode="HTML")
 
 
 def send_user_notification(
@@ -2072,14 +2215,7 @@ def execute_buys_for_plan(
     state = load_state(cfg)
     entries = run_entry_simulation(cfg, state, td)
     if notify and entries:
-        from trading_pulse.telegram.telegram_format import format_entry_notification
-
-        send_user_notification(
-            cfg,
-            format_entry_notification(entries, trading_day=trading_day),
-            context="entry:immediate",
-            parse_mode="HTML",
-        )
+        send_entry_notifications(cfg, entries, trading_day=trading_day, context="entry:immediate")
     return entries
 
 
@@ -2356,7 +2492,7 @@ def send_funding_prompt(
 
 
 def send_allocation_prompt(trading_day: str, *, cfg: AgentConfig | None = None) -> bool:
-    from trading_pulse.telegram.app_notify import notify_user
+    from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
     from trading_pulse.agent.capital_allocation import ensure_allocation_options, format_allocation_prompt
 
     if cfg is None:
@@ -2371,13 +2507,32 @@ def send_allocation_prompt(trading_day: str, *, cfg: AgentConfig | None = None) 
     plan["allocation"]["status"] = "pending"
     save_json(path, plan)
     text = format_allocation_prompt(plan, options, trading_day=trading_day, state=state)
-    return notify_user(
-        cfg,
-        text,
-        "allocation:prompt",
-        parse_mode="HTML",
-        telegram_sender=send_telegram_message,
-    )
+    try:
+        from trading_pulse.telegram.reply_cards import card_allocation_prompt
+
+        import re
+
+        plain = re.sub(r"<[^>]+>", "", text).strip()
+        img = card_allocation_prompt(plan, options, trading_day=trading_day, state=state)
+        if uses_app_notifications(cfg):
+            notify_user(cfg, plain[:500], "allocation:prompt", parse_mode=None, telegram_sender=False)
+        return send_telegram_photo(
+            cfg,
+            img,
+            f"חלוקת הון {trading_day}",
+            context="allocation:prompt",
+            inbox_text=plain[:500],
+            log_inbox=not uses_app_notifications(cfg),
+        )
+    except Exception as ex:
+        logging.warning("Allocation card failed, HTML fallback: %s", ex)
+        return notify_user(
+            cfg,
+            text,
+            "allocation:prompt",
+            parse_mode="HTML",
+            telegram_sender=send_telegram_message,
+        )
 
 
 def apply_allocation_choice(trading_day: str, option_id: int, *, cfg: AgentConfig | None = None) -> str:
@@ -3340,16 +3495,7 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 continue
             elif kind == "allocation_show":
                 trading_day = resolve_trading_day(parsed.get("day"))
-                plan = read_json(plan_path(date.fromisoformat(trading_day)))
-                from trading_pulse.agent.capital_allocation import ensure_allocation_options, format_allocation_prompt
-
-                state = load_state(cfg)
-                options = ensure_allocation_options(cfg, plan, state)
-                plan.setdefault("allocation", {})["options"] = options
-                save_json(plan_path(date.fromisoformat(trading_day)), plan)
-                reply = format_allocation_prompt(plan, options, trading_day=trading_day, state=state)
-                reply_context = "reply:allocation"
-                send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+                send_allocation_prompt(trading_day, cfg=cfg)
                 handled += 1
                 continue
             elif kind == "plan_show":
@@ -4729,8 +4875,7 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         return
     logging.info("Simulated %s", trading_day.isoformat())
     logging.info("PnL USD: %s", report["pnl_usd"])
-    send_user_notification(cfg, format_report_message(report), context="report", parse_mode="HTML")
-    send_report_table_image(cfg, report)
+    send_report_notifications(cfg, report)
 
 
 def cmd_telegram_poll(_: argparse.Namespace) -> None:
@@ -4899,7 +5044,6 @@ def run_scheduler_loop(service: bool = True) -> None:
         try:
             state = load_state(cfg)
             entries = run_entry_simulation(cfg, state, today)
-            from trading_pulse.telegram.telegram_format import format_entry_notification, escape_html
 
             path = plan_path(today)
             pending_m2: list[str] = []
@@ -4922,18 +5066,13 @@ def run_scheduler_loop(service: bool = True) -> None:
                 record_job("entry", "ok", f"no new entries; day={today.isoformat()}")
                 logging.info("JOB END: market entry (nothing to open for %s — notified)", today.isoformat())
                 return
-            parts: list[str] = []
-            if entries:
-                parts.append(format_entry_notification(entries, trading_day=today.isoformat()))
-            if pending_m2:
-                syms = ", ".join(escape_html(s) for s in pending_m2)
-                parts.append(
-                    f"<b>⏳ שיטה 2 ממתין לפריצה</b>\n"
-                    f"{syms}\n"
-                    "כניסה אוטומטית אם תיפרץ הרמה (או טריגר 5ד/1ד) במהלך היום"
-                )
-            msg = "\n\n".join(p for p in parts if p)
-            send_user_notification(cfg, msg, context="entry", parse_mode="HTML")
+            send_entry_notifications(
+                cfg,
+                entries,
+                trading_day=today.isoformat(),
+                pending_method2=pending_m2 or None,
+                context="entry",
+            )
             record_job(
                 "entry",
                 "ok",
@@ -4994,8 +5133,7 @@ def run_scheduler_loop(service: bool = True) -> None:
                 report["equity_before"],
                 report["equity_after"],
             )
-            send_user_notification(cfg, format_report_message(report), context="report", parse_mode="HTML")
-            send_report_table_image(cfg, report)
+            send_report_notifications(cfg, report)
             record_job("simulation", "ok", trading_day=report["trading_day"], pnl=report["pnl_usd"])
             logging.info("JOB END: daily simulation")
         except Exception as ex:

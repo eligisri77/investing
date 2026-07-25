@@ -307,7 +307,7 @@ def _auto_watch_method2(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -
         result = add_price_watch(state, sym)
         meta = (state.get("price_watches") or {}).get(sym)
         if isinstance(meta, dict):
-            meta["label"] = "שיטה 2"
+            meta["label"] = "נרות סיניים 2"
             meta["trigger"] = rec.get("trigger")
             meta["side"] = str(rec.get("side") or "LONG").upper()
             meta["entry_ref"] = float(

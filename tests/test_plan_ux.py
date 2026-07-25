@@ -293,7 +293,7 @@ def test_format_approval_reply_method2_short_wording():
         plan=plan,
     )
     assert "שורט" in text
-    assert "שיטה 2" in text
+    assert "נרות סיניים 2" in text
     assert "רווח כשהמחיר יורד" in text
 
 
@@ -512,8 +512,34 @@ def test_weekend_heartbeat_explains_closed_market_and_next_session():
     assert "וול סטריט סגורה היום" in text
     assert "אין כניסות או דוח מסחר" in text
     assert "2026-07-20" in text
-    assert "תוכנית 20:15" not in text
-    assert "דוח 20:20" not in text
+    assert "תוכנית:" not in text or "2026-07-20" in text
+    # Market-closed path must not advertise today's plan/report times
+    assert "דוח:" not in text
+
+
+def test_heartbeat_signed_amounts_use_ltr_code_not_flipped_dollar():
+    cfg = AgentConfig(risk_profile="speculative", monthly_target_usd=2000)
+    cfg.risk_profile = "speculative"
+    state = {
+        "equity": 969.81,
+        "month_start_equity": 1000.0,
+        "open_positions": [],
+    }
+    text = format_heartbeat(
+        cfg,
+        state,
+        summary_fn=lambda *_a: "x",
+        monthly_fn=lambda *_a: "y",
+        speculative_fn=lambda _c: True,
+        market_day=True,
+    )
+    assert "הפסד החודש" in text or "רווח החודש" in text or "חודש:" in text
+    assert "-$30.19" in text or "\u2212$30.19" in text
+    assert "30.19$" not in text  # old flipped form
+    assert "נותר ליעד" in text or "מעל היעד" in text
+    assert "ימי מסחר שנותרו" in text
+    assert "פרופיל:" in text
+    assert "תוכנית:" in text and "ישראל" in text
 
 
 def test_hebrew_day_grammar_and_report_outcomes():

@@ -199,7 +199,7 @@ def compute_allocation_options(
             1,
             "שווה — השקעה מלאה",
             (
-                f"שרוול שיטה 2 נשמר; יתרת הפנוי (${deployable:.0f}) מתחלקת שווה בין שאר הכניסות."
+                f"שרוול נרות סיניים 2 נשמר; יתרת הפנוי (${deployable:.0f}) מתחלקת שווה בין שאר הכניסות."
                 if any(_is_method2_rec(r) for r in approved_new)
                 else f"כל ההון הפנוי (${deployable:.0f}) מתחלק שווה בין הכניסות החדשות."
             ),

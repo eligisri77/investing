@@ -113,9 +113,12 @@ def render_reply_card(
 
     tmp = Image.new("RGB", (CARD_W, 80), BG)
     draw = ImageDraw.Draw(tmp)
+    # Leave room for the accent bar on the right of the title.
+    title_w = CARD_W - PAD * 2 - INNER * 2 - 16
     content_w = CARD_W - PAD * 2 - INNER * 2
+    title_lines = _wrap(draw, title, font_title, title_w) or [title or "—"]
 
-    h = PAD + 48
+    h = PAD + 14 + len(title_lines) * 28 + 10
     if subtitle:
         h += len(_wrap(draw, subtitle, font_sub, content_w)) * 18 + 6
     if body:
@@ -148,9 +151,12 @@ def render_reply_card(
     color = _ACCENTS.get(accent, CYAN)
     x_right = CARD_W - PAD - INNER
     y = PAD + 14
-    draw.rounded_rectangle((x_right - 3, y, x_right + 1, y + 26), radius=3, fill=color)
-    _rtl(draw, x_right - 12, y, title, font_title, TEXT)
-    y += 36
+    bar_h = max(26, len(title_lines) * 26 - 4)
+    draw.rounded_rectangle((x_right - 3, y, x_right + 1, y + bar_h), radius=3, fill=color)
+    for line in title_lines:
+        _rtl(draw, x_right - 12, y, line, font_title, TEXT)
+        y += 28
+    y += 8
 
     if subtitle:
         for line in _wrap(draw, subtitle, font_sub, content_w):
@@ -222,7 +228,7 @@ def render_html_message_card(html: str, *, title: str = "", accent: Accent = "cy
     if body_lines and body_lines[0] == head:
         body_lines = body_lines[1:]
     return render_reply_card(
-        head[:60],
+        head,
         accent=accent,
         body="\n".join(body_lines),
     )
@@ -239,7 +245,7 @@ def card_sell(
 ) -> bytes:
     pct = int(round(fraction * 100))
     outcome = "רווח ממומש" if pnl_usd >= 0 else "הפסד ממומש"
-    amount = f"+${abs(pnl_usd):.2f}" if pnl_usd >= 0 else f"-${abs(pnl_usd):.2f}"
+    amount = f"+${abs(pnl_usd):.2f}" if pnl_usd > 0 else (f"-${abs(pnl_usd):.2f}" if pnl_usd < 0 else "$0.00")
     rows = [
         ("מניה", symbol),
         ("נמכר", f"{pct}%" + (f" · ${sold_usd:.0f}" if sold_usd else "")),
@@ -369,174 +375,162 @@ def card_funding(gap: dict[str, Any], *, trading_day: str) -> bytes:
     )
 
 
-def card_entry(entries: list[dict[str, Any]], *, trading_day: str) -> bytes:
-    bullets = [
-        f"{e['symbol']} ${float(e['capital_usd']):.0f} @ ${float(e['entry_price']):.2f}"
-        for e in entries
-    ]
-    return render_reply_card(
-        f"קנית · {trading_day}",
-        accent="green",
-        bullets=bullets,
-        footer="דוח סוף יום יישלח אחרי סגירת וול סטריט",
+def card_heartbeat(
+    cfg: Any,
+    state: dict[str, Any],
+    *,
+    market_day: bool = True,
+    next_trading_day: str | None = None,
+) -> bytes:
+    """Daily alive ping — HTML key/value table → PNG (trailing-sign numbers)."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_heartbeat
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_heartbeat(
+        cfg, state, market_day=market_day, next_trading_day=next_trading_day
     )
+
+    def _pil() -> bytes:
+        return _render_table(
+            title=_pil_hebrew("הסוכן חי"),
+            subtitle=_pil_hebrew("סיכום יומי"),
+            headers=[_pil_hebrew("שדה"), _pil_hebrew("ערך")],
+            rows=[[_pil_hebrew("הון"), f"${float(state.get('equity', 0)):.2f}"]],
+        )
+
+    return card_png_from_html(doc, width=560, height=1400, pil_fallback_fn=_pil)
+
+
+def card_allocation_prompt(
+    plan: dict[str, Any],
+    options: list[dict[str, Any]],
+    *,
+    trading_day: str,
+    state: dict[str, Any] | None = None,
+) -> bytes:
+    """שלב 2 — HTML comparison table → PNG."""
+    del state  # kept for call-site compatibility
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_allocation
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_allocation(plan, options, trading_day=trading_day)
+
+    def _pil() -> bytes:
+        return _render_table(
+            title=_pil_hebrew("חלוקת הון"),
+            subtitle=trading_day,
+            headers=[_pil_hebrew("אופציה"), _pil_hebrew("שם")],
+            rows=[
+                [f"ח{o.get('id')}", _pil_hebrew(str(o.get("title") or ""))]
+                for o in (options or [])[:5]
+            ]
+            or [["—", "—"]],
+        )
+
+    return card_png_from_html(doc, width=780, height=2000, pil_fallback_fn=_pil)
+
+
+def card_entry(entries: list[dict[str, Any]], *, trading_day: str, subtitle: str | None = None) -> bytes:
+    """Morning fills — HTML table → PNG."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_entry
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_entry(entries, trading_day=trading_day, subtitle=subtitle)
+
+    def _pil() -> bytes:
+        rows = []
+        for e in (entries or [])[:8]:
+            rows.append(
+                [
+                    str(e.get("symbol") or "?"),
+                    f"${float(e.get('capital_usd') or 0):.0f}",
+                    f"${float(e.get('entry_price') or 0):.2f}",
+                ]
+            )
+        return _render_table(
+            title=_pil_hebrew(subtitle or "קנית"),
+            subtitle=trading_day,
+            headers=[_pil_hebrew("סימול"), _pil_hebrew("סכום"), _pil_hebrew("מחיר")],
+            rows=rows or [["—", "—", "—"]],
+        )
+
+    return card_png_from_html(doc, width=700, height=1400, pil_fallback_fn=_pil)
 
 
 def card_portfolio(data: dict[str, Any]) -> bytes:
-    """Portfolio card: clear per-stock blocks, chips at bottom, no caption needed."""
-    from trading_pulse.agent.portfolio_index import attach_slots_to_portfolio
-    from trading_pulse.core.schedule_tz import format_local_entry_moment
-    from trading_pulse.telegram.telegram_images import _pnl_color
+    """Portfolio — HTML table → PNG."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_portfolio
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
 
-    data = attach_slots_to_portfolio(data)
-    equity = float(data.get("equity", 0))
-    marked = float(data.get("open_marked_usd", data.get("open_capital_usd", 0)))
-    unrealized = float(data.get("unrealized_pnl_usd", 0))
-    realized = float(data.get("total_realized_pnl", 0))
-    positions = data.get("open_positions") or []
-    holding = [p for p in positions if p.get("status") == "holding"]
-    pending = [p for p in positions if p.get("status") == "pending_market_entry"]
-    holding_cap = sum(float(p.get("capital_usd", 0)) for p in holding)
-    cash = float(data.get("cash_usd", max(0.0, equity - holding_cap)))
+    doc = html_portfolio(data)
 
-    font_title = _load_font(24, bold=True)
-    font_section = _load_font(16, bold=True)
-    font_label = _load_font(14)
-    font_value = _load_font(18, bold=True)
-    font_sym = _load_font(19, bold=True)
-    font_line = _load_font(16)
-    font_line_b = _load_font(16, bold=True)
-    font_chip = _load_font(14, bold=True)
-    font_foot = _load_font(13)
-
-    chips = ["מכור 1 $100", "מכור 1 200$ קנה 2 100$", "תקנה 1 $20"]
-    content_w = CARD_W - PAD * 2 - INNER * 2
-    x0 = PAD + 4
-    x1 = CARD_W - PAD - 4
-    x_right = CARD_W - PAD - INNER
-
-    h = PAD + 50
-    h += 5 * 52  # summary stats (incl. cash)
-    h += 14
-    if pending:
-        h += 28 + len(pending) * 70 + 8
-    if holding:
-        h += 28 + len(holding) * 120 + 8
-    elif not pending:
-        h += 36
-    h += 36 + len(chips) * 36 + 28 + PAD
-
-    img = Image.new("RGB", (CARD_W, h), BG)
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle(
-        (8, 8, CARD_W - 8, h - 8),
-        radius=18,
-        fill=SURFACE,
-        outline=BORDER,
-        width=2,
-    )
-
-    y = PAD + 14
-    draw.rounded_rectangle((x_right - 3, y, x_right + 1, y + 28), radius=3, fill=CYAN)
-    _rtl(draw, x_right - 12, y, "תיק השקעות", font_title, TEXT)
-    y += 40
-
-    def _stat(label: str, value: str, value_color: tuple[int, int, int] = TEXT) -> None:
-        nonlocal y
-        draw.rounded_rectangle((x0, y, x1, y + 46), radius=12, fill=ROW_BG, outline=BORDER)
-        _rtl(draw, x_right - 8, y + 6, label, font_label, MUTED)
-        _rtl(draw, x_right - 8, y + 22, value, font_value, value_color)
-        y += 52
-
-    ur_sign = "+" if unrealized > 0 else ("-" if unrealized < 0 else "")
-    rz_sign = "+" if realized > 0 else ("-" if realized < 0 else "")
-    _stat("הון", f"${equity:.2f}")
-    _stat("מזומן פנוי", f"${cash:.0f}", CYAN if cash >= 1 else MUTED)
-    _stat("שווי פתוח", f"${marked:.0f}")
-    _stat("רווח פתוח", f"{ur_sign}${abs(unrealized):.0f}", _pnl_color(unrealized))
-    _stat("רווח ממומש", f"{rz_sign}${abs(realized):.2f}", _pnl_color(realized))
-    y += 6
-
-    def _section(title: str) -> None:
-        nonlocal y
-        _rtl(draw, x_right, y, title, font_section, CYAN)
-        y += 26
-
-    if pending:
-        _section("מאושר — ממתין לפתיחה")
-        from trading_pulse.agent.strategy_labels import strategy_label
-
-        for p in pending:
-            sym = str(p["symbol"])
-            cap = float(p.get("capital_usd", 0))
-            when = str(p.get("scheduled_entry", "פתיחת השוק"))
-            strat = strategy_label(p)
-            box_h = 66 if strat else 50
-            draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=CHIP_BORDER)
-            _rtl(draw, x_right - 10, y + 8, f"{sym}  ${cap:.0f}", font_sym, PINK)
-            if strat:
-                _rtl(draw, x_right - 10, y + 30, strat, font_foot, MUTED)
-                _rtl(draw, x_right - 10, y + 46, f"כניסה {when}", font_line, MUTED)
-            else:
-                _rtl(draw, x_right - 10, y + 30, f"כניסה {when}", font_line, MUTED)
-            y += box_h + 8
-        y += 4
-
-    if holding:
-        _section("בתיק עכשיו")
-        from trading_pulse.agent.strategy_labels import strategy_label
-
-        for i, p in enumerate(holding):
-            slot = p.get("slot", "—")
-            sym = str(p["symbol"])
-            cap = float(p.get("capital_usd", 0))
-            ep = float(p.get("entry_price") or 0)
-            mv = float(p.get("marked_value_usd", cap))
-            ur = float(p.get("unrealized_pnl_usd", 0))
-            ur_s = "+" if ur > 0 else ("-" if ur < 0 else "")
-            when = format_local_entry_moment(p.get("entry_at"))
-            strat = strategy_label(p)
-            box_h = 108 if strat else 92
-            draw.rounded_rectangle((x0, y, x1, y + box_h), radius=12, fill=ROW_BG, outline=BORDER)
-            _rtl(draw, x_right - 10, y + 10, f"#{slot}  {sym}", font_sym, CYAN)
-            y_line = y + 36
-            if strat:
-                _rtl(draw, x_right - 10, y_line, strat, font_foot, MUTED)
-                y_line += 16
-            _rtl(draw, x_right - 10, y_line, f"${cap:.0f}  @  ${ep:.2f}", font_line_b, TEXT)
-            y_line += 20
-            _rtl(draw, x_right - 10, y_line, f"שווי ${mv:.0f}", font_line_b, TEXT)
-            pnl_txt = f"{ur_s}${abs(ur):.0f}"
-            draw.text((x0 + 14, y_line), pnl_txt, fill=_pnl_color(ur), font=font_line_b)
-            y_line += 18
-            _rtl(draw, x_right - 10, y_line, when, font_foot, MUTED)
-            y += box_h + 14
-            if i < len(holding) - 1:
-                draw.line((x0 + 28, y - 7, x1 - 28, y - 7), fill=(60, 60, 95), width=2)
-    elif not pending:
-        _rtl(draw, x_right, y, "אין פוזיציות פתוחות", font_line, MUTED)
-        y += 28
-
-    y += 16
-    _rtl(draw, x_right, y, "דוגמאות", font_section, MUTED)
-    y += 24
-    for chip in chips:
-        chip_w = min(content_w, _text_width(draw, _pil_hebrew(chip), font_chip) + 20)
-        draw.rounded_rectangle(
-            (x_right - chip_w, y, x_right, y + 30),
-            radius=8,
-            fill=CHIP_BG,
-            outline=CHIP_BORDER,
+    def _pil() -> bytes:
+        return _render_table(
+            title=_pil_hebrew("תיק השקעות"),
+            subtitle=f"equity ${float(data.get('equity', 0)):.2f}",
+            headers=[_pil_hebrew("סימול"), _pil_hebrew("סכום")],
+            rows=[
+                [str(p.get("symbol")), f"${float(p.get('capital_usd') or 0):.0f}"]
+                for p in (data.get("open_positions") or [])[:8]
+            ]
+            or [["—", "—"]],
         )
-        _rtl(draw, x_right - 10, y + 6, chip, font_chip, PINK)
-        y += 36
 
-    y += 4
-    _rtl(draw, x_right, y, "מספרים (#1 #2…) לפי סדר בתיק", font_foot, MUTED)
+    return card_png_from_html(doc, width=900, height=2000, pil_fallback_fn=_pil)
 
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
+
+def card_intraday_monitor(report: Any) -> bytes:
+    """Hourly monitor — HTML table with labeled columns → PNG."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_intraday
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_intraday(report)
+
+    def _pil() -> bytes:
+        holdings = list(getattr(report, "holdings", None) or [])[:6]
+        rows = []
+        for h in holdings:
+            rows.append(
+                [
+                    str(h.get("symbol") or "?"),
+                    f"${float(h.get('capital_usd') or 0):.0f}",
+                    f"{float(h.get('pnl_pct') or 0):.1f}%-"
+                    if float(h.get("pnl_pct") or 0) < 0
+                    else f"{float(h.get('pnl_pct') or 0):.1f}%",
+                ]
+            )
+        return _render_table(
+            title=_pil_hebrew("מעקב שעתי"),
+            subtitle="",
+            headers=[_pil_hebrew("סימול"), _pil_hebrew("מושקע"), _pil_hebrew("מהכניסה")],
+            rows=rows or [["—", "—", "—"]],
+            width=700,
+        )
+
+    return card_png_from_html(doc, width=980, height=2200, pil_fallback_fn=_pil)
+
+
+def card_daily_report(report: dict[str, Any]) -> bytes:
+    """EOD report — HTML Hebrew tables → PNG."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_daily_report
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_daily_report(report)
+
+    def _pil() -> bytes:
+        day = str(report.get("trading_day") or "")
+        return _render_table(
+            title=_pil_hebrew(f"דוח יומי {day}"),
+            subtitle=f"P/L {float(report.get('pnl_usd') or 0):.2f}",
+            headers=[_pil_hebrew("סימול"), _pil_hebrew("רווח")],
+            rows=[
+                [str(p.get("symbol")), f"${float(p.get('unrealized_pnl_usd') or 0):.2f}"]
+                for p in (report.get("held_eod") or [])[:8]
+            ]
+            or [["—", "—"]],
+        )
+
+    return card_png_from_html(doc, width=900, height=2200, pil_fallback_fn=_pil)
 
 
 def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
@@ -564,7 +558,7 @@ def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
         strat = str(r.get("strategy") or "")
         if strat == "method2":
             side = str(r.get("side") or "LONG").upper()
-            tag = "שיטה 2 שורט" if side == "SHORT" else "שיטה 2"
+            tag = "נרות סיניים 2 שורט" if side == "SHORT" else "נרות סיניים 2"
             label = f"{label} ({tag})"
         elif strat == "rising_three_methods":
             label = f"{label} (נרות)"

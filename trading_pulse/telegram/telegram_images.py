@@ -540,7 +540,7 @@ def render_japanese_candlestick_chart(rec: dict[str, Any], idx: int, trading_day
     entry_ref = float(rec.get("method2_entry_ref") or price)
 
     if strategy == "method2":
-        strat_label = f"שיטה 2 · {rec.get('trigger') or ''}"
+        strat_label = f"נרות סיניים 2 · {rec.get('trigger') or ''}"
         highlight_n = 3
     elif strategy == "rising_three_methods":
         weak = " · חלש" if rec.get("pattern_weak") else ""

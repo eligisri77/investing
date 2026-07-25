@@ -52,7 +52,7 @@ def test_apply_confirm_adds_method2_watch():
         apply_confirm(plan, state, cfg)
     watches = state.get("price_watches") or {}
     assert "M2CO" in watches
-    assert watches["M2CO"].get("label") == "שיטה 2"
+    assert watches["M2CO"].get("label") == "נרות סיניים 2"
 
 
 def test_sync_plan_portfolio_preserves_method2_sleeve_capital():

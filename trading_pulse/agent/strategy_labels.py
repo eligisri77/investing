@@ -18,14 +18,14 @@ def _ltr(text: str) -> str:
 
 
 def strategy_label(obj: dict[str, Any] | None) -> str:
-    """Short Hebrew tag for candle / method2 entries. Empty for score or unknown."""
+    """Short Hebrew tag for candle / method2 entries. Empty for unknown."""
     if not obj:
         return ""
     strat = str(obj.get("strategy_id") or obj.get("strategy") or "")
     if strat == "method2":
         trig = str(obj.get("trigger") or "").strip()
         side = str(obj.get("side") or "LONG").upper()
-        parts = ["שיטה 2", "נרות סיניים"]
+        parts = ["נרות סיניים 2"]
         if trig:
             parts.append(_ltr(trig))
         if side == "SHORT":
@@ -46,20 +46,30 @@ def strategy_label(obj: dict[str, Any] | None) -> str:
     return ""
 
 
+def strategy_method_line(obj: dict[str, Any] | None) -> str:
+    """User-facing entry-method line, e.g. «שיטת כניסה · מומנטום וציון»."""
+    label = strategy_label(obj)
+    if not label:
+        return ""
+    if label.startswith("שיטת כניסה"):
+        return label
+    return f"שיטת כניסה · {label}"
+
+
 def strategy_suffix_html(obj: dict[str, Any] | None) -> str:
     """HTML fragment appended after a symbol name.
 
     No ASCII parentheses — in RTL Telegram they reverse and scramble mixed Hebrew/English.
     """
-    label = strategy_label(obj)
-    if not label:
+    line = strategy_method_line(obj)
+    if not line:
         return ""
-    return f" <i>· {html.escape(label)}</i>"
+    return f" <i>· {html.escape(line)}</i>"
 
 
 def strategy_suffix_plain(obj: dict[str, Any] | None) -> str:
-    label = strategy_label(obj)
-    return f" · {label}" if label else ""
+    line = strategy_method_line(obj)
+    return f" · {line}" if line else ""
 
 
 def is_candle_strategy(obj: dict[str, Any] | None) -> bool:

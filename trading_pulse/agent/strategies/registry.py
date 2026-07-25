@@ -25,7 +25,7 @@ STRATEGY_SPECS: dict[str, StrategySpec] = {
     ),
     "method2": StrategySpec(
         id="method2",
-        label_he="שיטה 2 · נרות סיניים",
+        label_he="נרות סיניים 2",
         version="1.0",
         entry_policy="stop_breakout",
         supported_sides=("LONG", "SHORT"),

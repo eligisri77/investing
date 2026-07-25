@@ -84,11 +84,17 @@ def render_html_to_png(
         if not png_path.exists() or png_path.stat().st_size < 100:
             err = (proc.stderr or proc.stdout or "").strip()[:400]
             raise RuntimeError(f"HTML screenshot failed: {err or 'empty png'}")
-        return _crop_bottom_padding(png_path.read_bytes())
+        return _crop_to_content(png_path.read_bytes())
 
 
-def _crop_bottom_padding(png_bytes: bytes, *, bg_threshold: int = 18) -> bytes:
-    """Trim empty dark space below the card (viewport taller than content)."""
+def _crop_to_content(
+    png_bytes: bytes,
+    *,
+    bg: tuple[int, int, int] = (10, 10, 24),
+    delta: int = 12,
+    pad: int = 16,
+) -> bytes:
+    """Trim empty viewport padding so Telegram does not shrink the card to a speck."""
     from io import BytesIO
 
     from PIL import Image
@@ -96,22 +102,29 @@ def _crop_bottom_padding(png_bytes: bytes, *, bg_threshold: int = 18) -> bytes:
     img = Image.open(BytesIO(png_bytes)).convert("RGB")
     pixels = img.load()
     w, h = img.size
+    step = max(1, w // 80)
+
+    def _row_has_content(y: int) -> bool:
+        br, bg_, bb = bg
+        for x in range(0, w, step):
+            r, g, b = pixels[x, y]
+            if abs(r - br) > delta or abs(g - bg_) > delta or abs(b - bb) > delta:
+                return True
+        return False
+
+    top = 0
+    while top < h - 1 and not _row_has_content(top):
+        top += 1
     bottom = h - 1
-    while bottom > 40:
-        row_dark = True
-        for x in range(0, w, max(1, w // 40)):
-            r, g, b = pixels[x, bottom]
-            if r > bg_threshold or g > bg_threshold or b > bg_threshold:
-                row_dark = False
-                break
-        if not row_dark:
-            break
+    while bottom > top and not _row_has_content(bottom):
         bottom -= 1
-    crop_h = min(h, bottom + 24)
-    if crop_h >= h - 8:
+
+    y0 = max(0, top - pad)
+    y1 = min(h, bottom + pad + 1)
+    if y1 - y0 >= h - 4:
         return png_bytes
     out = BytesIO()
-    img.crop((0, 0, w, crop_h)).save(out, format="PNG", optimize=True)
+    img.crop((0, y0, w, y1)).save(out, format="PNG", optimize=True)
     return out.getvalue()
 
 

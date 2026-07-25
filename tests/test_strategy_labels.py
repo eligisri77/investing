@@ -5,16 +5,20 @@ from __future__ import annotations
 from trading_pulse.agent.strategy_labels import (
     is_candle_strategy,
     strategy_label,
+    strategy_method_line,
     strategy_suffix_html,
+    strategy_suffix_plain,
 )
 from trading_pulse.telegram.telegram_format import format_current_holdings, format_portfolio
 
 
-def test_method2_label_includes_chinese_candles():
-    label = strategy_label({"strategy": "method2", "trigger": "3-2-2", "side": "LONG"})
-    assert "שיטה 2" in label
-    assert "נרות סיניים" in label
+def test_method2_label_is_chinese_candles_2():
+    obj = {"strategy": "method2", "trigger": "3-2-2", "side": "LONG"}
+    label = strategy_label(obj)
+    assert label.startswith("נרות סיניים 2")
     assert "3-2-2" in label
+    assert "שיטה 2" not in label
+    assert strategy_method_line(obj) == "שיטת כניסה · " + label
 
 
 def test_rising_three_label():
@@ -36,11 +40,34 @@ def test_relative_strength_label_avoids_spy_inside_rtl():
     assert "SPY" not in label
 
 
+def test_strategy_method_line_prefixes_entry_method():
+    assert strategy_method_line({"strategy": "score_momentum"}) == "שיטת כניסה · מומנטום וציון"
+    assert strategy_method_line({"strategy_id": "relative_strength"}).startswith("שיטת כניסה ·")
+    assert strategy_method_line({"strategy": "rising_three"}) == "שיטת כניסה · נרות Rising Three"
+    assert strategy_method_line({"strategy_id": "vcp_breakout"}).startswith("שיטת כניסה ·")
+    assert strategy_method_line({"strategy_id": "trend_pullback"}).startswith("שיטת כניסה ·")
+
+
+def test_strategy_method_line_empty_when_unknown():
+    assert strategy_method_line(None) == ""
+    assert strategy_method_line({}) == ""
+    assert strategy_method_line({"strategy": "unknown_xyz"}) == ""
+
+
 def test_strategy_suffix_has_no_ascii_parentheses():
     html = strategy_suffix_html({"strategy": "score_momentum"})
     assert "(" not in html and ")" not in html
     assert "מומנטום וציון" in html
+    assert "שיטת כניסה" in html
     assert "·" in html
+
+
+def test_strategy_suffix_plain_uses_method_line():
+    assert strategy_suffix_plain({"strategy": "score"}) == " · שיטת כניסה · מומנטום וציון"
+    assert strategy_suffix_plain(None) == ""
+    m2 = strategy_suffix_plain({"strategy": "method2", "trigger": "3-2-2"})
+    assert m2.startswith(" · שיטת כניסה · נרות סיניים 2")
+    assert "שיטה 2" not in m2
 
 
 def test_rising_three_weak_uses_middot_not_parens():
@@ -62,8 +89,9 @@ def test_holdings_and_portfolio_show_strategy_tag():
     ]
     text = "\n".join(format_current_holdings(holdings))
     assert "MPC" in text
-    assert "שיטה 2" in text
-    assert "נרות סיניים" in text
+    assert "נרות סיניים 2" in text
+    assert "שיטת כניסה" in text
+    assert "שיטה 2" not in text
 
     data = {
         "equity": 1000,
@@ -88,6 +116,6 @@ def test_holdings_and_portfolio_show_strategy_tag():
         "by_symbol": [],
     }
     port = format_portfolio(data)
-    assert "נרות סיניים" in port
-    assert "שיטה 2" in strategy_suffix_html({"strategy": "method2"})
+    assert "נרות סיניים 2" in port
+    assert "שיטת כניסה" in strategy_suffix_html({"strategy": "method2"})
     assert "(" not in strategy_suffix_html({"strategy": "method2"})

@@ -89,7 +89,7 @@ def user_guide_full() -> str:
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
             "1. <code>התחל</code> / <code>הכל</code> — המלצות לפי מצב האסטרטגיה בהגדרות",
-            "2. בפתיחה — קניות שאושרו; שיטה 2 ממתינה לפריצה ולא נקנית אוטומטית",
+            "2. בפתיחה — קניות שאושרו; נרות סיניים 2 ממתינה לפריצה ולא נקנית אוטומטית",
             "3. בערב אחרי סגירה — דוח יומי על הרווח/הפסד",
             "",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
@@ -388,7 +388,7 @@ def _rec_entry_hint(rec: dict[str, Any]) -> str:
         stop = float(rec.get("method2_stop_ref") or rec.get("floor_price") or 0)
         side_he = "שורט" if side == "SHORT" else "לונג"
         return (
-            f"שיטה 2 · נרות סיניים · {side_he} · טריגר {trig} · "
+            f"נרות סיניים 2 · {side_he} · טריגר {trig} · "
             f"כניסה רק בפריצה ~${entry:.2f} (סטופ ~${stop:.2f})"
         )
     if strat == "rising_three_methods":
@@ -459,7 +459,7 @@ def format_new_picks_block(recs: list[dict[str, Any]], holdings: list[dict[str, 
         if strong:
             lines.append(
                 "<b>סיכום ביצוע:</b> שלח <code>הכל</code> לאישור הקניות שעברו סף"
-                + (" · שיטה 2 מחכה לפריצה" if has_method2 else "")
+                + (" · נרות סיניים 2 מחכה לפריצה" if has_method2 else "")
             )
         else:
             lines.append(
@@ -522,7 +522,7 @@ def format_what_all_does(
             shorts = [r for r in method2 if str(r.get("side") or "").upper() == "SHORT"]
             side_note = " (כולל שורט — רווח כשהמחיר יורד)" if shorts else ""
             lines.append(
-                f"• שיטה 2 ({names}){side_note}: אחרי אישור — כניסה <b>רק אם נפרצת הרמה</b> "
+                f"• נרות סיניים 2 ({names}){side_note}: אחרי אישור — כניסה <b>רק אם נפרצת הרמה</b> "
                 "(בוקר או תוך־יום), לא חובה בפתיחה"
             )
         if held:
@@ -936,7 +936,7 @@ def format_plan(plan: dict[str, Any], *, rec_formatter) -> str:
         has_m2 = any(str(r.get("strategy")) == "method2" for r in new_recs)
         footer.append("<b>⏰ מחר</b> — כניסת ציון/נרות בפתיחה")
         if has_m2:
-            footer.append("<b>שיטה 2</b> — כניסה רק אם נפרצת הרמה (בוקר או תוך־יום)")
+            footer.append("<b>נרות סיניים 2</b> — כניסה רק אם נפרצת הרמה (בוקר או תוך־יום)")
         footer.append("<b>בערב</b> — דוח יומי")
         footer.extend(["", "לאישור קניות ממזומן: <code>הכל</code>"])
     else:
@@ -1079,7 +1079,7 @@ def format_recommendation(
         trig = escape_html(str(rec.get("trigger") or ""))
         side = str(rec.get("side") or "LONG").upper()
         side_he = "שורט" if side == "SHORT" else "לונג"
-        lines.append(f"<b>שיטה 2 · נרות סיניים · {side_he} · טריגר {trig}</b>")
+        lines.append(f"<b>נרות סיניים 2 · {side_he} · טריגר {trig}</b>")
         entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
         stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
         lines.append(f"פריצה ~${entry:.2f} · סטופ ~${stop:.2f} · כניסה רק אם נפרץ")
@@ -1174,7 +1174,7 @@ def format_approval_reply(
                     side = str(rec.get("side") or "LONG").upper()
                     side_he = "שורט" if side == "SHORT" else "לונג"
                     extra = (
-                        f" · שיטה 2 {side_he} · נרות סיניים ({trig}) — כניסה בפריצה בלבד"
+                        f" · נרות סיניים 2 {side_he} · נרות סיניים ({trig}) — כניסה בפריצה בלבד"
                     )
                     if side == "SHORT":
                         extra += " · רווח כשהמחיר יורד"
@@ -1187,7 +1187,7 @@ def format_approval_reply(
                 if str(r.get("symbol")) in {s for s, _ in new_buys}
             ):
                 lines.append(
-                    "<i>שיטה 2: אם לא נפרץ בבוקר — נשאר במעקב תוך־יומי; בלי פריצה אין כניסה</i>"
+                    "<i>נרות סיניים 2: אם לא נפרץ בבוקר — נשאר במעקב תוך־יומי; בלי פריצה אין כניסה</i>"
                 )
         if held:
             lines.extend(["", "<b>📂 נשאר בתיק (ללא שינוי אוטומטי):</b>"])
@@ -1465,51 +1465,97 @@ def _intraday_howto_command(sug: Any) -> str | None:
     return None
 
 
+# Unicode minus — ASCII "-" flips next to Hebrew in Telegram RTL.
+_MINUS = "\u2212"
+_LRM = "\u200e"
+
+
+def _ltr_code(text: str) -> str:
+    """LTR island via <code> so numbers/tickers stay readable in RTL HTML."""
+    return f"<code>{_LRM}{escape_html(text)}{_LRM}</code>"
+
+
+def _fmt_signed_pct(value: float) -> str:
+    x = float(value)
+    if x > 0:
+        body = f"+{x:.1f}%"
+    elif x < 0:
+        body = f"{_MINUS}{abs(x):.1f}%"
+    else:
+        body = "0.0%"
+    return _ltr_code(body)
+
+
+def _fmt_usd(value: float, *, decimals: int = 2, signed: bool = False) -> str:
+    x = float(value)
+    if signed:
+        if x > 0:
+            body = f"+${x:.{decimals}f}"
+        elif x < 0:
+            body = f"{_MINUS}${abs(x):.{decimals}f}"
+        else:
+            body = f"${0:.{decimals}f}"
+    else:
+        body = f"${x:.{decimals}f}"
+    return _ltr_code(body)
+
+
+def _fmt_ticker(symbol: str) -> str:
+    return f"<b>{_ltr_code(str(symbol).strip().upper())}</b>"
+
+
 def format_intraday_monitor(report: Any) -> str:
-    """Hourly intraday watch message (alerts + buy/swap suggestions)."""
+    """Hourly intraday watch message (alerts + buy/swap suggestions).
+
+    Layout rules for Telegram RTL:
+    - Ticker alone on the first line of each block (never mid-number line).
+    - Hebrew label, then a <code> LTR island for every number/%/$.
+    - Unicode minus (U+2212) instead of ASCII hyphen for negatives.
+    """
     lines = [
         "<b>🔍 מעקב שעתי — מסחר פעיל</b>",
         SEP,
     ]
+    has_howto = False
 
     holdings = report.holdings or []
     if holdings:
-        from trading_pulse.agent.strategy_labels import strategy_label
+        from trading_pulse.agent.strategy_labels import strategy_method_line
 
         lines.append("<b>📌 מושקע עכשיו</b>")
-        for h in holdings[:6]:
+        for i, h in enumerate(holdings[:6], start=1):
             pnl = float(h.get("pnl_pct", 0))
             day = float(h.get("day_change_pct", 0))
-            sign = "+" if pnl >= 0 else ""
             cap = float(h.get("capital_usd", 0))
             floor = h.get("floor_price")
-            sym = escape_html(str(h["symbol"]))
-            # Keep ticker LTR so it stays next to the bullet in RTL clients.
-            label = strategy_label(h)
-            head = f"• <b>\u200e{sym}\u200e</b>"
-            if label:
-                head += f" · <i>{escape_html(label)}</i>"
-            money_bits = []
+            method = strategy_method_line(h)
+            # Slot on the right of ticker in RTL: «ISRG 1#»
+            lines.append(f"• {_fmt_ticker(str(h['symbol']))} {_ltr_code(f'{i}#')}")
+            if method:
+                lines.append(f"  <i>{escape_html(method)}</i>")
             if cap > 0:
-                money_bits.append(f"<b>${cap:.0f}</b> מושקע")
-            money_bits.append(f"מחיר ${float(h.get('last', 0)):.2f}")
+                lines.append(f"  מושקע: {_fmt_usd(cap, decimals=0)}")
+            lines.append(f"  מחיר עכשיו: {_fmt_usd(float(h.get('last', 0)))}")
             if floor:
-                money_bits.append(f"רף ${float(floor):.2f}")
-            lines.append(head)
-            lines.append(f"   {' · '.join(money_bits)}")
-            lines.append(f"   מהכניסה {sign}{pnl:.1f}% · היום {day:+.1f}%")
+                lines.append(f"  רף יציאה: {_fmt_usd(float(floor))}")
+            marked = cap * (1.0 + pnl / 100.0) if cap else 0.0
+            if cap > 0:
+                lines.append(f"  שווי נוכחי: {_fmt_usd(marked, decimals=0)}")
+            lines.append(f"  מהכניסה: {_fmt_signed_pct(pnl)}")
+            lines.append(f"  היום: {_fmt_signed_pct(day)}")
 
     floor_sells = getattr(report, "floor_sells", None) or []
     if floor_sells:
         lines.extend(["", "<b>🔻 נמכר — מחיר תחתון</b>"])
         for trade in floor_sells[:6]:
             pnl = float(trade.get("pnl_usd", 0))
-            sign = "+" if pnl >= 0 else ""
+            lines.append(f"• {_fmt_ticker(str(trade['symbol']))}")
             lines.append(
-                f"• <b>{escape_html(trade['symbol'])}</b> "
-                f"${float(trade.get('exit_price', 0)):.2f} · רף ${float(trade.get('floor_price', 0)):.2f} · "
-                f"{sign}${abs(pnl):.2f}"
+                f"  יציאה {_fmt_usd(float(trade.get('exit_price', 0)))} · "
+                f"רף {_fmt_usd(float(trade.get('floor_price', 0)))}"
             )
+            result_word = "רווח" if pnl >= 0 else "הפסד"
+            lines.append(f"  {result_word} {_fmt_usd(pnl, signed=True)}")
 
     alerts = report.alerts or []
     if alerts:
@@ -1517,7 +1563,7 @@ def format_intraday_monitor(report: Any) -> str:
         for alert in sorted(alerts, key=lambda a: -a.severity)[:6]:
             icon = "🔴" if alert.severity >= 3 else "🟠" if alert.severity >= 2 else "🟡"
             lines.append(
-                f"{icon} <b>{escape_html(alert.symbol)}</b> — {escape_html(alert.message)}"
+                f"{icon} {_fmt_ticker(alert.symbol)} — {escape_html(alert.message)}"
             )
 
     suggestions = report.suggestions or []
@@ -1526,30 +1572,32 @@ def format_intraday_monitor(report: Any) -> str:
         for sug in suggestions[:3]:
             if sug.kind == "buy":
                 lines.append(
-                    f"🟢 <b>רכישה</b> · {escape_html(sug.symbol)} — {escape_html(sug.message)}"
+                    f"🟢 <b>רכישה</b> · {_fmt_ticker(sug.symbol)} — {escape_html(sug.message)}"
                 )
             elif sug.kind == "swap":
-                lines.append(
-                    f"🔄 <b>החלפה</b> · {escape_html(sug.message)}"
-                )
+                lines.append(f"🔄 <b>החלפה</b> · {escape_html(sug.message)}")
             elif sug.kind == "sell":
                 lines.append(
-                    f"🔻 <b>מכירה</b> · {escape_html(sug.symbol)} — {escape_html(sug.message)}"
+                    f"🔻 <b>מכירה</b> · {_fmt_ticker(sug.symbol)} — {escape_html(sug.message)}"
                 )
             else:
                 lines.append(
-                    f"👀 <b>לעקוב</b> · {escape_html(sug.symbol)} — {escape_html(sug.message)}"
+                    f"👀 <b>לעקוב</b> · {_fmt_ticker(sug.symbol)} — {escape_html(sug.message)}"
                 )
             cmd = _intraday_howto_command(sug)
             if cmd:
-                lines.append(f"   ✅ <b>איך לבצע:</b> שלח <code>{escape_html(cmd)}</code>")
+                has_howto = True
+                lines.append(f"  ✅ <b>איך לבצע:</b> שלח <code>{escape_html(cmd)}</code>")
 
-    lines.extend(
-        [
-            "",
-            "<i>הצעה בלבד — לא ביצוע אוטומטי. העתק את הפקודה מ«איך לבצע».</i>",
-        ]
-    )
+    lines.append("")
+    if has_howto:
+        lines.append(
+            "<i>הצעה בלבד — לא ביצוע אוטומטי. העתק את הפקודה מ«איך לבצע».</i>"
+        )
+    elif floor_sells and not suggestions:
+        lines.append("<i>יציאה אוטומטית בוצעה — אין פעולה נוספת נדרשת.</i>")
+    else:
+        lines.append("<i>למעקב בלבד — אין פעולה נדרשת כרגע.</i>")
     return finalize("\n".join(lines))
 
 
@@ -1575,25 +1623,82 @@ def format_heartbeat(
     market_day: bool = True,
     next_trading_day: str | None = None,
 ) -> str:
-    from trading_pulse.core.schedule_tz import format_dual_time
+    """Clear multi-line heartbeat — numbers in <code> so minus/$ don't flip in RTL."""
+    from trading_pulse.core.schedule_tz import utc_hhmm_to_zone, ISRAEL
 
     equity = float(state.get("equity", cfg.initial_capital))
     lines = [
         "<b>💚 הסוכן חי</b>",
         SEP,
-        f"הון בספרים: <b>${equity:.2f}</b>",
+        f"הון בספרים: {_ltr_code(f'${equity:.2f}')}",
     ]
-    marked_txt = _heartbeat_marked_line(state, equity)
-    if marked_txt:
-        lines.append(marked_txt)
-    lines.append(escape_html(truncate(summary_fn(cfg, equity), 100)))
+    marked = _heartbeat_marked_parts(state, equity)
+    if marked:
+        marked_s = f"${marked['marked']:.2f}"
+        lines.append(f"שווי משוער: {_ltr_code(marked_s)}")
+        ur = marked["unrealized"]
+        ur_word = "רווח עתידי" if ur > 0 else ("הפסד עתידי" if ur < 0 else "עתידי")
+        lines.append(f"{ur_word}: {_fmt_usd(ur, signed=True)}")
+
+    # Prefer structured profile when available
+    try:
+        from trading_pulse.agent.dryrun_agent import risk_profile_parts
+
+        p = risk_profile_parts(cfg, equity)
+        deploy_s = f"${p['max_deploy_usd']:.0f}"
+        per_s = f"${p['per_trade_usd']:.0f}"
+        lines.extend(
+            [
+                "",
+                f"פרופיל: <b>{escape_html(p['label'])}</b>",
+                f"השקעה: עד {p['max_deploy_pct']}% ({_ltr_code(deploy_s)})",
+                f"עסקאות: עד {p['max_trades']} · כ־{_ltr_code(per_s)} לעסקה",
+            ]
+        )
+    except Exception:
+        lines.append(escape_html(truncate(summary_fn(cfg, equity), 120)))
+
     if speculative_fn(cfg):
-        lines.append(escape_html(truncate(monthly_fn(cfg, state), 120)))
+        try:
+            from trading_pulse.agent.dryrun_agent import monthly_target_parts
+
+            m = monthly_target_parts(cfg, state)
+            pnl_word = "רווח החודש" if m["month_pnl"] > 0 else (
+                "הפסד החודש" if m["month_pnl"] < 0 else "חודש"
+            )
+            gap_word = "מעל היעד" if m["gap_usd"] <= 0 else "נותר ליעד"
+            gap_amt = abs(m["gap_usd"])
+            target_s = f"${m['target_usd']:.0f}"
+            equity_s = f"${m['equity']:.2f}"
+            gap_s = f"${gap_amt:.0f}"
+            lines.extend(
+                [
+                    "",
+                    f"יעד חודשי: {_ltr_code(target_s)}",
+                    f"נוכחי: {_ltr_code(equity_s)}",
+                    f"{pnl_word}: {_fmt_usd(m['month_pnl'], signed=True)} "
+                    f"({_fmt_signed_pct(m['month_pnl_pct'])})",
+                    f"{gap_word}: {_ltr_code(gap_s)}",
+                    f"ימי מסחר שנותרו: {int(m['trading_days_left'])}",
+                ]
+            )
+        except Exception:
+            lines.append(escape_html(truncate(monthly_fn(cfg, state), 140)))
+
     if market_day:
-        plan_t = format_dual_time(str(cfg.planning_time)) or str(cfg.planning_time)
-        report_t = format_dual_time(str(cfg.market_close_sim_time)) or str(cfg.market_close_sim_time)
-        lines.append(f"תוכנית {escape_html(plan_t)}")
-        lines.append(f"דוח {escape_html(report_t)}")
+        plan_utc = str(cfg.planning_time)
+        report_utc = str(cfg.market_close_sim_time)
+        plan_il = utc_hhmm_to_zone(plan_utc, ISRAEL) or plan_utc
+        report_il = utc_hhmm_to_zone(report_utc, ISRAEL) or report_utc
+        lines.extend(
+            [
+                "",
+                f"תוכנית: {_ltr_code(plan_il)} ישראל "
+                f"({_ltr_code(plan_utc)} UTC)",
+                f"דוח: {_ltr_code(report_il)} ישראל "
+                f"({_ltr_code(report_utc)} UTC)",
+            ]
+        )
     else:
         lines.extend(
             [
@@ -1601,17 +1706,16 @@ def format_heartbeat(
                 "💤 <b>וול סטריט סגורה היום</b>",
                 "אין כניסות או דוח מסחר.",
                 (
-                    f"התוכנית הבאה תישלח לקראת המסחר ב־{escape_html(next_trading_day)}."
+                    f"התוכנית הבאה לקראת המסחר ב־{escape_html(next_trading_day)}."
                     if next_trading_day
-                    else "התוכנית הבאה תישלח לקראת יום המסחר הבא."
+                    else "התוכנית הבאה לקראת יום המסחר הבא."
                 ),
             ]
         )
     return finalize("\n".join(lines))
 
 
-def _heartbeat_marked_line(state: dict[str, Any], equity: float) -> str | None:
-    """Optional marked equity (book + unrealized) when quotes are available."""
+def _heartbeat_marked_parts(state: dict[str, Any], equity: float) -> dict[str, float] | None:
     positions = [dict(p) for p in (state.get("open_positions") or [])]
     if not positions:
         return None
@@ -1621,15 +1725,24 @@ def _heartbeat_marked_line(state: dict[str, Any], equity: float) -> str | None:
 
         day = us_trading_session_date()
         _, ur = enrich_held_unrealized(positions, day)
-        marked = round(equity + float(ur), 2)
         ur_f = float(ur)
-        ur_sign = "+" if ur_f >= 0 else ""
-        return (
-            f"שווי משוער: <b>${marked:.2f}</b> "
-            f"(עתידי {ur_sign}${ur_f:.2f})"
-        )
+        return {"marked": round(equity + ur_f, 2), "unrealized": ur_f}
     except Exception:
         return None
+
+
+def _heartbeat_marked_line(state: dict[str, Any], equity: float) -> str | None:
+    """Optional marked equity line (HTML fallback helper)."""
+    marked = _heartbeat_marked_parts(state, equity)
+    if not marked:
+        return None
+    ur = marked["unrealized"]
+    ur_word = "רווח עתידי" if ur > 0 else ("הפסד עתידי" if ur < 0 else "עתידי")
+    marked_s = f"${marked['marked']:.2f}"
+    return (
+        f"שווי משוער: {_ltr_code(marked_s)} · "
+        f"{ur_word} {_fmt_usd(ur, signed=True)}"
+    )
 
 
 def format_below_bar_approve_hint(weak_recs: list[dict[str, Any]], *, plan_recs: list[dict[str, Any]] | None = None) -> str:

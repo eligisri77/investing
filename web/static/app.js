@@ -782,19 +782,21 @@ async function renderActivePlan() {
 function strategyLabel(p) {
   const strat = p && (p.strategy_id || p.strategy);
   if (strat === "method2") {
-    const parts = ["שיטה 2", "נרות סיניים"];
+    const parts = ["נרות סיניים 2"];
     if (p.trigger) parts.push(String(p.trigger));
     if (String(p.side || "").toUpperCase() === "SHORT") parts.push("שורט");
-    return parts.join(" · ");
+    return "שיטת כניסה · " + parts.join(" · ");
   }
   if (strat === "rising_three" || strat === "rising_three_methods") {
-    return p.pattern_weak ? "נרות Rising Three (חלש)" : "נרות Rising Three";
+    const base = p.pattern_weak ? "נרות Rising Three (חלש)" : "נרות Rising Three";
+    return "שיטת כניסה · " + base;
   }
-  if (strat === "score" || strat === "score_momentum") return "מומנטום וציון";
-  if (strat === "trend_pullback") return "תיקון במגמה · ניסיוני";
-  if (strat === "vcp_breakout") return "VCP · התכווצות ופריצה · ניסיוני";
-  if (strat === "relative_strength") return "חוזק יחסי מול SPY · ניסיוני";
-  return strategyIdLabel(strat);
+  if (strat === "score" || strat === "score_momentum") return "שיטת כניסה · מומנטום וציון";
+  if (strat === "trend_pullback") return "שיטת כניסה · תיקון במגמה · ניסיוני";
+  if (strat === "vcp_breakout") return "שיטת כניסה · VCP · התכווצות ופריצה · ניסיוני";
+  if (strat === "relative_strength") return "שיטת כניסה · חוזק יחסי · ניסיוני";
+  const fallback = strategyIdLabel(strat);
+  return fallback ? "שיטת כניסה · " + fallback : "";
 }
 
 function strategyIdLabel(id) {
@@ -802,10 +804,10 @@ function strategyIdLabel(id) {
     score_momentum: "מומנטום וציון",
     rising_three: "Rising Three",
     rising_three_methods: "Rising Three",
-    method2: "שיטה 2",
+    method2: "נרות סיניים 2",
     trend_pullback: "Trend Pullback · ניסיוני",
     vcp_breakout: "VCP · ניסיוני",
-    relative_strength: "חוזק יחסי מול SPY · ניסיוני",
+    relative_strength: "חוזק יחסי · ניסיוני",
   };
   return labels[String(id || "")] || String(id || "");
 }

@@ -1467,8 +1467,9 @@ def send_plan_table_image(
 
 
 def send_plan_stock_charts(cfg: AgentConfig, plan: dict[str, Any]) -> None:
-    """One Telegram photo per recommendation with price chart."""
+    """One Telegram photo per recommendation: chart + labeled details (short caption)."""
     from trading_pulse.telegram.app_notify import uses_telegram_notifications
+    from trading_pulse.telegram.reply_cards import chart_with_recommendation_details
     from trading_pulse.telegram.telegram_format import format_recommendation
     from trading_pulse.telegram.telegram_images import render_recommendation_chart
 
@@ -1479,22 +1480,49 @@ def send_plan_stock_charts(cfg: AgentConfig, plan: dict[str, Any]) -> None:
         return
     day = str(plan.get("for_trading_day", ""))
     speculative = plan.get("risk_profile") == "speculative"
+    held = {str(h.get("symbol")) for h in (plan.get("holdings") or [])}
     for idx, rec in enumerate(recs, start=1):
         try:
-            img = render_recommendation_chart(rec, idx, day)
+            signal_lines = format_rec_signal_block(rec, speculative).splitlines()
+            sym = str(rec.get("symbol") or "?")
+            img = chart_with_recommendation_details(
+                rec,
+                idx,
+                day,
+                signal_lines=signal_lines,
+                held=sym in held,
+            )
             if not img:
                 continue
-            signal_lines = format_rec_signal_block(rec, speculative).splitlines()
-            caption = format_recommendation(rec, idx, plan, signal_lines=signal_lines)
+            # Details live in the PNG — keep caption tiny (Telegram RTL captions scramble).
+            caption = f"#{idx} {sym}"
             send_telegram_photo(
                 cfg,
                 img,
                 caption,
-                context=f"plan:stock:{rec['symbol']}",
+                context=f"plan:stock:{sym}",
                 parse_mode="HTML",
+                inbox_text=f"#{idx} {sym} · יום מסחר {day}",
             )
         except Exception as ex:
             logging.warning("Plan chart for %s failed: %s", rec.get("symbol"), ex)
+            try:
+                # Last resort: chart alone + fixed HTML caption (LTR islands).
+                bare = render_recommendation_chart(rec, idx, day)
+                if not bare:
+                    continue
+                caption = format_recommendation(
+                    rec, idx, plan, signal_lines=format_rec_signal_block(rec, speculative).splitlines()
+                )
+                send_telegram_photo(
+                    cfg,
+                    bare,
+                    caption,
+                    context=f"plan:stock:{rec.get('symbol')}",
+                    parse_mode="HTML",
+                )
+            except Exception as ex2:
+                logging.warning("Plan chart fallback for %s failed: %s", rec.get("symbol"), ex2)
 
 
 def send_stock_detail(cfg: AgentConfig, symbol: str) -> None:
@@ -1563,14 +1591,31 @@ def send_stock_detail(cfg: AgentConfig, symbol: str) -> None:
         logging.warning("Stock detail chart failed for %s: %s", sym, ex)
 
 
+def _plan_inbox_summary(plan: dict[str, Any]) -> str:
+    """Short plain summary for app inbox / photo caption companion."""
+    day = str(plan.get("for_trading_day", ""))
+    held = {str(h.get("symbol")) for h in (plan.get("holdings") or [])}
+    n_new = len(
+        [
+            r
+            for r in (plan.get("recommendations") or [])
+            if str(r.get("symbol")) not in held
+        ]
+    )
+    if n_new:
+        return f"תוכנית {day} · {n_new} קניות חדשות · שלח הכל לאישור"
+    return f"תוכנית {day} · אין קניות חדשות ממזומן"
+
+
 def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
-    """Summary card, summary table, then per-stock chart messages."""
+    """Plan as labeled HTML→PNG card, then portfolio snapshot + per-stock charts."""
     from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications, uses_telegram_notifications
 
+    summary = _plan_inbox_summary(plan)
     if uses_app_notifications(cfg):
         notify_user(
             cfg,
-            format_plan_message_for_app(plan),
+            summary,
             context="plan",
             plan=plan,
             telegram_sender=False,
@@ -1583,10 +1628,10 @@ def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
             send_telegram_photo(
                 cfg,
                 card_from_plan_summary(plan),
-                f"📋 תוכנית {day}",
+                f"תוכנית {day}",
                 context="plan",
                 parse_mode="HTML",
-                inbox_text=format_plan_message_for_app(plan),
+                inbox_text=summary,
                 log_inbox=False,
             )
         except Exception as ex:
@@ -1603,7 +1648,7 @@ def send_plan_notifications(cfg: AgentConfig, plan: dict[str, Any]) -> None:
                     "delivered" if fallback_ok else "failed",
                 )
     send_plan_portfolio_image(cfg)
-    send_plan_table_image(cfg, plan)
+    # Summary details are in card_from_plan_summary (HTML tables) — skip English table.
     send_plan_stock_charts(cfg, plan)
 
 
@@ -1664,6 +1709,35 @@ def send_report_notifications(cfg: AgentConfig, report: dict[str, Any]) -> None:
     except Exception as ex:
         logging.warning("Report card failed, HTML fallback: %s", ex)
         send_user_notification(cfg, text, context="report", parse_mode="HTML")
+
+
+def send_weekly_watchlist_notification(
+    cfg: AgentConfig,
+    result: dict[str, Any],
+    *,
+    context: str = "weekly_watchlist",
+) -> bool:
+    """Weekly scan summary as labeled HTML table PNG (short caption)."""
+    import re
+
+    from trading_pulse.telegram.telegram_format import format_weekly_watchlist
+
+    week = str(result.get("week") or "")
+    text = format_weekly_watchlist(result)
+    plain = re.sub(r"<[^>]+>", "", text).strip()
+    try:
+        from trading_pulse.telegram.reply_cards import card_weekly_watchlist
+
+        return send_telegram_photo(
+            cfg,
+            card_weekly_watchlist(result),
+            f"רשימת מסחר {week}" if week else "רשימת מסחר שבועית",
+            context=context,
+            inbox_text=plain[:500] or f"רשימת מסחר {week}",
+        )
+    except Exception as ex:
+        logging.warning("Weekly watchlist card failed, HTML fallback: %s", ex)
+        return send_user_notification(cfg, text, context=context, parse_mode="HTML")
 
 
 def send_entry_notifications(
@@ -3192,15 +3266,8 @@ def telegram_unknown_reply() -> str:
 
 
 def resend_plan_telegram(cfg: AgentConfig, plan: dict[str, Any]) -> None:
-    """Resend existing plan to Telegram (no regeneration)."""
-    from trading_pulse.telegram.app_notify import uses_telegram_notifications
-
-    if not uses_telegram_notifications(cfg):
-        return
-    text = format_plan_message(plan)
-    send_telegram_message(cfg, text, context="plan:resend", parse_mode="HTML")
-    send_plan_table_image(cfg, plan)
-    send_plan_stock_charts(cfg, plan)
+    """Resend existing plan as HTML card + charts (no regeneration)."""
+    send_plan_notifications(cfg, plan)
 
 
 def cancel_plan_telegram(cfg: AgentConfig) -> str:
@@ -3509,20 +3576,10 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                     reply_context = "reply:plan"
                     send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                 else:
+                    # Resend the plan bundle only — no extra «שלחתי שוב» card
+                    # (it looked like a new approval ask after the real plan).
                     plan = read_json(path)
                     resend_plan_telegram(cfg, plan)
-                    if plan.get("recommendations"):
-                        reply = (
-                            f"<b>📋 שלחתי שוב את התוכנית</b> · {trading_day}\n"
-                            f"לאישור: <code>הכל</code> או <code>1,2</code>"
-                        )
-                    else:
-                        reply = (
-                            f"<b>📋 שלחתי שוב את התוכנית</b> · {trading_day}\n"
-                            "אין המלצות היום — אין צורך באישור."
-                        )
-                    reply_context = "reply:plan"
-                    send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
                 handled += 1
                 continue
             elif kind == "start":
@@ -3646,16 +3703,13 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
 
                 def _run_weekly_scan() -> None:
                     from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
-                    from trading_pulse.telegram.telegram_format import escape_html, format_weekly_watchlist
+                    from trading_pulse.telegram.telegram_format import escape_html
 
                     try:
                         fresh_cfg = load_config()
                         result = build_weekly_watchlist(fresh_cfg)
-                        send_telegram_message(
-                            cfg,
-                            format_weekly_watchlist(result),
-                            context="reply:build_watchlist_done",
-                            parse_mode="HTML",
+                        send_weekly_watchlist_notification(
+                            cfg, result, context="reply:build_watchlist_done"
                         )
                     except Exception as ex:
                         logging.exception("Weekly watchlist (telegram) failed: %s", ex)
@@ -4915,9 +4969,7 @@ def cmd_build_watchlist(args: argparse.Namespace) -> None:
     print(json.dumps({k: v for k, v in result.items() if k != "symbols"}, indent=2, ensure_ascii=False))
     print("symbols:", ", ".join(result["symbols"]))
     if notify:
-        from trading_pulse.telegram.telegram_format import format_weekly_watchlist
-
-        send_user_notification(cfg, format_weekly_watchlist(result), context="weekly_watchlist", parse_mode="HTML")
+        send_weekly_watchlist_notification(cfg, result)
 
 
 def cmd_heartbeat(_: argparse.Namespace) -> None:
@@ -5223,16 +5275,10 @@ def run_scheduler_loop(service: bool = True) -> None:
         logging.info("JOB START: weekly watchlist scan")
         try:
             from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
-            from trading_pulse.telegram.telegram_format import format_weekly_watchlist
 
             result = build_weekly_watchlist(active_cfg)
             record_job("weekly_scan", "ok", f"{result['selected']} symbols")
-            send_user_notification(
-                active_cfg,
-                format_weekly_watchlist(result),
-                context="weekly_watchlist",
-                parse_mode="HTML",
-            )
+            send_weekly_watchlist_notification(active_cfg, result)
             logging.info("JOB END: weekly watchlist scan (%d symbols)", result["selected"])
         except Exception as ex:
             record_job("weekly_scan", "failed", str(ex))

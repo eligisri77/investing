@@ -28,5 +28,5 @@ When editing matched files, read `.cursor/skills/trading-pulse/SKILL.md` first.
 
 ## Plans
 
-- Send via `send_plan_notifications()` (summary + table + per-stock charts)
+- Send via `send_plan_notifications()` (HTML→PNG plan card + portfolio + per-stock charts)
 - Watchlist changes in `ticker_manager.py` → `config.json`; `generate_plan` reloads tickers

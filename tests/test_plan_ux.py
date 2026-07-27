@@ -19,6 +19,7 @@ from trading_pulse.telegram.telegram_format import (
     format_days_he,
     format_heartbeat,
     format_plan,
+    format_recommendation,
     format_report,
 )
 
@@ -184,12 +185,13 @@ def test_format_approval_reply_new_vs_held():
         plan=plan,
     )
     assert "תוכנית מאושרת" in text
-    assert "קניות מחר בפתיחה" in text
+    assert "קניות ממזומן — מחר בפתיחה" in text
     assert "BEAM" in text
-    assert "נשאר בתיק" in text
+    assert "נשאר בתיק (בלי שינוי אוטומטי)" in text
     assert "LABD" in text and "RIVN" in text
     assert "מאושר — RIVN, LABD, BEAM" not in text
     assert "לא נקנה שוב" in text
+    assert "קונה ממזומן בלבד" in text
 
 
 def test_format_approval_reply_lists_unfinished_holding_actions():
@@ -224,14 +226,13 @@ def test_format_approval_reply_lists_unfinished_holding_actions():
         plan=plan,
     )
     assert "תוכנית מאושרת" in text
-    assert "עדיין ידני" in text
-    assert "הכל לא ביצע" in text
+    assert "מומלץ ידנית" in text
     assert "מכור LABD" in text
     assert "החלף RIVN NVDA" in text
 
 
 def test_format_approval_reply_skips_holding_actions_not_in_plan_holdings():
-    """Closed positions (e.g. PATH at EOD) must not appear in «עדיין ידני»."""
+    """Closed positions (e.g. PATH at EOD) must not appear in manual tips."""
     from trading_pulse.telegram.telegram_format import format_approval_reply
 
     plan = {
@@ -266,6 +267,78 @@ def test_format_approval_reply_skips_holding_actions_not_in_plan_holdings():
     assert "מכור PATH" not in text
     assert "החלף RIVN" not in text
     assert "RIVN NVDA" not in text
+
+
+def test_format_approval_reply_swap_to_already_bought_becomes_sell():
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {"symbol": "CLF", "approved": True, "capital_usd": 87},
+        ],
+        "holdings": [
+            {"symbol": "MPC", "capital_usd": 296},
+            {"symbol": "NET", "capital_usd": 200},
+        ],
+        "holding_actions": [
+            {"symbol": "MPC", "verdict": "swap", "swap_to": "CLF"},
+            {"symbol": "NET", "verdict": "sell"},
+        ],
+        "allocation": {
+            "status": "applied",
+            "amounts": {"CLF": 87},
+            "holdings": [
+                {"symbol": "MPC", "capital_usd": 296},
+                {"symbol": "NET", "capital_usd": 200},
+            ],
+        },
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-27",
+        picked_symbols=["CLF"],
+        all_approved_symbols=["CLF"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "קניות ממזומן — מחר בפתיחה" in text
+    assert "מומלץ ידנית" in text
+    assert "מכור MPC" in text
+    assert "כבר מאושרת ממזומן" in text
+    assert "החלף MPC CLF" not in text
+    assert "למכור <b>NET</b>" in text
+    assert "מכור NET:" not in text  # avoid «מכור NET: מכור NET»
+    assert "מכור NET" in text
+    assert "קונה ממזומן בלבד" in text
+    assert "לא מוכר ולא מחליף" in text
+
+
+def test_format_approval_reply_hold_only_no_cash_note():
+    """Full confirm with only held names — no cash-buy section / הכל note."""
+    from trading_pulse.telegram.telegram_format import format_approval_reply
+
+    plan = {
+        "recommendations": [
+            {"symbol": "LABD", "approved": True, "capital_usd": 333},
+        ],
+        "holdings": [{"symbol": "LABD", "capital_usd": 333}],
+        "allocation": {
+            "status": "applied",
+            "amounts": {},
+            "holdings": [{"symbol": "LABD", "capital_usd": 333}],
+        },
+    }
+    text = format_approval_reply(
+        trading_day="2026-07-27",
+        picked_symbols=["LABD"],
+        all_approved_symbols=["LABD"],
+        auto_allocated=True,
+        plan=plan,
+    )
+    assert "תוכנית מאושרת" in text
+    assert "נשאר בתיק" in text
+    assert "אין קניות חדשות — רק המשך החזקה" in text
+    assert "קניות ממזומן" not in text
+    assert "קונה ממזומן בלבד" not in text
 
 
 def test_format_approval_reply_method2_short_wording():
@@ -593,3 +666,30 @@ def test_plan_copy_distinguishes_synced_draft_from_stale_confirmed():
     assert "ההזמנה שכבר אושרה לא שונתה" not in synced
     assert "התיק השתנה לאחר מכירה ידנית של U" in stale
     assert "ההזמנה שכבר אושרה לא שונתה" in stale
+
+
+def test_format_recommendation_leading_minus_in_stop_pct():
+    """HTML fallback caption: stop % uses leading unicode minus inside LTR <code>."""
+    text = format_recommendation(
+        {
+            "symbol": "CLF",
+            "capital_usd": 87,
+            "entry_ref_price": 10.96,
+            "stop_loss_pct": 0.12,
+            "take_profit_pct": 0.25,
+            "floor_price": 9.64,
+            "take_profit_price": 13.70,
+        },
+        1,
+        {"for_trading_day": "2026-07-27", "holdings": []},
+        signal_lines=["מומנטום חיובי"],
+    )
+    assert "#1" in text and "CLF" in text
+    assert "מחיר תחתון" in text
+    assert f"(\u200e\u221212.0%\u200e)" in text or "\u221212.0%" in text
+    assert "12.0%-" not in text
+    assert "+25.0%" in text
+    assert "<code>" in text
+    assert "הצעה" in text
+    assert "$87" in text or "$87.00" in text or "87" in text
+    assert "מומנטום חיובי" in text

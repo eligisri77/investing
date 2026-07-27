@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "TradingPulse"
-APP_VERSION = "0.1.13"
+APP_VERSION = "0.1.16"
 INSTANCE_DIR_NAME = "instance"
 
 

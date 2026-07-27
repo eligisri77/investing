@@ -263,10 +263,12 @@ def test_format_weekly_watchlist_mentions_successful_scan():
     assert "120" in html
     assert "420" in html
     assert "אותות אסטרטגיה" in html
-    assert "rising_three" in html
-    assert "method2" in html
+    assert "Rising Three" in html
+    assert "נרות סיניים 2" in html
     assert "18" in html
     assert "AAA" in html and "BBB" in html
+    assert "דוגמאות לעריכת הרשימה" in html
+    assert "09:00 ישראל" in html
 
 
 def test_format_weekly_watchlist_omits_strategy_line_when_unused():
@@ -284,8 +286,9 @@ def test_format_weekly_watchlist_omits_strategy_line_when_unused():
         }
     )
     assert "נסרקו בהצלחה" in html
+    assert "שיטות שזוהו" not in html
+    assert "מומנטום · תנודתיות · נפח" in html
     assert "אותות אסטרטגיה" not in html
-    assert "מומנטום + תנודתיות + נפח" in html
 
 
 def test_format_weekly_watchlist_shows_top10_and_more_count():
@@ -302,7 +305,7 @@ def test_format_weekly_watchlist_shows_top10_and_more_count():
             "strategies_used": [],
         }
     )
-    assert "Top 10:" in html
+    assert "Top 10 ברשימה" in html
     for sym in symbols[:10]:
         assert sym in html
     assert "S59" not in html

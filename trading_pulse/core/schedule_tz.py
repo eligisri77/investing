@@ -23,12 +23,13 @@ def utc_hhmm_to_zone(hhmm: str, tz: ZoneInfo, *, on_day: date | None = None) -> 
 
 
 def format_dual_time(hhmm: str, *, on_day: date | None = None) -> str:
-    """e.g. 13:35 UTC · 16:35 ישראל"""
+    """e.g. ‎16:35‎ ישראל (‎13:35‎ UTC) — Israel first, LRM keeps times LTR."""
     if not hhmm or not TIME_RE.fullmatch(str(hhmm).strip()):
         return ""
     utc = str(hhmm).strip()
     il = utc_hhmm_to_zone(utc, ISRAEL, on_day=on_day)
-    return f"{utc} UTC · {il} ישראל"
+    lrm = "\u200e"
+    return f"{lrm}{il}{lrm} ישראל ({lrm}{utc}{lrm} UTC)"
 
 
 def format_triple_time(hhmm: str, *, on_day: date | None = None) -> str:

@@ -11,8 +11,10 @@ from trading_pulse.telegram.reply_cards import (
     card_help,
     card_sell,
     card_swap,
+    chart_with_recommendation_details,
     render_html_message_card,
     render_reply_card,
+    stack_png_vertical,
 )
 
 
@@ -148,9 +150,11 @@ def test_plan_summary_card():
         "equity_snapshot": 986,
         "holdings": [{"symbol": "LABD", "capital_usd": 333}],
         "recommendations": [{"symbol": "NVDA", "capital_usd": 20}],
+        "holding_actions": [{"symbol": "LABD", "verdict": "hold", "pnl_pct": 1.2}],
     }
     png = card_from_plan_summary(plan)
     assert png.startswith(b"\x89PNG")
+    assert len(png) > 2000
 
 
 def test_daily_report_card_squares():
@@ -570,3 +574,264 @@ def test_send_entry_notifications_falls_back_to_html(monkeypatch):
     assert notify_calls[0]["context"] == "entry"
     assert notify_calls[0]["parse_mode"] == "HTML"
     assert "ARWR" in notify_calls[0]["text"]
+
+
+def test_send_weekly_watchlist_notification_sends_card_photo(monkeypatch):
+    from trading_pulse.agent.dryrun_agent import (
+        AgentConfig,
+        send_weekly_watchlist_notification,
+    )
+
+    photo_calls: list[dict] = []
+    notify_calls: list = []
+    result = {
+        "week": "2026-W30",
+        "scanned": 120,
+        "universe_size": 420,
+        "selected": 60,
+        "symbols": ["AAA", "BBB"],
+        "strategies_used": ["method2"],
+        "strategy_hit_symbols": 5,
+    }
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_weekly_watchlist",
+        lambda _result: b"\x89PNG\r\n\x1a\nWEEKLY",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.send_telegram_photo",
+        lambda _cfg, img, caption, **kw: photo_calls.append(
+            {"img": img, "caption": caption, **kw}
+        )
+        or True,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.send_user_notification",
+        lambda *_a, **_k: notify_calls.append(True) or True,
+    )
+
+    ok = send_weekly_watchlist_notification(AgentConfig(), result)
+
+    assert ok is True
+    assert len(photo_calls) == 1
+    assert photo_calls[0]["caption"] == "רשימת מסחר 2026-W30"
+    assert photo_calls[0]["context"] == "weekly_watchlist"
+    assert photo_calls[0]["img"] == b"\x89PNG\r\n\x1a\nWEEKLY"
+    inbox = photo_calls[0].get("inbox_text") or ""
+    assert "נסרקו בהצלחה" in inbox
+    assert "AAA" in inbox
+    assert "<" not in inbox  # HTML stripped for app inbox
+    assert notify_calls == []
+
+
+def test_send_weekly_watchlist_notification_falls_back_to_html(monkeypatch):
+    from trading_pulse.agent.dryrun_agent import (
+        AgentConfig,
+        send_weekly_watchlist_notification,
+    )
+
+    notify_calls: list[dict] = []
+
+    def _boom(_result):
+        raise RuntimeError("pillow boom")
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_weekly_watchlist",
+        _boom,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.send_user_notification",
+        lambda _cfg, text, **kw: notify_calls.append({"text": text, **kw}) or True,
+    )
+
+    ok = send_weekly_watchlist_notification(
+        AgentConfig(),
+        {
+            "week": "2026-W30",
+            "scanned": 50,
+            "universe_size": 420,
+            "selected": 10,
+            "symbols": ["ZZZ"],
+            "strategies_used": [],
+        },
+        context="weekly_watchlist:cli",
+    )
+
+    assert ok is True
+    assert len(notify_calls) == 1
+    assert notify_calls[0]["context"] == "weekly_watchlist:cli"
+    assert notify_calls[0]["parse_mode"] == "HTML"
+    assert "נסרקו בהצלחה" in notify_calls[0]["text"]
+    assert "ZZZ" in notify_calls[0]["text"]
+
+
+def test_send_weekly_watchlist_notification_empty_week_caption(monkeypatch):
+    from trading_pulse.agent.dryrun_agent import (
+        AgentConfig,
+        send_weekly_watchlist_notification,
+    )
+
+    photo_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_weekly_watchlist",
+        lambda _result: b"\x89PNG\r\n\x1a\nWEEKLY",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.send_telegram_photo",
+        lambda _cfg, img, caption, **kw: photo_calls.append(
+            {"caption": caption, **kw}
+        )
+        or True,
+    )
+
+    send_weekly_watchlist_notification(
+        AgentConfig(),
+        {"scanned": 1, "universe_size": 1, "selected": 1, "symbols": ["A"]},
+    )
+
+    assert photo_calls[0]["caption"] == "רשימת מסחר שבועית"
+
+
+def _tiny_rgb_png(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    im = Image.new("RGB", (width, height), color)
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_stack_png_vertical_combines_heights():
+    from io import BytesIO
+
+    from PIL import Image
+
+    top = _tiny_rgb_png(80, 30, (10, 20, 30))
+    bottom = _tiny_rgb_png(80, 20, (200, 100, 50))
+    stacked = stack_png_vertical(top, bottom, gap=8)
+    assert stacked.startswith(b"\x89PNG")
+    w, h = Image.open(BytesIO(stacked)).size
+    assert w == 80
+    assert h == 30 + 8 + 20
+
+
+def test_stack_png_vertical_scales_bottom_to_top_width():
+    from io import BytesIO
+
+    from PIL import Image
+
+    top = _tiny_rgb_png(100, 40, (1, 2, 3))
+    bottom = _tiny_rgb_png(50, 20, (9, 8, 7))
+    stacked = stack_png_vertical(top, bottom, gap=4)
+    w, h = Image.open(BytesIO(stacked)).size
+    assert w == 100
+    # bottom scaled 50→100 → height 20→40
+    assert h == 40 + 4 + 40
+
+
+def test_chart_with_recommendation_details_stacks(monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    chart = _tiny_rgb_png(120, 50, (30, 30, 60))
+    details = _tiny_rgb_png(120, 25, (60, 30, 30))
+    monkeypatch.setattr(
+        "trading_pulse.telegram.telegram_images.render_recommendation_chart",
+        lambda *_a, **_k: chart,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.html_tables.card_png_from_html",
+        lambda *_a, **_k: details,
+    )
+    out = chart_with_recommendation_details(
+        {"symbol": "CLF", "capital_usd": 87, "entry_ref_price": 10.0,
+         "stop_loss_pct": 0.12, "take_profit_pct": 0.25,
+         "floor_price": 8.8, "take_profit_price": 12.5},
+        1,
+        "2026-07-27",
+        signal_lines=["מומנטום"],
+    )
+    assert out is not None
+    assert out.startswith(b"\x89PNG")
+    w, h = Image.open(BytesIO(out)).size
+    assert w == 120
+    assert h == 50 + 8 + 25  # default gap=8
+
+
+def test_chart_with_recommendation_details_returns_none_without_chart(monkeypatch):
+    monkeypatch.setattr(
+        "trading_pulse.telegram.telegram_images.render_recommendation_chart",
+        lambda *_a, **_k: None,
+    )
+    assert (
+        chart_with_recommendation_details({"symbol": "X"}, 1, "2026-07-27") is None
+    )
+
+
+def test_chart_with_recommendation_details_falls_back_to_chart(monkeypatch):
+    chart = _tiny_rgb_png(60, 20, (11, 11, 11))
+    monkeypatch.setattr(
+        "trading_pulse.telegram.telegram_images.render_recommendation_chart",
+        lambda *_a, **_k: chart,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.html_tables.card_png_from_html",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("html boom")),
+    )
+    out = chart_with_recommendation_details({"symbol": "CLF"}, 1, "2026-07-27")
+    assert out == chart
+
+
+def test_send_plan_stock_charts_short_caption(monkeypatch):
+    from trading_pulse.agent.dryrun_agent import AgentConfig, send_plan_stock_charts
+
+    photo_calls: list[dict] = []
+    stacked = b"\x89PNG\r\n\x1a\nSTACKED"
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.app_notify.uses_telegram_notifications",
+        lambda _cfg: True,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.chart_with_recommendation_details",
+        lambda *_a, **_k: stacked,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.dryrun_agent.send_telegram_photo",
+        lambda _cfg, img, caption, **kw: photo_calls.append(
+            {"img": img, "caption": caption, **kw}
+        )
+        or True,
+    )
+
+    send_plan_stock_charts(
+        AgentConfig(notification_mode="telegram"),
+        {
+            "for_trading_day": "2026-07-27",
+            "recommendations": [
+                {
+                    "symbol": "CLF",
+                    "capital_usd": 87,
+                    "entry_ref_price": 10.96,
+                    "stop_loss_pct": 0.12,
+                    "take_profit_pct": 0.25,
+                    "floor_price": 9.64,
+                    "take_profit_price": 13.70,
+                    "score": 16.3,
+                }
+            ],
+            "holdings": [],
+        },
+    )
+
+    assert len(photo_calls) == 1
+    assert photo_calls[0]["caption"] == "#1 CLF"
+    assert photo_calls[0]["img"] == stacked
+    assert photo_calls[0]["context"] == "plan:stock:CLF"
+    assert photo_calls[0]["parse_mode"] == "HTML"
+    assert "מחיר תחתון" not in photo_calls[0]["caption"]
+    assert "יום מסחר 2026-07-27" in (photo_calls[0].get("inbox_text") or "")

@@ -345,9 +345,9 @@ def card_help() -> bytes:
         accent="cyan",
         bullets=[
             "התחל — קונה 3 מניות ומחלק את $1,000",
-            "בערב — תוכנית למחר · שלח הכל לאישור",
-            "בבוקר — כניסה במחיר פתיחה",
-            "בערב — דוח יומי",
+            "בערב — כרטיס PNG «תוכנית למחר» + גרפים (פרטים בתמונה · כיתוב #1 CLF)",
+            "בבוקר — תמונת כניסה במחיר פתיחה",
+            "בערב — כרטיס PNG «דוח יומי»",
         ],
         chips=["מכור 1 $100", "מניה NVDA", "תקנה 1 $20", "תיק"],
         footer="מכור 1 = הכל · מכור 1 $100 = רק חלק · מניה X = ניתוח+גרף",
@@ -533,59 +533,55 @@ def card_daily_report(report: dict[str, Any]) -> bytes:
     return card_png_from_html(doc, width=900, height=2200, pil_fallback_fn=_pil)
 
 
+def card_weekly_watchlist(result: dict[str, Any]) -> bytes:
+    """Weekly scan summary — HTML labeled card → PNG."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_weekly_watchlist
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_weekly_watchlist(result)
+
+    def _pil() -> bytes:
+        week = str(result.get("week") or "")
+        syms = []
+        for item in (result.get("symbols") or [])[:10]:
+            syms.append(str(item.get("symbol") if isinstance(item, dict) else item))
+        rows = [[str(i + 1), s] for i, s in enumerate(syms)] or [["—", "—"]]
+        return _render_table(
+            title=_pil_hebrew(f"רשימת מסחר {week}"),
+            subtitle=f"{int(result.get('scanned') or 0)}/{int(result.get('universe_size') or 0)}",
+            headers=["#", _pil_hebrew("סימול")],
+            rows=rows,
+        )
+
+    return card_png_from_html(doc, width=720, height=2000, pil_fallback_fn=_pil)
+
+
 def card_from_plan_summary(plan: dict[str, Any]) -> bytes:
-    """Compact plan overview card (details still in table/charts)."""
-    day = str(plan.get("for_trading_day", ""))
-    free = float(plan.get("available_capital_usd", 0))
-    invested = float(plan.get("deployed_capital_usd", 0))
-    equity = float(plan.get("equity_snapshot", 0))
-    recs = plan.get("recommendations") or []
-    holdings = plan.get("holdings") or []
-    held = {str(h["symbol"]) for h in holdings}
-    new_recs = [r for r in recs if str(r["symbol"]) not in held]
-    actions = plan.get("holding_actions") or []
-    has_manual = any(str(a.get("verdict")) in {"swap", "sell", "take_profit"} for a in actions)
-    bullets = [f"מזומן ${free:.0f} · מושקע ${invested:.0f} · סה\"כ ${equity:.0f}"]
-    for h in holdings[:4]:
-        bullets.append(f"בתיק: {h['symbol']} ${float(h.get('capital_usd', 0)):.0f}")
-    for a in actions:
-        if str(a.get("verdict")) == "swap" and a.get("swap_to"):
-            bullets.append(f"החלף: {a['symbol']} → {a['swap_to']}")
-        elif str(a.get("verdict")) in {"sell", "take_profit"}:
-            bullets.append(f"מכור: {a['symbol']}")
-    for r in new_recs[:5]:
-        label = str(r["symbol"])
-        strat = str(r.get("strategy") or "")
-        if strat == "method2":
-            side = str(r.get("side") or "LONG").upper()
-            tag = "נרות סיניים 2 שורט" if side == "SHORT" else "נרות סיניים 2"
-            label = f"{label} ({tag})"
-        elif strat == "rising_three_methods":
-            label = f"{label} (נרות)"
-        bullets.append(f"חדש: {label} ${float(r.get('capital_usd', 0)):.0f}")
-    if not new_recs:
-        bullets.append("אין קניות חדשות ממזומן")
-    if not recs and not holdings:
-        bullets.append("אין המלצות היום")
-    chips = []
-    if new_recs:
-        chips.append("הכל")
-    if has_manual:
-        chips.append("החלף")
-    if not chips:
-        chips = ["תיק"]
-    footer = (
-        "הכל = קניות ממזומן · החלף ידני בטקסט"
-        if new_recs or has_manual
-        else "אין צורך באישור"
-    )
-    return render_reply_card(
-        f"תוכנית · {day}",
-        accent="cyan",
-        bullets=bullets,
-        chips=chips,
-        footer=footer,
-    )
+    """Evening plan — full labeled HTML tables → PNG (not a text wall)."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_plan
+    from trading_pulse.telegram.telegram_images import _pil_hebrew, _render_table
+
+    doc = html_plan(plan)
+
+    def _pil() -> bytes:
+        day = str(plan.get("for_trading_day") or "")
+        free = float(plan.get("available_capital_usd") or 0)
+        recs = plan.get("recommendations") or []
+        holdings = plan.get("holdings") or []
+        held = {str(h["symbol"]) for h in holdings}
+        new_recs = [r for r in recs if str(r["symbol"]) not in held]
+        rows = [
+            [str(r.get("symbol")), f"${float(r.get('capital_usd') or 0):.0f}"]
+            for r in new_recs[:8]
+        ] or [["—", "—"]]
+        return _render_table(
+            title=_pil_hebrew(f"תוכנית {day}"),
+            subtitle=f"cash ${free:.0f}",
+            headers=[_pil_hebrew("סימול"), _pil_hebrew("סכום")],
+            rows=rows,
+        )
+
+    return card_png_from_html(doc, width=920, height=3200, pil_fallback_fn=_pil)
 
 
 def card_stock_detail(detail: dict[str, Any]) -> bytes:
@@ -692,4 +688,49 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
         ),
         footer=footer,
     )
+
+
+def stack_png_vertical(top: bytes, bottom: bytes, *, gap: int = 8, bg=None) -> bytes:
+    """Stack two PNGs into one image (same width; bottom scaled if needed)."""
+    fill = bg if bg is not None else BG
+    top_im = Image.open(io.BytesIO(top)).convert("RGB")
+    bot_im = Image.open(io.BytesIO(bottom)).convert("RGB")
+    if bot_im.width != top_im.width:
+        new_h = max(1, int(bot_im.height * (top_im.width / bot_im.width)))
+        bot_im = bot_im.resize((top_im.width, new_h), Image.Resampling.LANCZOS)
+    out = Image.new("RGB", (top_im.width, top_im.height + gap + bot_im.height), fill)
+    out.paste(top_im, (0, 0))
+    out.paste(bot_im, (0, top_im.height + gap))
+    buf = io.BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def chart_with_recommendation_details(
+    rec: dict[str, Any],
+    idx: int,
+    trading_day: str,
+    *,
+    signal_lines: list[str] | None = None,
+    held: bool = False,
+) -> bytes | None:
+    """Price chart + Hebrew labeled details strip (details not in Telegram caption)."""
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_recommendation
+    from trading_pulse.telegram.telegram_images import render_recommendation_chart
+
+    chart = render_recommendation_chart(rec, idx, trading_day)
+    if not chart:
+        return None
+    try:
+        doc = html_recommendation(
+            rec,
+            idx,
+            trading_day,
+            signal_lines=signal_lines,
+            held=held,
+        )
+        details = card_png_from_html(doc, width=920, height=1800)
+        return stack_png_vertical(chart, details)
+    except Exception:
+        return chart
 

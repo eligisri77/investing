@@ -10,16 +10,21 @@ from trading_pulse.telegram.html_tables import (
     html_entry,
     html_heartbeat,
     html_intraday,
+    html_plan,
     html_portfolio,
+    html_recommendation,
+    html_weekly_watchlist,
     wrap_card_html,
 )
 from trading_pulse.telegram.reply_cards import (
     card_allocation_prompt,
     card_daily_report,
     card_entry,
+    card_from_plan_summary,
     card_heartbeat,
     card_intraday_monitor,
     card_portfolio,
+    card_weekly_watchlist,
 )
 
 
@@ -389,3 +394,219 @@ def test_wrap_card_contains_rtl():
     doc = wrap_card_html("כותרת", "<p>גוף</p>")
     assert 'dir="rtl"' in doc
     assert "כותרת" in doc
+
+
+def test_html_weekly_watchlist_labels_and_hebrew_strategies():
+    doc = html_weekly_watchlist(
+        {
+            "week": "W30-2026",
+            "scanned": 139,
+            "universe_size": 420,
+            "selected": 60,
+            "symbols": ["CLF", "TSLL", "WOLF"] + [f"S{i}" for i in range(57)],
+            "strategies_used": ["method2", "relative_strength", "rising_three", "vcp_breakout"],
+            "strategy_hit_symbols": 47,
+        }
+    )
+    assert "נסרקו בהצלחה" in doc
+    assert "139 מתוך 420" in doc
+    assert "נבחרו לרשימה" in doc
+    assert "נרות סיניים 2" in doc
+    assert "חוזק יחסי" in doc
+    assert "Top 10 ברשימה" in doc
+    assert "CLF" in doc
+    assert "דוגמאות לעריכת הרשימה" in doc
+    assert "09:00 ישראל" in doc
+
+
+def test_card_weekly_watchlist_html_png():
+    png = card_weekly_watchlist(
+        {
+            "week": "W30-2026",
+            "scanned": 139,
+            "universe_size": 420,
+            "selected": 60,
+            "symbols": ["CLF", "TSLL", "WOLF", "LMT", "QS"],
+            "strategies_used": ["method2"],
+            "strategy_hit_symbols": 3,
+        }
+    )
+    assert png.startswith(b"\x89PNG")
+    assert len(png) > 2000
+
+
+def test_html_plan_labels_manual_and_new_buys():
+    doc = html_plan(
+        {
+            "for_trading_day": "2026-07-27",
+            "available_capital_usd": 260,
+            "deployed_capital_usd": 708,
+            "equity_snapshot": 968,
+            "monthly_target_summary": "יעד $2000 · נוכחי $968",
+            "holdings": [
+                {
+                    "symbol": "NET",
+                    "capital_usd": 200,
+                    "strategy_id": "relative_strength",
+                    "unrealized_pnl_pct": -5.9,
+                },
+                {"symbol": "ARWR", "capital_usd": 147, "unrealized_pnl_pct": -4.1},
+            ],
+            "holding_actions": [
+                {"symbol": "NET", "verdict": "sell", "pnl_pct": -5.9, "capital_usd": 200},
+                {
+                    "symbol": "ARWR",
+                    "verdict": "swap",
+                    "swap_to": "CLF",
+                    "pnl_pct": -4.1,
+                },
+            ],
+            "recommendations": [
+                {"symbol": "CLF", "capital_usd": 87, "score": 16.3, "strategy_id": "score"},
+                {"symbol": "TSLL", "capital_usd": 87, "score": 10.3, "strategy_id": "score"},
+            ],
+        }
+    )
+    assert "יום מסחר" in doc
+    assert "מזומן פנוי" in doc
+    assert "בתיק עכשיו" in doc
+    assert "לא תויגה" in doc
+    assert "-5.9%" in doc
+    assert "מומלץ ידנית" in doc
+    assert "מכור NET" in doc
+    assert "כבר מאושרת" in doc
+    assert "קניות חדשות ממזומן" in doc
+    assert "CLF" in doc
+    assert "איך לאשר" in doc
+    assert "הכל" in doc
+    assert "לוח זמנים" in doc
+
+
+def test_html_plan_swap_tip_when_target_not_in_buys():
+    """Swap target not among cash buys → החלף tip (not sell-to-make-room)."""
+    doc = html_plan(
+        {
+            "for_trading_day": "2026-07-27",
+            "available_capital_usd": 100,
+            "deployed_capital_usd": 800,
+            "equity_snapshot": 900,
+            "holdings": [{"symbol": "RIVN", "capital_usd": 200, "unrealized_pnl_pct": -3.0}],
+            "holding_actions": [
+                {
+                    "symbol": "RIVN",
+                    "verdict": "swap",
+                    "swap_to": "NVDA",
+                    "pnl_pct": -3.0,
+                }
+            ],
+            "recommendations": [
+                {"symbol": "TSLA", "capital_usd": 100, "score": 12.0, "strategy_id": "score"},
+            ],
+        }
+    )
+    assert "החלף RIVN NVDA" in doc
+    assert "החלף → NVDA" in doc
+    assert "כבר מאושרת" not in doc
+    assert "מכור RIVN" not in doc
+
+
+def test_html_plan_no_new_buys_path():
+    """Holdings but no fresh cash buys → empty buys section + no הכל chip."""
+    doc = html_plan(
+        {
+            "for_trading_day": "2026-07-27",
+            "available_capital_usd": 5,
+            "deployed_capital_usd": 990,
+            "equity_snapshot": 995,
+            "holdings": [
+                {
+                    "symbol": "LABD",
+                    "capital_usd": 333,
+                    "strategy_id": "score",
+                    "unrealized_pnl_pct": 1.2,
+                }
+            ],
+            "holding_actions": [
+                {"symbol": "LABD", "verdict": "hold", "pnl_pct": 1.2},
+            ],
+            # Already held — not a "new" cash buy
+            "recommendations": [
+                {"symbol": "LABD", "capital_usd": 333, "score": 9.0, "strategy_id": "score"},
+            ],
+        }
+    )
+    assert "אין קניות חדשות ממזומן היום" in doc
+    assert "<h2>קניות חדשות</h2>" in doc
+    assert "<h2>קניות חדשות ממזומן</h2>" not in doc
+    assert "אין קניות ממזומן לאשר" in doc
+    assert 'class="chip">הכל</span>' not in doc
+    assert "+1.2%" in doc
+
+
+def test_html_plan_method2_entry_and_fallback_note():
+    doc = html_plan(
+        {
+            "for_trading_day": "2026-07-27",
+            "available_capital_usd": 200,
+            "deployed_capital_usd": 0,
+            "equity_snapshot": 200,
+            "holdings": [],
+            "holding_actions": [],
+            "fallback_pick": True,
+            "recommendations": [
+                {
+                    "symbol": "SOXL",
+                    "capital_usd": 100,
+                    "score": 8.0,
+                    "strategy": "method2",
+                    "side": "SHORT",
+                },
+            ],
+        }
+    )
+    assert "פריצה בלבד" in doc
+    assert "שורט" in doc
+    assert "אין מניה מעל סף האיכות" in doc
+    assert "הכל" in doc
+
+
+def test_card_plan_html_png():
+    png = card_from_plan_summary(
+        {
+            "for_trading_day": "2026-07-27",
+            "available_capital_usd": 260,
+            "deployed_capital_usd": 708,
+            "equity_snapshot": 968,
+            "holdings": [{"symbol": "NET", "capital_usd": 200}],
+            "recommendations": [{"symbol": "CLF", "capital_usd": 87}],
+        }
+    )
+    assert png.startswith(b"\x89PNG")
+    assert len(png) > 2000
+
+
+def test_html_recommendation_leading_minus_and_labels():
+    doc = html_recommendation(
+        {
+            "symbol": "CLF",
+            "capital_usd": 87,
+            "entry_ref_price": 10.96,
+            "stop_loss_pct": 0.12,
+            "take_profit_pct": 0.25,
+            "floor_price": 9.64,
+            "take_profit_price": 13.70,
+            "score": 16.3,
+        },
+        1,
+        "2026-07-27",
+        signal_lines=["מומנטום חיובי"],
+    )
+    assert "יום מסחר" in doc
+    assert "מחיר תחתון" in doc
+    assert "-12%" in doc
+    assert "12%-" not in doc
+    assert "(-12%)" not in doc or "-12%" in doc  # parenthesized with leading minus OK
+    assert "+25%" in doc
+    assert "הצעה" in doc
+    assert "CLF" in doc
+    assert "מומנטום חיובי" in doc

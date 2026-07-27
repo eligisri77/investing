@@ -76,9 +76,11 @@ Flow helpers: `trading_flow.py` (`plan_intent`, `auto_allocate_equal`, `funding_
 
 Use `send_plan_notifications(cfg, plan)` — not raw `send_user_notification` alone:
 
-1. Summary text (`format_plan_message` → `telegram_format.format_plan`)
-2. Table image (`send_plan_table_image`)
+1. HTML→PNG plan card (`card_from_plan_summary` / `html_plan`) — short caption; details inside the image
+2. Portfolio snapshot image (`send_plan_portfolio_image`)
 3. Per-stock chart + caption (`send_plan_stock_charts`)
+
+Fallback if PNG fails: `format_plan` HTML text. Do not send the English plan table image alongside the card.
 
 `generate_plan()` reloads tickers from `ticker_manager.list_tickers()` — no restart needed after watchlist changes.
 

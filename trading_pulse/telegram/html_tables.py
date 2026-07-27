@@ -834,6 +834,359 @@ def html_heartbeat(
     return wrap_card_html("הסוכן חי", _kv_table(rows), accent="green", footer=footer)
 
 
+_STRATEGY_HE = {
+    "method2": "נרות סיניים 2",
+    "rising_three": "Rising Three",
+    "rising_three_methods": "Rising Three",
+    "relative_strength": "חוזק יחסי",
+    "vcp_breakout": "VCP",
+    "trend_pullback": "תיקון במגמה",
+    "score": "מומנטום",
+    "score_momentum": "מומנטום",
+}
+
+
+def strategy_ids_he(strategies: list[Any] | None) -> list[str]:
+    out: list[str] = []
+    for s in strategies or []:
+        key = str(s or "").strip()
+        if not key:
+            continue
+        out.append(_STRATEGY_HE.get(key, key))
+    return out
+
+
+def _weekly_symbol_names(result: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for item in result.get("symbols") or []:
+        if isinstance(item, dict):
+            sym = str(item.get("symbol") or "").strip()
+        else:
+            sym = str(item).strip()
+        if sym:
+            names.append(sym)
+    return names
+
+
+def html_weekly_watchlist(result: dict[str, Any]) -> str:
+    """Weekly universe scan summary as labeled HTML card."""
+    week = str(result.get("week") or "")
+    selected = int(result.get("selected") or 0)
+    scanned = int(result.get("scanned") or 0)
+    universe = int(result.get("universe_size") or 0)
+    strategies = list(result.get("strategies_used") or [])
+    strategy_hits = int(result.get("strategy_hit_symbols") or 0)
+    sym_names = _weekly_symbol_names(result)
+    preview = sym_names[:10]
+    more = max(0, len(sym_names) - len(preview))
+
+    rank_bits = ["מומנטום", "תנודתיות", "נפח"]
+    if strategies:
+        rank_bits.append("אותות אסטרטגיה")
+
+    kv: list[tuple[str, str, str]] = [
+        ("שבוע", week or "—", ""),
+        ("נסרקו בהצלחה", f"{scanned} מתוך {universe}", ""),
+        ("נבחרו לרשימה", str(selected), ""),
+        ("דירוג לפי", " · ".join(rank_bits), "muted"),
+    ]
+    if strategies:
+        he = strategy_ids_he(strategies)
+        kv.append(("עם אות אסטרטגיה", f"{strategy_hits} מתוך {selected}", ""))
+        kv.append(("שיטות שזוהו", " · ".join(he) if he else "—", "muted"))
+
+    parts = [_kv_table(kv)]
+    if preview:
+        parts.append("<h2>Top 10 ברשימה</h2>")
+        rows = [
+            [(str(i + 1), ""), (sym, "sym")]
+            for i, sym in enumerate(preview)
+        ]
+        parts.append(_table(["#", "סימול"], rows, numeric_cols={0}))
+        if more:
+            parts.append(
+                f'<p class="foot">ועוד {more} מניות ברשימה המלאה — דשבורד או פקודת <b>מניות</b></p>'
+            )
+
+    parts.append("<h2>דוגמאות לעריכת הרשימה</h2>")
+    parts.append('<div class="chips">')
+    for c in ("הוסף SYMBOL", "הסר SYMBOL", "מניות"):
+        parts.append(f'<span class="chip">{_esc(c)}</span>')
+    parts.append("</div>")
+
+    return wrap_card_html(
+        f"רשימת מסחר לשבוע {week}",
+        "".join(parts),
+        footer=(
+            "התוכנית היומית סורקת רק את הרשימה הזו · "
+            "סריקה אוטומטית: יום ראשון ~09:00 ישראל"
+        ),
+    )
+
+
+_VERDICT_HE = {
+    "hold": "החזק",
+    "sell": "מכור",
+    "swap": "החלף",
+    "take_profit": "ממש רווח",
+}
+
+
+def html_plan(plan: dict[str, Any]) -> str:
+    """Evening plan as labeled HTML tables (readable on phone)."""
+    day = str(plan.get("for_trading_day") or "")
+    free = float(plan.get("available_capital_usd") or 0)
+    invested = float(plan.get("deployed_capital_usd") or 0)
+    equity = float(plan.get("equity_snapshot") or 0)
+    holdings = list(plan.get("holdings") or [])
+    actions = list(plan.get("holding_actions") or [])
+    recs = list(plan.get("recommendations") or [])
+    held = {str(h.get("symbol")) for h in holdings}
+    new_recs = [r for r in recs if str(r.get("symbol")) not in held]
+    action_by = {str(a.get("symbol")): a for a in actions}
+    buy_syms = {str(r.get("symbol")) for r in new_recs}
+
+    kv: list[tuple[str, str, str]] = [
+        ("יום מסחר", day or "—", ""),
+        ("מזומן פנוי", fmt_money_plain(free, whole=True), ""),
+        ("מושקע", fmt_money_plain(invested, whole=True), ""),
+        ("הון", fmt_money_plain(equity, whole=True), ""),
+    ]
+    monthly = str(plan.get("monthly_target_summary") or "").strip()
+    if monthly:
+        # Keep one short line — avoid wall of monthly prose
+        kv.append(("יעד חודשי", monthly[:80], "muted"))
+
+    parts = [_kv_table(kv)]
+
+    if holdings:
+        parts.append("<h2>בתיק עכשיו</h2>")
+        rows = []
+        for i, h in enumerate(holdings[:8]):
+            sym = str(h.get("symbol") or "?")
+            cap = float(h.get("capital_usd") or 0)
+            a = action_by.get(sym) or {}
+            verdict = str(a.get("verdict") or "hold")
+            pnl = a.get("pnl_pct")
+            if pnl is None:
+                pnl = h.get("unrealized_pnl_pct")
+            pnl_f = float(pnl) if pnl is not None else 0.0
+            rows.append(
+                [
+                    (str(i + 1), ""),
+                    (sym, "sym"),
+                    (strategy_col(h), "muted"),
+                    (fmt_money_plain(cap, whole=True), ""),
+                    (fmt_pct(pnl_f) if pnl is not None else "—", _pnl_class(pnl_f)),
+                    (_VERDICT_HE.get(verdict, verdict), ""),
+                ]
+            )
+        parts.append(
+            _table(
+                ["#", "סימול", "שיטה", "מושקע", "מהכניסה", "המלצה"],
+                rows,
+                numeric_cols={0, 3, 4},
+            )
+        )
+        parts.append(
+            '<p class="foot">«הכל» לא מוכר ולא מחליף — רק קניות ממזומן</p>'
+        )
+
+    manual = [
+        a
+        for a in actions
+        if str(a.get("verdict")) in {"sell", "swap", "take_profit"}
+        and str(a.get("symbol") or "") in held
+    ]
+    if manual:
+        parts.append("<h2>מומלץ ידנית (לא ב«הכל»)</h2>")
+        rows = []
+        chips_manual: list[str] = []
+        for a in manual[:6]:
+            sym = str(a.get("symbol") or "")
+            verdict = str(a.get("verdict"))
+            if verdict == "swap":
+                to_sym = str(a.get("swap_to") or "")
+                if to_sym in buy_syms:
+                    cmd = f"מכור {sym}"
+                    tip = f"לפנות מקום (לא החלף ל־{to_sym} — כבר מאושרת ממזומן)"
+                else:
+                    cmd = f"החלף {sym} {to_sym}"
+                    tip = f"החלף → {to_sym}"
+            else:
+                cmd = f"מכור {sym}"
+                tip = "מכירה למזומן"
+            chips_manual.append(cmd)
+            rows.append(
+                [
+                    (sym, "sym"),
+                    (_VERDICT_HE.get(verdict, verdict), ""),
+                    (tip, "muted"),
+                    (cmd, "sym"),
+                ]
+            )
+        parts.append(
+            _table(
+                ["סימול", "פעולה", "הסבר", "פקודה להעתקה"],
+                rows,
+                numeric_cols=set(),
+            )
+        )
+        parts.append('<div class="chips">')
+        for c in chips_manual:
+            parts.append(f'<span class="chip">{_esc(c)}</span>')
+        parts.append("</div>")
+
+    if new_recs:
+        parts.append("<h2>קניות חדשות ממזומן</h2>")
+        rows = []
+        for i, r in enumerate(new_recs[:8]):
+            sym = str(r.get("symbol") or "?")
+            cap = float(r.get("capital_usd") or 0)
+            score = r.get("score")
+            score_s = f"{float(score):.1f}" if score is not None else "—"
+            strat = str(r.get("strategy") or r.get("strategy_id") or "")
+            entry = "בפתיחה"
+            if strat == "method2":
+                side = str(r.get("side") or "LONG").upper()
+                entry = "פריצה בלבד" + (" · שורט" if side == "SHORT" else "")
+            rows.append(
+                [
+                    (str(i + 1), ""),
+                    (sym, "sym"),
+                    (strategy_col(r), "muted"),
+                    (fmt_money_plain(cap, whole=True), ""),
+                    (score_s, ""),
+                    (entry, "muted"),
+                ]
+            )
+        parts.append(
+            _table(
+                ["#", "סימול", "שיטה", "סכום", "ציון", "כניסה"],
+                rows,
+                numeric_cols={0, 3, 4},
+            )
+        )
+        if plan.get("fallback_pick"):
+            parts.append(
+                '<p class="foot">אין מניה מעל סף האיכות — מוצגת הטובה ביותר (לשיקולך)</p>'
+            )
+    elif holdings:
+        parts.append("<h2>קניות חדשות</h2>")
+        parts.append('<p class="foot">אין קניות חדשות ממזומן היום</p>')
+
+    parts.append("<h2>איך לאשר</h2>")
+    parts.append('<div class="chips">')
+    if new_recs:
+        parts.append(f'<span class="chip">{_esc("הכל")}</span>')
+        parts.append(
+            '<p class="foot">שלח <b>הכל</b> — יחלק את המזומן על הקניות החדשות</p>'
+        )
+    else:
+        parts.append('<p class="foot">אין קניות ממזומן לאשר · פעולות ידניות בצ׳יפים למעלה</p>')
+    parts.append("</div>")
+
+    parts.append("<h2>לוח זמנים (מידע — לא פקודות)</h2>")
+    parts.append(
+        '<p class="foot">מחר בפתיחה — כניסת קניות שאושרו · בערב — דוח יומי · '
+        "גרף + פרטים בתמונה לכל מניה בהודעות הבאות (כיתוב קצר)</p>"
+    )
+
+    return wrap_card_html(f"תוכנית למחר · {day}", "".join(parts))
+
+
+def html_recommendation(
+    rec: dict[str, Any],
+    idx: int,
+    trading_day: str,
+    *,
+    signal_lines: list[str] | None = None,
+    held: bool = False,
+) -> str:
+    """Labeled details under a plan chart (baked into PNG — not a Telegram caption)."""
+    sym = str(rec.get("symbol") or "?")
+    day = str(trading_day or "")
+    draft = float(rec.get("capital_usd") or 0)
+    price = float(rec.get("entry_ref_price") or 0)
+    sl_frac = float(rec.get("stop_loss_pct") or 0)
+    tp_frac = float(rec.get("take_profit_pct") or 0)
+    # stop_loss_pct is stored positive (e.g. 0.12) — show leading minus.
+    sl_pct = -abs(sl_frac * 100) if sl_frac else 0.0
+    tp_pct = abs(tp_frac * 100) if tp_frac else 0.0
+    sl_price = float(rec.get("floor_price") or rec.get("stop_loss_price") or 0)
+    tp_price = float(rec.get("take_profit_price") or 0)
+    score = rec.get("score")
+
+    kv: list[tuple[str, str, str]] = [
+        ("יום מסחר", day or "—", ""),
+        ("הצעה", fmt_money_plain(draft, whole=True), ""),
+        ("מחיר ייחוס", fmt_money_plain(price, digits=2), ""),
+    ]
+    if score is not None:
+        kv.append(("ציון", f"{float(score):.1f}", ""))
+    kv.extend(
+        [
+            (
+                "מחיר תחתון",
+                f"{fmt_money_plain(sl_price, digits=2)} ({fmt_pct(sl_pct, digits=0)})",
+                "neg" if sl_pct < 0 else "",
+            ),
+            (
+                "יעד רווח",
+                f"{fmt_money_plain(tp_price, digits=2)} ({fmt_pct(tp_pct, digits=0)})",
+                "pos" if tp_pct > 0 else "",
+            ),
+        ]
+    )
+
+    parts = [_kv_table(kv)]
+    parts.append('<p class="foot">מכירה אוטומטית מתחת למחיר התחתון</p>')
+
+    strat = str(rec.get("strategy") or "")
+    if strat == "method2":
+        side = str(rec.get("side") or "LONG").upper()
+        side_he = "שורט" if side == "SHORT" else "לונג"
+        trig = str(rec.get("trigger") or "")
+        entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
+        stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
+        parts.append("<h2>נרות סיניים 2</h2>")
+        parts.append(
+            _kv_table(
+                [
+                    ("כיוון", side_he, ""),
+                    ("טריגר", trig or "—", "muted"),
+                    ("פריצה", fmt_money_plain(entry, digits=2), ""),
+                    ("סטופ", fmt_money_plain(stop, digits=2), ""),
+                ]
+            )
+        )
+        parts.append('<p class="foot">כניסה רק אם נפרצת הרמה</p>')
+    elif strat == "rising_three_methods":
+        weak = " (חלש)" if rec.get("pattern_weak") else ""
+        parts.append(f'<p class="foot">נרות · Rising Three Methods{weak}</p>')
+
+    if held:
+        parts.append('<p class="foot"><b>כבר בתיק — לא נקנה שוב</b></p>')
+
+    clean_signals = [s.strip() for s in (signal_lines or []) if str(s).strip()][:4]
+    if clean_signals:
+        parts.append("<h2>אותות</h2>")
+        for line in clean_signals:
+            parts.append(f'<p class="foot">{_esc(line)}</p>')
+
+    headlines = list(rec.get("news_headlines") or [])[:1]
+    if headlines:
+        title = str(headlines[0].get("title") or "").strip()
+        if title:
+            parts.append("<h2>חדשות</h2>")
+            parts.append(f'<p class="foot">{_esc(title[:100])}</p>')
+    summary = str(rec.get("news_summary") or "").strip()
+    if summary:
+        parts.append(f'<p class="foot">{_esc(summary[:140])}</p>')
+
+    return wrap_card_html(f"#{idx} {sym}", "".join(parts))
+
+
 def card_png_from_html(
     html_doc: str,
     *,

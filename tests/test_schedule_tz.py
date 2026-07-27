@@ -9,15 +9,28 @@ from trading_pulse.core.schedule_tz import ISRAEL, US_EASTERN
 def test_entry_time_israel_summer():
     # 13:35 UTC = 16:35 Israel in July (IDT, UTC+3)
     assert utc_hhmm_to_zone("13:35", ISRAEL, on_day=date(2026, 7, 3)) == "16:35"
-    assert format_dual_time("13:35", on_day=date(2026, 7, 3)) == "13:35 UTC · 16:35 ישראל"
+    assert format_dual_time("13:35", on_day=date(2026, 7, 3)) == "\u200e16:35\u200e ישראל (\u200e13:35\u200e UTC)"
 
 
 def test_plan_time_israel_summer():
-    assert format_dual_time("20:15", on_day=date(2026, 7, 3)) == "20:15 UTC · 23:15 ישראל"
+    assert format_dual_time("20:15", on_day=date(2026, 7, 3)) == "\u200e23:15\u200e ישראל (\u200e20:15\u200e UTC)"
 
 
 def test_report_time_israel_summer():
-    assert format_dual_time("20:20", on_day=date(2026, 7, 3)) == "20:20 UTC · 23:20 ישראל"
+    assert format_dual_time("20:20", on_day=date(2026, 7, 3)) == "\u200e23:20\u200e ישראל (\u200e20:20\u200e UTC)"
+
+
+def test_format_dual_time_israel_first_and_lrm():
+    text = format_dual_time("13:35", on_day=date(2026, 7, 3))
+    assert text.index("ישראל") < text.index("UTC")
+    assert text.count("\u200e") == 4
+    assert "13:35 UTC ·" not in text  # old UTC-first format
+
+
+def test_format_dual_time_invalid_returns_empty():
+    assert format_dual_time("") == ""
+    assert format_dual_time("1:30") == ""  # must be HH:MM
+    assert format_dual_time("noon") == ""
 
 
 def test_minutes_until_utc_hhmm():

@@ -313,6 +313,33 @@ def test_card_path_updates_same_app_inbox_row(tmp_path, monkeypatch):
     )
 
 
+def test_plan_inbox_summary_new_buys_vs_none():
+    assert (
+        agent._plan_inbox_summary(
+            {
+                "for_trading_day": "2026-07-27",
+                "holdings": [{"symbol": "LABD"}],
+                "recommendations": [
+                    {"symbol": "NVDA"},
+                    {"symbol": "TSLA"},
+                    {"symbol": "LABD"},  # already held — not counted
+                ],
+            }
+        )
+        == "תוכנית 2026-07-27 · 2 קניות חדשות · שלח הכל לאישור"
+    )
+    assert (
+        agent._plan_inbox_summary(
+            {
+                "for_trading_day": "2026-07-27",
+                "holdings": [{"symbol": "LABD"}],
+                "recommendations": [{"symbol": "LABD"}],
+            }
+        )
+        == "תוכנית 2026-07-27 · אין קניות חדשות ממזומן"
+    )
+
+
 def test_plan_card_updates_prelogged_plan_row_without_duplicate(
     tmp_path, monkeypatch
 ):
@@ -321,17 +348,17 @@ def test_plan_card_updates_prelogged_plan_row_without_duplicate(
     store = _isolated_message_store(tmp_path, monkeypatch)
     cfg = _photo_cfg("both")
     monkeypatch.setattr(
-        agent, "format_plan_message_for_app", lambda _plan: "תוכנית"
-    )
-    monkeypatch.setattr(
         reply_cards, "card_from_plan_summary", lambda _plan: b"png"
     )
     monkeypatch.setattr(agent, "send_plan_portfolio_image", lambda _cfg: None)
     monkeypatch.setattr(
-        agent, "send_plan_table_image", lambda _cfg, _plan: None
-    )
-    monkeypatch.setattr(
         agent, "send_plan_stock_charts", lambda _cfg, _plan: None
+    )
+    table_calls: list[object] = []
+    monkeypatch.setattr(
+        agent,
+        "send_plan_table_image",
+        lambda *a, **k: table_calls.append(1),
     )
 
     class Response:
@@ -343,20 +370,123 @@ def test_plan_card_updates_prelogged_plan_row_without_duplicate(
 
     monkeypatch.setattr(agent.requests, "post", lambda *_args, **_kwargs: Response())
 
-    agent.send_plan_notifications(
-        cfg,
-        {"for_trading_day": "2026-07-20", "status": "draft"},
-    )
+    plan = {
+        "for_trading_day": "2026-07-20",
+        "status": "draft",
+        "holdings": [],
+        "recommendations": [{"symbol": "NVDA"}],
+    }
+    agent.send_plan_notifications(cfg, plan)
 
     messages = [
         row for row in store.load_messages() if row["context"] == "plan"
     ]
     assert len(messages) == 1
+    assert messages[0]["text"] == (
+        "תוכנית 2026-07-20 · 1 קניות חדשות · שלח הכל לאישור"
+    )
     assert messages[0]["metadata"]["image_id"] == "image123"
     assert (
         messages[0]["metadata"]["delivery"]["telegram"]["status"]
         == "delivered"
     )
+    assert table_calls == []  # HTML→PNG card replaces English table image
+
+
+def test_resend_plan_telegram_delegates_to_send_plan_notifications(monkeypatch):
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        agent,
+        "send_plan_notifications",
+        lambda cfg, plan: calls.append((cfg, plan)),
+    )
+    cfg = object()
+    plan = {"for_trading_day": "2026-07-20"}
+    agent.resend_plan_telegram(cfg, plan)
+    assert calls == [(cfg, plan)]
+
+
+def test_plan_show_resends_once_without_ack_message(tmp_path, monkeypatch):
+    """«תוכנית» resends the plan bundle only — no follow-up «שלחתי שוב» card."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "equity": 1000.0,
+                "open_positions": [],
+                "telegram_last_update_id": 10,
+                "history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "for_trading_day": "2026-07-20",
+        "recommendations": [{"symbol": "NVDA", "action": "buy"}],
+    }
+    plan_file = tmp_path / "plan_2026-07-20.json"
+    plan_file.write_text(json.dumps(plan), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _day: "2026-07-20")
+    monkeypatch.setattr(agent, "plan_path", lambda _d: plan_file)
+    monkeypatch.setattr(agent, "uses_telegram_notifications", lambda _cfg: True)
+    monkeypatch.setattr(agent, "log_telegram_message", lambda *a, **k: None)
+    monkeypatch.setattr(
+        agent,
+        "allocation_choice_pending_for_active_plan",
+        lambda: False,
+    )
+
+    def _fake_api(_token, method, _payload=None):
+        if method == "getUpdates":
+            return {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 11,
+                        "message": {"chat": {"id": "1"}, "text": "תוכנית"},
+                    }
+                ],
+            }
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(agent, "telegram_api_call", _fake_api)
+
+    resend_calls: list[dict] = []
+    send_calls: list[tuple] = []
+
+    monkeypatch.setattr(
+        agent,
+        "resend_plan_telegram",
+        lambda cfg, p: resend_calls.append(p),
+    )
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_message",
+        lambda *a, **k: send_calls.append((a, k)) or True,
+    )
+
+    class Cfg:
+        telegram_bot_token = "t"
+        telegram_chat_id = "1"
+        initial_capital = 1000.0
+        notification_mode = "telegram"
+
+    handled = agent.process_telegram_commands(Cfg())
+    assert handled == 1
+    assert len(resend_calls) == 1
+    assert resend_calls[0]["for_trading_day"] == "2026-07-20"
+    assert resend_calls[0]["recommendations"]
+    # No follow-up ack that looked like a second approval ask
+    ack_texts = [
+        str(a[1]) if len(a) > 1 else str(k.get("text", ""))
+        for a, k in send_calls
+    ]
+    ack_texts += [str(k.get("text", "")) for _, k in send_calls]
+    joined = "\n".join(ack_texts)
+    assert "שלחתי שוב" not in joined
+    assert send_calls == []
 
 
 def test_merge_backfill_skips_when_live_plan_exists_for_same_day(tmp_path, monkeypatch):

@@ -2076,16 +2076,42 @@ def _buy_symbol_usd(
     *,
     rec: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    from trading_pulse.agent.positions import free_cash, held_symbols
+    from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
+    from trading_pulse.agent.positions import (
+        add_lot_to_position,
+        fetch_day_ohlc,
+        free_cash,
+        held_symbols,
+    )
 
     amount_usd = round(min(float(amount_usd), free_cash(state, cfg)), 2)
     if amount_usd < 1:
         return None
     to_symbol = to_symbol.upper()
+
+    def _fill_price() -> float:
+        bar = fetch_day_ohlc(to_symbol, trading_day)
+        price = float(bar["close"]) if bar else 0.0
+        if price <= 0:
+            quote = fetch_intraday_quote(to_symbol)
+            if quote:
+                price = float(quote["last"])
+        if price <= 0 and rec:
+            price = float(rec.get("entry_ref_price") or rec.get("entry_price") or 0)
+        return price
+
     if to_symbol in held_symbols(state):
+        fill = _fill_price()
+        if fill <= 0:
+            return None
         for pos in state.get("open_positions", []):
             if str(pos.get("symbol")) == to_symbol:
-                pos["capital_usd"] = round(float(pos["capital_usd"]) + amount_usd, 2)
+                add_lot_to_position(
+                    pos,
+                    amount_usd,
+                    fill,
+                    trading_day.isoformat(),
+                )
                 return pos
         return None
     stub = dict(rec) if rec else _build_swap_target_rec(cfg, to_symbol, amount_usd)
@@ -3825,15 +3851,31 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 total = len(recs)
                 raw_idx = str(parsed.get("indices_raw", "ALL"))
                 indices = parse_indices(raw_idx, total=total, recs=recs)
+                if kind == "approve" and indices and raw_idx.upper() == "ALL":
+                    # Cash buys only — skip names already held (e.g. after intraday swap)
+                    # so we never confirm «ILMN $0 · מחר בפתיחה».
+                    from trading_pulse.agent.positions import held_symbols
+
+                    held_now = held_symbols(load_state(cfg))
+                    indices = [
+                        i
+                        for i in indices
+                        if 0 <= i < len(recs)
+                        and str(recs[i].get("symbol") or "") not in held_now
+                    ]
                 if not indices:
                     from trading_pulse.telegram.telegram_format import (
                         format_below_bar_approve_hint,
+                        format_nothing_to_approve,
                         user_guide_invalid_approve,
                     )
 
                     weak = [r for r in recs if r.get("below_bar")]
-                    if raw_idx.upper() == "ALL" and weak and kind == "approve":
-                        reply = format_below_bar_approve_hint(weak, plan_recs=recs)
+                    if raw_idx.upper() == "ALL" and kind == "approve":
+                        if weak:
+                            reply = format_below_bar_approve_hint(weak, plan_recs=recs)
+                        else:
+                            reply = format_nothing_to_approve(plan)
                     else:
                         reply = user_guide_invalid_approve()
                     reply_context = f"reply:{kind}"

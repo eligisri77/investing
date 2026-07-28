@@ -52,6 +52,18 @@ def test_telegram_poll_preserves_sell_when_saving_offset(tmp_path, monkeypatch):
         for p in st["open_positions"]:
             if p["symbol"] == "RIVN":
                 p["capital_usd"] = 313.0
+                # Keep lots in sync (source of truth after purchase-lot accounting).
+                if p.get("lots"):
+                    p["lots"][0]["capital_usd"] = 313.0
+                else:
+                    p["lots"] = [
+                        {
+                            "id": "t",
+                            "capital_usd": 313.0,
+                            "entry_price": 15.0,
+                            "entry_day": "2026-07-08",
+                        }
+                    ]
         st["equity"] = 1003.0
         state_path.write_text(json.dumps(st), encoding="utf-8")
         return "✅ sold"
@@ -478,14 +490,7 @@ def test_plan_show_resends_once_without_ack_message(tmp_path, monkeypatch):
     assert len(resend_calls) == 1
     assert resend_calls[0]["for_trading_day"] == "2026-07-20"
     assert resend_calls[0]["recommendations"]
-    # No follow-up ack that looked like a second approval ask
-    ack_texts = [
-        str(a[1]) if len(a) > 1 else str(k.get("text", ""))
-        for a, k in send_calls
-    ]
-    ack_texts += [str(k.get("text", "")) for _, k in send_calls]
-    joined = "\n".join(ack_texts)
-    assert "שלחתי שוב" not in joined
+    # No follow-up «שלחתי שוב את התוכנית» (looked like a second approval ask)
     assert send_calls == []
 
 

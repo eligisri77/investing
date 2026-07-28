@@ -88,10 +88,11 @@ def user_guide_full() -> str:
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. בערב — כרטיס PNG «תוכנית למחר» (+ תיק + גרף לכל מניה: פרטים בתמונה · כיתוב <code>#1 CLF</code>) · <code>הכל</code> / <code>התחל</code> לאישור",
+            "1. בערב — כרטיס PNG «תוכנית למחר» (+ תיק + גרף לכל מניה: פרטים בתמונה · כיתוב <code>#1 CLF</code>) · <code>הכל</code> / <code>התחל</code> לאישור קניות ממזומן",
             "2. בפתיחה — תמונת כניסה; נרות סיניים 2 ממתינה לפריצה ולא נקנית אוטומטית",
             "3. בערב אחרי סגירה — כרטיס PNG «דוח יומי» על הרווח/הפסד",
             "",
+            "אין קניות ממזומן? <code>הכל</code> → «אין קניות ממזומן לאשר» (לא שגיאת מספרים) · <code>מכור</code> / <code>החלף</code>",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
             "יש מזומן פנוי? הבוט מציע מה לעשות · חיזוק: <code>תקנה 1</code> (כל המזומן) · <code>קנה BEAM $50</code>",
             "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
@@ -162,6 +163,41 @@ def user_guide_invalid_approve() -> str:
             user_guide_step1(),
         ]
     )
+
+
+def format_nothing_to_approve(plan: dict[str, Any] | None = None) -> str:
+    """«הכל» when there are no cash buys left to confirm."""
+    plan = plan or {}
+    actions = list(plan.get("holding_actions") or [])
+    manual = [
+        a
+        for a in actions
+        if str(a.get("verdict")) in {"sell", "swap", "take_profit"}
+    ]
+    lines = [
+        "ℹ️ <b>אין קניות ממזומן לאשר</b>",
+        "",
+        "<code>הכל</code> מאשר רק קניות חדשות ממזומן — לא מכירות ולא החלפות.",
+    ]
+    if manual:
+        lines.append("")
+        lines.append("<b>אם רוצה לפעול ידנית:</b>")
+        for a in manual[:4]:
+            sym = str(a.get("symbol") or "")
+            verdict = str(a.get("verdict") or "")
+            if verdict == "swap":
+                to_sym = str(a.get("swap_to") or "")
+                lines.append(f"· <code>החלף {sym} {to_sym}</code>")
+            else:
+                lines.append(f"· <code>מכור {sym}</code>")
+    else:
+        lines.extend(
+            [
+                "",
+                "אין גם פעולה ידנית בתוכנית — אפשר לחכות לדוח/תוכנית הבאה, או לשלוח <code>תיק</code>.",
+            ]
+        )
+    return finalize("\n".join(lines))
 
 
 def escape_html(text: str) -> str:
@@ -1133,12 +1169,18 @@ def _approval_buys_and_held(plan: dict[str, Any]) -> tuple[list[tuple[str, float
     held_syms = {str(h["symbol"]) for h in holdings_raw}
 
     if amounts:
-        new_buys = [(str(sym), float(amt)) for sym, amt in amounts.items()]
+        new_buys = [
+            (str(sym), float(amt))
+            for sym, amt in amounts.items()
+            if float(amt) >= 1 and str(sym) not in held_syms
+        ]
     else:
         new_buys = [
             (str(r["symbol"]), float(r.get("capital_usd", 0)))
             for r in plan.get("recommendations", []) or []
-            if r.get("approved") and str(r["symbol"]) not in held_syms
+            if r.get("approved")
+            and str(r["symbol"]) not in held_syms
+            and float(r.get("capital_usd", 0)) >= 1
         ]
 
     held = [(str(h["symbol"]), float(h.get("capital_usd", 0))) for h in holdings_raw]

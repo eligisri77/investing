@@ -14,6 +14,8 @@ import yfinance as yf
 def ensure_open_positions(state: dict[str, Any]) -> None:
     if "open_positions" not in state:
         state["open_positions"] = []
+    for pos in state["open_positions"]:
+        ensure_position_lots(pos)
 
 
 def deployed_capital(state: dict[str, Any]) -> float:
@@ -35,6 +37,81 @@ def free_cash(state: dict[str, Any], cfg: Any | None = None) -> float:
     if cfg is not None:
         return available_capital(cfg, state)
     return max(0.0, round(float(state.get("equity", 0)) - deployed_capital(state), 2))
+
+
+def _new_lot(
+    capital_usd: float,
+    entry_price: float,
+    entry_day: str,
+    *,
+    entry_at: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": uuid4().hex[:12],
+        "capital_usd": round(float(capital_usd), 2),
+        "entry_price": round(float(entry_price), 4),
+        "entry_day": str(entry_day),
+        "entry_at": entry_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def ensure_position_lots(pos: dict[str, Any]) -> list[dict[str, Any]]:
+    """Migrate legacy single-entry positions to lot list; keep aggregates in sync."""
+    lots = pos.get("lots")
+    if isinstance(lots, list) and lots:
+        sync_position_from_lots(pos)
+        return list(pos["lots"])
+    capital = round(float(pos.get("capital_usd") or 0), 2)
+    entry = float(pos.get("entry_price") or pos.get("entry_ref_price") or 0)
+    day = str(pos.get("entry_day") or date.today().isoformat())
+    entry_at = pos.get("entry_at")
+    if capital > 0 and entry > 0:
+        pos["lots"] = [
+            _new_lot(capital, entry, day, entry_at=str(entry_at) if entry_at else None)
+        ]
+    else:
+        pos["lots"] = []
+    sync_position_from_lots(pos)
+    return list(pos["lots"])
+
+
+def sync_position_from_lots(pos: dict[str, Any]) -> None:
+    """Refresh capital_usd / entry_price (weighted avg) / entry_day from lots."""
+    lots = [dict(x) for x in (pos.get("lots") or []) if float(x.get("capital_usd") or 0) > 0]
+    pos["lots"] = lots
+    if not lots:
+        pos["capital_usd"] = 0.0
+        return
+    total_cap = round(sum(float(x["capital_usd"]) for x in lots), 2)
+    weighted = sum(float(x["capital_usd"]) * float(x["entry_price"]) for x in lots)
+    pos["capital_usd"] = total_cap
+    pos["entry_price"] = round(weighted / total_cap, 4) if total_cap > 0 else float(lots[0]["entry_price"])
+    # Oldest lot defines position age / days_held baseline.
+    oldest = min(lots, key=lambda x: (str(x.get("entry_day") or ""), str(x.get("entry_at") or "")))
+    pos["entry_day"] = oldest.get("entry_day") or pos.get("entry_day")
+    if oldest.get("entry_at"):
+        pos["entry_at"] = oldest["entry_at"]
+
+
+def add_lot_to_position(
+    pos: dict[str, Any],
+    capital_usd: float,
+    entry_price: float,
+    entry_day: str,
+    *,
+    entry_at: str | None = None,
+) -> dict[str, Any]:
+    """Append a purchase tranche (separate cost basis for PnL)."""
+    ensure_position_lots(pos)
+    capital_usd = round(float(capital_usd), 2)
+    entry_price = float(entry_price)
+    if capital_usd < 1 or entry_price <= 0:
+        return pos
+    pos.setdefault("lots", []).append(
+        _new_lot(capital_usd, entry_price, entry_day, entry_at=entry_at)
+    )
+    sync_position_from_lots(pos)
+    return pos
 
 
 def fetch_day_ohlc(symbol: str, trading_day: date) -> dict[str, float] | None:
@@ -144,24 +221,55 @@ def unrealized_pnl_for_position(
     mark_price: float | None = None,
     trading_day: date | None = None,
 ) -> dict[str, Any]:
-    """Mark open position at EOD close; returns enriched copy with unrealized fields."""
+    """Mark open position; PnL is summed per purchase lot (separate cost bases)."""
     enriched = dict(pos)
-    entry = float(enriched.get("entry_price") or enriched.get("entry_ref_price") or 0)
-    capital = float(enriched.get("capital_usd", 0))
+    ensure_position_lots(enriched)
     side = str(enriched.get("side") or "LONG")
     mark = mark_price
-    if mark is None and trading_day is not None and entry > 0:
+    if mark is None and trading_day is not None:
         bar = fetch_day_ohlc(str(enriched["symbol"]), trading_day)
         mark = float(bar["close"]) if bar else None
-    if mark is not None and entry > 0:
-        frac = _pnl_pct(entry, mark, side)
-        enriched["mark_price"] = round(mark, 4)
-        enriched["unrealized_pnl_usd"] = round(capital * frac, 2)
-        enriched["unrealized_pnl_pct"] = round(frac * 100, 2)
-    else:
-        enriched["mark_price"] = None
-        enriched["unrealized_pnl_usd"] = 0.0
-        enriched["unrealized_pnl_pct"] = 0.0
+
+    lots = list(enriched.get("lots") or [])
+    capital = float(enriched.get("capital_usd") or 0)
+    if mark is None or mark <= 0 or not lots:
+        # Fallback: single-entry math if lots empty but capital exists.
+        entry = float(enriched.get("entry_price") or enriched.get("entry_ref_price") or 0)
+        enriched["mark_price"] = None if mark is None else round(float(mark), 4)
+        if mark is not None and entry > 0 and capital > 0:
+            frac = _pnl_pct(entry, float(mark), side)
+            enriched["unrealized_pnl_usd"] = round(capital * frac, 2)
+            enriched["unrealized_pnl_pct"] = round(frac * 100, 2)
+        else:
+            enriched["unrealized_pnl_usd"] = 0.0
+            enriched["unrealized_pnl_pct"] = 0.0
+        return enriched
+
+    pnl_total = 0.0
+    marked_lots: list[dict[str, Any]] = []
+    for lot in lots:
+        cap = float(lot.get("capital_usd") or 0)
+        entry = float(lot.get("entry_price") or 0)
+        if cap <= 0 or entry <= 0:
+            continue
+        frac = _pnl_pct(entry, float(mark), side)
+        lot_pnl = round(cap * frac, 2)
+        pnl_total += lot_pnl
+        marked_lots.append(
+            {
+                **lot,
+                "mark_price": round(float(mark), 4),
+                "unrealized_pnl_usd": lot_pnl,
+                "unrealized_pnl_pct": round(frac * 100, 2),
+            }
+        )
+
+    enriched["lots"] = marked_lots
+    enriched["mark_price"] = round(float(mark), 4)
+    enriched["unrealized_pnl_usd"] = round(pnl_total, 2)
+    enriched["unrealized_pnl_pct"] = (
+        round((pnl_total / capital) * 100, 2) if capital > 0 else 0.0
+    )
     return enriched
 
 
@@ -180,10 +288,30 @@ def enrich_held_unrealized(
 
 
 def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -> dict[str, Any]:
-    entry = float(pos["entry_price"])
-    capital = float(pos["capital_usd"])
+    """Realize PnL across lots (each tranche vs its own entry)."""
+    ensure_position_lots(pos)
     side = str(pos.get("side") or "LONG")
-    pnl_pct = _pnl_pct(entry, exit_price, side)
+    lots = list(pos.get("lots") or [])
+    if not lots:
+        entry = float(pos["entry_price"])
+        capital = float(pos["capital_usd"])
+        pnl_pct = _pnl_pct(entry, exit_price, side)
+        pnl_usd = round(capital * pnl_pct, 2)
+    else:
+        capital = round(sum(float(x.get("capital_usd") or 0) for x in lots), 2)
+        pnl_usd = 0.0
+        weighted_entry = 0.0
+        for lot in lots:
+            cap = float(lot.get("capital_usd") or 0)
+            entry = float(lot.get("entry_price") or 0)
+            if cap <= 0 or entry <= 0:
+                continue
+            pnl_usd += cap * _pnl_pct(entry, exit_price, side)
+            weighted_entry += cap * entry
+        pnl_usd = round(pnl_usd, 2)
+        entry = round(weighted_entry / capital, 4) if capital > 0 else float(pos.get("entry_price") or 0)
+        pnl_pct = (pnl_usd / capital) if capital > 0 else 0.0
+
     return {
         "symbol": pos["symbol"],
         "side": side,
@@ -192,9 +320,10 @@ def trade_from_close(pos: dict[str, Any], exit_price: float, exit_reason: str) -
         "exit_reason": exit_reason,
         "capital_usd": round(capital, 2),
         "pnl_pct": round(pnl_pct * 100, 3),
-        "pnl_usd": round(capital * pnl_pct, 2),
+        "pnl_usd": pnl_usd,
         "days_held": int(pos.get("days_held", 0)),
         "entry_day": pos.get("entry_day"),
+        "lots_closed": len(lots) if lots else 1,
         "strategy": pos.get("strategy"),
         "strategy_id": pos.get("strategy_id"),
         "strategy_version": pos.get("strategy_version"),
@@ -220,13 +349,16 @@ def new_position_from_rec(rec: dict[str, Any], entry_price: float, trading_day: 
     if tp is None:
         tp_pct = float(rec.get("take_profit_pct", 0.25))
         tp = entry_price * (1 - tp_pct) if side == "SHORT" else entry_price * (1 + tp_pct)
-    return {
+    capital = round(float(rec["capital_usd"]), 2)
+    entry_at = datetime.now(timezone.utc).isoformat()
+    pos = {
         "symbol": rec["symbol"],
         "side": side,
         "entry_day": trading_day,
-        "entry_at": datetime.now(timezone.utc).isoformat(),
+        "entry_at": entry_at,
         "entry_price": round(entry_price, 4),
-        "capital_usd": round(float(rec["capital_usd"]), 2),
+        "capital_usd": capital,
+        "lots": [_new_lot(capital, entry_price, trading_day, entry_at=entry_at)],
         "stop_loss_pct": float(rec.get("stop_loss_pct", 0.12)),
         "take_profit_pct": float(rec.get("take_profit_pct", 0.25)),
         "take_profit_price": round(float(tp), 4),
@@ -246,6 +378,8 @@ def new_position_from_rec(rec: dict[str, Any], entry_price: float, trading_day: 
         "pattern_weak": rec.get("pattern_weak"),
         "sleeve": rec.get("sleeve"),
     }
+    sync_position_from_lots(pos)
+    return pos
 
 
 def backfill_position_floors(state: dict[str, Any], cfg: Any) -> None:
@@ -463,7 +597,10 @@ def partial_sell_position(
     trading_day: date | None = None,
     reason: str = "user_sell",
 ) -> dict[str, Any] | None:
-    """Sell fraction of an open position at latest close (dry-run)."""
+    """Sell fraction of an open position at latest close (dry-run).
+
+    Realizes PnL FIFO across purchase lots (oldest tranche first).
+    """
     ensure_open_positions(state)
     symbol = symbol.upper()
     fraction = max(0.01, min(1.0, float(fraction)))
@@ -474,21 +611,84 @@ def partial_sell_position(
         if str(pos.get("symbol")) != symbol:
             continue
         pos = dict(pos)
+        ensure_position_lots(pos)
         bar = fetch_day_ohlc(symbol, day)
         if bar is None:
             return None
         exit_price = float(bar["close"])
-        sell_capital = round(float(pos["capital_usd"]) * fraction, 2)
-        slice_pos = {**pos, "capital_usd": sell_capital}
-        trade = trade_from_close(slice_pos, exit_price, reason)
+        total_cap = float(pos.get("capital_usd") or 0)
+        if total_cap <= 0:
+            return None
+        sell_capital = round(total_cap * fraction, 2)
+        if sell_capital < 1:
+            return None
+
+        side = str(pos.get("side") or "LONG")
+        remaining_to_sell = sell_capital
+        pnl_usd = 0.0
+        weighted_entry = 0.0
+        sold_cap = 0.0
+        new_lots: list[dict[str, Any]] = []
+        for lot in list(pos.get("lots") or []):
+            lot_cap = float(lot.get("capital_usd") or 0)
+            lot_entry = float(lot.get("entry_price") or 0)
+            if lot_cap <= 0:
+                continue
+            if remaining_to_sell <= 0:
+                new_lots.append(dict(lot))
+                continue
+            take = min(lot_cap, remaining_to_sell)
+            take = round(take, 2)
+            if take > 0 and lot_entry > 0:
+                pnl_usd += take * _pnl_pct(lot_entry, exit_price, side)
+                weighted_entry += take * lot_entry
+                sold_cap += take
+                remaining_to_sell = round(remaining_to_sell - take, 2)
+            left = round(lot_cap - take, 2)
+            if left >= 1:
+                kept = dict(lot)
+                kept["capital_usd"] = left
+                new_lots.append(kept)
+
+        sold_cap = round(sold_cap, 2)
+        if sold_cap < 1:
+            return None
+        avg_entry = round(weighted_entry / sold_cap, 4) if sold_cap else float(pos.get("entry_price") or 0)
+        pnl_usd = round(pnl_usd, 2)
+        pnl_pct = (pnl_usd / sold_cap) if sold_cap else 0.0
+        trade = {
+            "symbol": symbol,
+            "side": side,
+            "entry_price": avg_entry,
+            "exit_price": round(exit_price, 4),
+            "exit_reason": reason,
+            "capital_usd": sold_cap,
+            "pnl_pct": round(pnl_pct * 100, 3),
+            "pnl_usd": pnl_usd,
+            "days_held": int(pos.get("days_held", 0)),
+            "entry_day": pos.get("entry_day"),
+            "strategy": pos.get("strategy"),
+            "strategy_id": pos.get("strategy_id"),
+            "strategy_version": pos.get("strategy_version"),
+            "schema_version": pos.get("schema_version"),
+            "signal_id": pos.get("signal_id"),
+            "native_score": pos.get("native_score"),
+            "confidence": pos.get("confidence"),
+            "entry_policy": pos.get("entry_policy"),
+            "contributing_strategies": list(pos.get("contributing_strategies") or []),
+            "trigger": pos.get("trigger"),
+            "pattern_weak": pos.get("pattern_weak"),
+        }
         trade["fees_usd"] = round(commission, 2)
         trade["pnl_usd"] = round(trade["pnl_usd"] - commission, 2)
         state["equity"] = round(float(state.get("equity", 0)) + float(trade["pnl_usd"]), 2)
-        remaining = round(float(pos["capital_usd"]) - sell_capital, 2)
+
+        remaining = round(sum(float(x.get("capital_usd") or 0) for x in new_lots), 2)
         if remaining < 1 or fraction >= 0.999:
             state["open_positions"].pop(i)
         else:
-            pos["capital_usd"] = remaining
+            pos["lots"] = new_lots
+            sync_position_from_lots(pos)
             state["open_positions"][i] = pos
         record = {
             **trade,

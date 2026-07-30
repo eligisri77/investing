@@ -396,6 +396,14 @@ def allocation_pending(plan: dict[str, Any]) -> bool:
     alloc = plan.get("allocation") or {}
     if alloc.get("status") == "applied":
         return False
+    if alloc.get("manual_offer_flow"):
+        # The sequential Telegram offer queue (offer_queue.py) also parks
+        # allocation.status at "pending" between individual offer replies,
+        # but it never populates `options` and resolves itself once the
+        # queue is exhausted — it must not surface the old ח1..ח5
+        # multi-option allocation-choice UI (Telegram fallback text or the
+        # #/plan dashboard card) while a conversation is still in progress.
+        return False
     return bool(_approved_recs(plan))
 
 

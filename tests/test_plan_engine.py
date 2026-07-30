@@ -10,7 +10,10 @@ from trading_pulse.agent.plan_engine import (
     STATUS_CONFIRMED,
     STATUS_DRAFT,
     apply_confirm,
+    apply_partial_confirm_manual,
+    finalize_manual_confirm,
     is_locked,
+    mark_offer_skipped,
     normalize_status,
     pending_buy_symbols,
     plan_is_protected,
@@ -289,3 +292,111 @@ def test_manual_action_prunes_holding_actions_for_closed_symbols(
     ).read_json(plan_file)
     assert [a["symbol"] for a in updated["holding_actions"]] == ["LABD"]
     assert {h["symbol"] for h in updated["holdings"]} == {"LABD"}
+
+
+def test_apply_partial_confirm_manual_approves_one_rec_with_amount():
+    plan = {
+        "recommendations": [
+            {"symbol": "NVDA", "score": 14.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    }
+    out = apply_partial_confirm_manual(plan, "NVDA", 123.456)
+    nvda = next(r for r in out["recommendations"] if r["symbol"] == "NVDA")
+    amd = next(r for r in out["recommendations"] if r["symbol"] == "AMD")
+    assert nvda["approved"] is True
+    assert nvda["capital_usd"] == 123.46
+    assert "approved_at" in nvda
+    assert amd.get("approved") is None
+    assert out["allocation"]["status"] == "pending"
+    assert out["allocation"]["manual_offer_flow"] is True
+    assert out["allocation"]["amounts"] == {"NVDA": 123.46}
+
+
+def test_apply_partial_confirm_manual_merges_amounts_across_calls():
+    plan = {"recommendations": [{"symbol": "NVDA"}, {"symbol": "AMD"}]}
+    apply_partial_confirm_manual(plan, "NVDA", 100.0)
+    apply_partial_confirm_manual(plan, "AMD", 50.0)
+    assert plan["allocation"]["amounts"] == {"NVDA": 100.0, "AMD": 50.0}
+    assert all(r["approved"] for r in plan["recommendations"])
+
+
+def test_apply_partial_confirm_manual_clears_offer_skipped():
+    plan = {"recommendations": [{"symbol": "NVDA", "offer_skipped": True}]}
+    out = apply_partial_confirm_manual(plan, "NVDA", 100.0)
+    nvda = out["recommendations"][0]
+    assert nvda["approved"] is True
+    assert "offer_skipped" not in nvda
+
+
+def test_apply_partial_confirm_manual_does_not_trigger_old_allocation_choice_ui():
+    """Regression: mid offer-queue, allocation.status="pending" must not be
+    mistaken for the old ח1..ח5 multi-option allocation-choice flow (which
+    would wrongly surface its guidance/UI while the Telegram offer
+    conversation is still in progress)."""
+    from trading_pulse.agent.capital_allocation import allocation_pending
+
+    plan = {
+        "recommendations": [
+            {"symbol": "NVDA", "score": 14.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    }
+    out = apply_partial_confirm_manual(plan, "NVDA", 100.0)
+    assert allocation_pending(out) is False
+
+
+def test_mark_offer_skipped_sets_flag_and_unapproves():
+    plan = {"recommendations": [{"symbol": "NVDA", "approved": True, "capital_usd": 100}]}
+    out = mark_offer_skipped(plan, "NVDA")
+    nvda = out["recommendations"][0]
+    assert nvda["approved"] is False
+    assert nvda["offer_skipped"] is True
+
+
+def test_finalize_manual_confirm_stays_draft_when_nothing_approved():
+    plan = {
+        "status": STATUS_DRAFT,
+        "recommendations": [
+            {"symbol": "NVDA", "approved": False, "offer_skipped": True},
+        ],
+    }
+    out = finalize_manual_confirm(plan, {"equity": 1000}, AgentConfig())
+    assert out["status"] == STATUS_DRAFT
+    assert "confirmed_at" not in out
+    assert "allocation" not in out
+
+
+def test_finalize_manual_confirm_confirms_with_chosen_amounts():
+    plan = {
+        "status": STATUS_DRAFT,
+        "recommendations": [
+            {"symbol": "NVDA", "approved": True, "capital_usd": 150.0},
+            {"symbol": "AMD", "approved": False, "offer_skipped": True},
+        ],
+    }
+    state = {"equity": 1000.0, "open_positions": []}
+    out = finalize_manual_confirm(plan, state, AgentConfig())
+    assert out["status"] == STATUS_CONFIRMED
+    assert "confirmed_at" in out
+    assert out["pre_entry_equity"] == 1000.0
+    assert out["allocation"]["status"] == "applied"
+    assert out["allocation"]["auto"] is False
+    assert out["allocation"]["manual_offer_flow"] is True
+    assert out["allocation"]["amounts"] == {"NVDA": 150.0}  # only approved recs
+
+
+def test_finalize_manual_confirm_does_not_equal_split_amounts():
+    """Unlike apply_confirm, amounts come from the conversation, not an equal split."""
+    plan = {
+        "status": STATUS_DRAFT,
+        "recommendations": [
+            {"symbol": "NVDA", "approved": True, "capital_usd": 250.0},
+            {"symbol": "AMD", "approved": True, "capital_usd": 75.0},
+        ],
+    }
+    state = {"equity": 1000.0, "open_positions": []}
+    out = finalize_manual_confirm(plan, state, AgentConfig())
+    assert out["allocation"]["amounts"] == {"NVDA": 250.0, "AMD": 75.0}
+    assert out["recommendations"][0]["capital_usd"] == 250.0
+    assert out["recommendations"][1]["capital_usd"] == 75.0

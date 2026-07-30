@@ -254,7 +254,7 @@ def test_html_heartbeat_kv_labels_and_leading_signs():
     assert "-$30.19" in doc
     assert "-3.0%" in doc
     assert "נותר ליעד" in doc
-    assert "תוכנית" in doc
+    assert "סקירה" in doc
     assert "דוח" in doc
 
 
@@ -269,7 +269,7 @@ def test_html_heartbeat_closed_market_footer():
     )
     assert "וול סטריט סגורה" in doc
     assert "2026-07-27" in doc
-    assert 'class="k">תוכנית</td>' not in doc
+    assert 'class="k">סקירה</td>' not in doc
     assert 'class="k">דוח</td>' not in doc
 
 

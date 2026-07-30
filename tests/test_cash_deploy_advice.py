@@ -9,6 +9,7 @@ from trading_pulse.telegram.telegram_format import (
     format_no_new_buys_banner,
     format_plan,
     format_portfolio,
+    format_portfolio_review_digest,
     format_sell_reply,
     format_swap_completed,
 )
@@ -234,3 +235,103 @@ def test_swap_completed_includes_cash_deploy_when_cash_ge_20():
     assert "החלפה הושלמה" in text
     assert "יש מזומן פנוי" in text
     assert "תקנה" in text
+
+
+    # Buys execute immediately — do not push הכל as the primary deploy path
+    assert "אם אישרת קניות חדשות" not in text
+    assert "ולשלוח <code>הכל</code>" not in text
+
+
+def test_portfolio_review_digest_no_holdings():
+    plan = {
+        "holdings": [],
+        "holding_actions": [],
+        "recommendations": [],
+        "available_capital_usd": 0,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "סקירת תיק לפני הפתיחה" in text
+    assert "אין החזקות פתוחות כרגע" in text
+
+
+def test_portfolio_review_digest_includes_holding_actions():
+    plan = {
+        "holdings": [{"symbol": "META", "capital_usd": 250, "slot": 1}],
+        "holding_actions": [
+            {"symbol": "META", "verdict": "hold", "pnl_pct": 3.0, "score": 9.0},
+        ],
+        "recommendations": [],
+        "available_capital_usd": 0,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "אין החזקות פתוחות כרגע" not in text
+    assert "META" in text
+    assert "החזק" in text
+
+
+def test_portfolio_review_digest_mentions_upcoming_offers_singular():
+    plan = {
+        "holdings": [],
+        "holding_actions": [],
+        "recommendations": [{"symbol": "NVDA", "score": 14.0}],
+        "available_capital_usd": 300,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "הצעת קנייה חדשה אחת" in text
+    assert "נשלח אחת-אחת" in text
+    # New-buy candidates themselves are not listed in the digest.
+    assert "NVDA" not in text
+
+
+def test_portfolio_review_digest_mentions_upcoming_offers_plural():
+    plan = {
+        "holdings": [],
+        "holding_actions": [],
+        "recommendations": [
+            {"symbol": "NVDA", "score": 14.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+        "available_capital_usd": 300,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "2 הצעות קנייה חדשות" in text
+
+
+def test_portfolio_review_digest_excludes_held_below_bar_approved_and_skipped():
+    plan = {
+        "holdings": [{"symbol": "META", "capital_usd": 250}],
+        "holding_actions": [],
+        "recommendations": [
+            {"symbol": "META", "score": 12.0},  # already held
+            {"symbol": "TSLA", "score": 9.0, "below_bar": True},
+            {"symbol": "NVDA", "score": 14.0, "approved": True},
+            {"symbol": "AMD", "score": 8.0, "offer_skipped": True},
+        ],
+        "available_capital_usd": 300,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "הצעת" not in text  # no eligible new-buy candidates
+    assert "יש מזומן פנוי" in text  # falls back to cash-deploy advice instead
+
+
+def test_portfolio_review_digest_shows_cash_advice_when_no_new_buys_and_cash_available():
+    plan = {
+        "holdings": [{"symbol": "META", "capital_usd": 250, "slot": 1}],
+        "holding_actions": [{"symbol": "META", "verdict": "hold", "score": 8.0}],
+        "recommendations": [],
+        "available_capital_usd": 50,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "יש מזומן פנוי" in text
+    assert "תקנה" in text
+
+
+def test_portfolio_review_digest_hides_cash_advice_when_cash_too_small():
+    plan = {
+        "holdings": [{"symbol": "META", "capital_usd": 250, "slot": 1}],
+        "holding_actions": [{"symbol": "META", "verdict": "hold", "score": 8.0}],
+        "recommendations": [],
+        "available_capital_usd": 15,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "יש מזומן פנוי" not in text

@@ -90,7 +90,7 @@ def collect_health(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "notification_mode": (cfg or {}).get("notification_mode", "app"),
         "secrets_source": _secrets_source_safe(),
         "schedule": {
-            "planning_time": (cfg or {}).get("planning_time"),
+            "portfolio_review_time_israel": (cfg or {}).get("portfolio_review_time"),
             "market_open_sim_time": (cfg or {}).get("market_open_sim_time"),
             "market_close_sim_time": (cfg or {}).get("market_close_sim_time"),
             "heartbeat_time": (cfg or {}).get("heartbeat_time"),

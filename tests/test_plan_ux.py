@@ -612,7 +612,7 @@ def test_heartbeat_signed_amounts_use_ltr_code_not_flipped_dollar():
     assert "נותר ליעד" in text or "מעל היעד" in text
     assert "ימי מסחר שנותרו" in text
     assert "פרופיל:" in text
-    assert "תוכנית:" in text and "ישראל" in text
+    assert "סקירה:" in text and "ישראל" in text
 
 
 def test_hebrew_day_grammar_and_report_outcomes():

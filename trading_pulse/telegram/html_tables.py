@@ -818,11 +818,10 @@ def html_heartbeat(
 
     footer = ""
     if market_day:
-        plan_utc = str(cfg.planning_time)
+        plan_il = str(getattr(cfg, "portfolio_review_time", "15:00"))
         report_utc = str(cfg.market_close_sim_time)
-        plan_il = utc_hhmm_to_zone(plan_utc, ISRAEL) or plan_utc
         report_il = utc_hhmm_to_zone(report_utc, ISRAEL) or report_utc
-        rows.append(("תוכנית", f"{plan_il} ישראל ({plan_utc} UTC)", "muted"))
+        rows.append(("סקירה", f"{plan_il} ישראל", "muted"))
         rows.append(("דוח", f"{report_il} ישראל ({report_utc} UTC)", "muted"))
     else:
         footer = (

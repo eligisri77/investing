@@ -51,3 +51,54 @@ def test_render_telegram_guide_images_full():
 
     w, _h = Image.open(BytesIO(images[0][0])).size
     assert w == guide_images.CARD_W
+
+
+def test_guide_omits_pre_close_plan_reminder():
+    guide = get_telegram_guide({"plan_reminder_time": "19:59"})
+    guide_text = str(guide)
+
+    assert all(item["label"] != "תזכורת" for item in guide["flow"])
+    assert all(item["title"] != "תזכורת לפני סגירה" for item in guide["outgoing"])
+    assert "תזכורת לפני סגירה" not in guide_text
+    assert "plan_reminder" not in guide_text
+    assert "19:59" not in guide_text
+
+
+def test_guide_includes_portfolio_review_israel_time():
+    guide = get_telegram_guide(
+        {
+            "portfolio_review_time": "15:00",
+            "intraday_check_enabled": True,
+            "intraday_cash_topup_min_usd": 20,
+        }
+    )
+    flow_labels = [item["label"] for item in guide["flow"]]
+    assert "סקירת תיק לפני הפתיחה" in flow_labels
+    assert flow_labels.index("סקירת תיק לפני הפתיחה") < flow_labels.index("כניסה בפתיחה")
+    assert flow_labels.index("כניסה בפתיחה") < flow_labels.index("דוח יומי")
+
+    review_flow = next(item for item in guide["flow"] if item["label"] == "סקירת תיק לפני הפתיחה")
+    assert "15:00" in review_flow["time"]
+    assert "ישראל" in review_flow["time"]
+    # Must NOT treat 15:00 as UTC (that would show ~18:00 ישראל in summer)
+    assert "18:00" not in review_flow["time"]
+
+    out_titles = [item["title"] for item in guide["outgoing"]]
+    assert "סריקת שוק מלאה (תיק ריק)" in out_titles
+    assert "סקירת תיק לפני הפתיחה" in out_titles
+    assert "הצעת קנייה (אחת-אחת)" in out_titles
+    assert out_titles.index("כניסה בפתיחה") > out_titles.index("סקירת תיק לפני הפתיחה")
+    assert "מעקב מסחר (שעתי)" in out_titles
+    assert "סקירה" in guide["schedule_note"]
+
+
+def test_guide_portfolio_review_has_no_disable_toggle():
+    """Unlike the removed cash reminder, portfolio review always runs on trading days."""
+    guide = get_telegram_guide({"intraday_check_enabled": False})
+    flow_labels = [item["label"] for item in guide["flow"]]
+    assert "סקירת תיק לפני הפתיחה" in flow_labels
+
+    out_titles = [item["title"] for item in guide["outgoing"]]
+    assert "סריקת שוק מלאה (תיק ריק)" in out_titles
+    assert "סקירת תיק לפני הפתיחה" in out_titles
+    assert "מעקב מסחר (שעתי)" not in out_titles

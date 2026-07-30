@@ -128,13 +128,15 @@ class AgentConfig:
     stop_loss_pct: float = 0.03
     take_profit_pct: float = 0.06
     max_daily_loss_pct: float = 0.02
-    planning_time: str = "20:15"  # UTC ≈ 16:15 ET — תוכנית אחרי סגירת וול סטריט
+    planning_time: str = "20:15"  # unused legacy key (evening plan replaced by portfolio_review_time)
     entry_sim_time: str = "13:35"  # UTC ≈ 09:35 ET — כניסה במחיר פתיחה
     market_open_sim_time: str = "13:30"  # UTC ≈ 09:30 ET — תחילת מעקב intraday
     market_close_sim_time: str = "20:20"  # UTC ≈ 16:20 ET — דוח סוף יום
     heartbeat_time: str = "13:00"  # UTC ≈ 09:00 ET
     send_heartbeat_on_startup: bool = True
-    plan_reminder_time: str = "20:00"  # UTC ≈ 16:00 ET — תזכורת לפני תוכנית
+    portfolio_review_time: str = "15:00"  # Asia/Jerusalem wall clock — pre-market, same day
+    plan_reminder_time: str = "20:00"  # unused legacy key (pre-sim reminder removed)
+    cash_reminder_time: str = "17:00"  # unused legacy key (folded into portfolio_review + hourly checks)
     initial_deploy_stocks: int = 4  # יום ראשון — חלוקה על כמה מניות (כולל מניית נרות)
     strategy_mode: str = "balanced_mix"
     candle_fourth_enabled: bool = True  # מניה רביעית לפי Rising Three Methods
@@ -151,6 +153,7 @@ class AgentConfig:
     intraday_check_enabled: bool = True
     intraday_check_interval_minutes: int = 60
     intraday_alert_cooldown_minutes: int = 120
+    intraday_cash_topup_min_usd: float = 20.0
     telegram_poll_interval_sec: int = 10
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
@@ -471,13 +474,9 @@ def is_us_trading_day(day: date) -> bool:
 
 
 def _plan_time_hint(cfg: AgentConfig | None = None) -> str:
-    """Israel wall-clock for evening plan (config stores UTC)."""
-    from trading_pulse.core.schedule_tz import ISRAEL, utc_hhmm_to_zone
-
+    """Israel wall-clock for the pre-market portfolio review (config stores it directly)."""
     cfg = cfg or load_config()
-    hhmm = str(getattr(cfg, "planning_time", "20:15"))
-    il = utc_hhmm_to_zone(hhmm, ISRAEL)
-    return il or hhmm
+    return str(getattr(cfg, "portfolio_review_time", "15:00"))
 
 
 def should_send_plan_today(run_day: date) -> bool:
@@ -3486,6 +3485,14 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 handled += 1
                 continue
 
+            # Sequential buy-offer reply (כן / amount / דלג) — direct commands
+            # (מכור, קנה SYMBOL, תיק, ...) fall through unconsumed.
+            from trading_pulse.agent.offer_queue import try_resolve_pending_offer
+
+            if try_resolve_pending_offer(cfg, state, text):
+                handled += 1
+                continue
+
             bare_digit_allocation = False
             if re.fullmatch(r"[1-5]", text.strip()) and allocation_choice_pending_for_active_plan():
                 bare_digit_allocation = True
@@ -5081,6 +5088,7 @@ def run_scheduler_loop(service: bool = True) -> None:
     from trading_pulse.core.instance_lock import acquire_instance_lock
     from trading_pulse.core.schedule_tz import (
         schedule_daily_at,
+        schedule_daily_at_israel,
         schedule_weekday_at,
         us_trading_session_date,
     )
@@ -5093,41 +5101,116 @@ def run_scheduler_loop(service: bool = True) -> None:
     setup_logger(log_file)
     cfg = load_config()
 
-    def run_plan_job() -> None:
+    def run_portfolio_review_job() -> None:
+        """Same-day pre-market review (replaces the old evening-before plan).
+
+        Empty book: on-demand full-universe scan, then sequential one-at-a-time
+        buy offers. Otherwise: a holdings digest (buy more / sell+replace /
+        idle-cash advice), then offers for any new-buy capacity.
+        """
         today = us_trading_session_date()
-        if not should_send_plan_today(today):
-            record_job("plan", "skipped", f"no trading day; today={today.isoformat()}")
+        if not is_us_trading_day(today):
+            record_job("portfolio_review", "skipped", f"market closed; today={today.isoformat()}")
             logging.info(
-                "JOB SKIP: daily plan (no US trading tomorrow; today=%s)",
-                today.isoformat(),
+                "JOB SKIP: portfolio review (not a US trading day; today=%s)", today.isoformat()
             )
             return
-        logging.info("JOB START: daily plan")
+        logging.info("JOB START: portfolio review")
         try:
+            from trading_pulse.agent.trading_flow import is_empty_portfolio
+
             state = load_state(cfg)
-            plan = generate_plan(cfg, state, today)
+            empty = is_empty_portfolio(state)
+            if empty:
+                try:
+                    from trading_pulse.agent.weekly_watchlist import build_weekly_watchlist
+
+                    result = build_weekly_watchlist(cfg)
+                    logging.info(
+                        "Full-universe scan for empty-book review: %d symbol(s)",
+                        result.get("selected", 0),
+                    )
+                except Exception as ex:
+                    logging.warning(
+                        "Full-universe scan failed, using existing watchlist: %s", ex
+                    )
+
+            plan = generate_plan(cfg, state, today, force=True)
             if plan.pop("_regeneration_skipped", False):
                 record_job(
-                    "plan",
+                    "portfolio_review",
                     "skipped",
                     f"protected plan kept for {plan['for_trading_day']}",
                 )
                 logging.info(
-                    "JOB SKIP: daily plan (protected plan kept for %s)",
+                    "JOB SKIP: portfolio review (protected plan kept for %s)",
                     plan["for_trading_day"],
                 )
                 return
+
+            if not empty:
+                from trading_pulse.telegram.telegram_format import format_portfolio_review_digest
+
+                digest = format_portfolio_review_digest(plan)
+                if digest:
+                    send_user_notification(cfg, digest, context="portfolio_review", parse_mode="HTML")
+            elif plan.get("recommendations"):
+                send_user_notification(
+                    cfg,
+                    "🔎 <b>סריקת שוק מלאה</b>\n"
+                    "בדקתי את כל רשימת המניות לפי האסטרטגיות — אשלח את ההזדמנויות אחת-אחת.",
+                    context="portfolio_review:intro",
+                    parse_mode="HTML",
+                )
+            else:
+                # Empty book, full scan ran, but nothing qualified — never stay silent.
+                from trading_pulse.telegram.telegram_format import escape_html
+
+                reason = escape_html(
+                    str(plan.get("no_picks_reason") or "לא נמצאו מועמדים מתאימים בסריקה של היום.")
+                )
+                send_user_notification(
+                    cfg,
+                    f"🔎 <b>סריקת שוק מלאה</b>\nבדקתי את כל רשימת המניות — {reason}",
+                    context="portfolio_review:no_picks",
+                    parse_mode="HTML",
+                )
+
+            from trading_pulse.agent.offer_queue import start_and_send_first_offer
+
+            offered = start_and_send_first_offer(cfg, state, plan)
+            if offered:
+                save_json(STATE_FILE, state)
+
             logging.info(
-                "Plan ready for %s with %d recommendation(s)",
+                "Portfolio review ready for %s (%d recommendation(s), empty_book=%s, offers=%s)",
                 plan["for_trading_day"],
                 len(plan.get("recommendations", [])),
+                empty,
+                offered,
             )
-            send_plan_notifications(cfg, plan)
-            record_job("plan", "ok", trading_day=plan["for_trading_day"])
-            logging.info("JOB END: daily plan")
+            record_job(
+                "portfolio_review",
+                "ok",
+                trading_day=plan["for_trading_day"],
+                empty_portfolio=empty,
+                offers_queued=offered,
+            )
+            logging.info("JOB END: portfolio review")
         except Exception as ex:
-            record_job("plan", "failed", str(ex))
-            logging.exception("JOB FAILED: daily plan: %s", ex)
+            record_job("portfolio_review", "failed", str(ex))
+            logging.exception("JOB FAILED: portfolio review: %s", ex)
+
+    def run_offer_nudge_job() -> None:
+        from trading_pulse.agent.offer_queue import expire_stale_offer, maybe_nudge_offer
+
+        active_cfg = load_config()
+        state = load_state(active_cfg)
+        changed = expire_stale_offer(state)
+        if not changed:
+            changed = maybe_nudge_offer(active_cfg, state)
+        if changed:
+            save_json(STATE_FILE, state)
 
     def run_entry_job() -> None:
         today = us_trading_session_date()
@@ -5137,6 +5220,11 @@ def run_scheduler_loop(service: bool = True) -> None:
         logging.info("JOB START: market entry")
         try:
             state = load_state(cfg)
+            from trading_pulse.agent.offer_queue import cutoff_pending_offer
+
+            if cutoff_pending_offer(cfg, state):
+                save_json(STATE_FILE, state)
+                logging.info("Offer queue cut off at market open — finalized decided picks")
             entries = run_entry_simulation(cfg, state, today)
 
             path = plan_path(today)
@@ -5258,21 +5346,6 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("heartbeat", "failed", str(ex))
             logging.exception("JOB FAILED: heartbeat: %s", ex)
 
-    def run_plan_reminder_job() -> None:
-        from trading_pulse.agent.plan_reminders import send_pre_simulation_reminder
-
-        today = us_trading_session_date()
-        active_cfg = load_config()
-        try:
-            if send_pre_simulation_reminder(active_cfg, today):
-                record_job("plan_reminder", "ok", f"day={today.isoformat()}")
-                logging.info("JOB DONE: plan reminder for %s", today.isoformat())
-            else:
-                record_job("plan_reminder", "skipped", f"not needed; day={today.isoformat()}")
-        except Exception as ex:
-            record_job("plan_reminder", "failed", str(ex))
-            logging.exception("JOB FAILED: plan reminder: %s", ex)
-
     def run_intraday_check_job() -> None:
         from trading_pulse.agent.intraday_monitor import run_intraday_check
         from trading_pulse.agent.price_watch import send_price_watch_updates
@@ -5306,10 +5379,12 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("intraday_check", "failed", str(ex))
             logging.exception("JOB FAILED: intraday check: %s", ex)
 
-    schedule_daily_at(cfg.planning_time).do(run_plan_job)
+    schedule_daily_at_israel(cfg.portfolio_review_time).do(run_portfolio_review_job)
     schedule_daily_at(cfg.entry_sim_time).do(run_entry_job)
     schedule_daily_at(cfg.market_close_sim_time).do(run_sim_job)
     schedule_daily_at(cfg.heartbeat_time).do(run_heartbeat_job)
+    schedule.every(5).minutes.do(run_offer_nudge_job).tag("offer-nudge")
+
     def run_weekly_scan_job() -> None:
         active_cfg = load_config()
         if not bool(getattr(active_cfg, "weekly_scan_enabled", True)):
@@ -5326,7 +5401,6 @@ def run_scheduler_loop(service: bool = True) -> None:
             record_job("weekly_scan", "failed", str(ex))
             logging.exception("JOB FAILED: weekly watchlist scan: %s", ex)
 
-    schedule_daily_at(cfg.plan_reminder_time).do(run_plan_reminder_job)
     if bool(getattr(cfg, "weekly_scan_enabled", True)):
         _day = str(getattr(cfg, "weekly_scan_day", "sunday")).lower()
         _weekly = schedule_weekday_at(_day, cfg.weekly_scan_time)
@@ -5383,10 +5457,9 @@ def run_scheduler_loop(service: bool = True) -> None:
     logging.info("  notification_mode: %s", cfg.notification_mode)
     logging.info("  risk profile: %s", risk_profile_summary(cfg))
     logging.info("  heartbeat: %s UTC", cfg.heartbeat_time)
-    logging.info("  plan: %s UTC (~ after US close)", cfg.planning_time)
+    logging.info("  portfolio review: %s Israel (pre-market, same day)", cfg.portfolio_review_time)
     logging.info("  entry: %s UTC (~ US market open)", cfg.entry_sim_time)
     logging.info("  report: %s UTC (~ US close)", cfg.market_close_sim_time)
-    logging.info("  plan reminder: %s UTC", cfg.plan_reminder_time)
     logging.info("  simulation report: %s UTC", cfg.market_close_sim_time)
     if cfg.intraday_check_enabled:
         logging.info(

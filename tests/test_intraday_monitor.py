@@ -27,6 +27,7 @@ class FakeCfg:
     min_volume_ratio: float = 1.0
     market_open_sim_time: str = "13:30"
     market_close_sim_time: str = "20:20"
+    intraday_cash_topup_min_usd: float = 20.0
 
 
 def test_is_within_market_hours():
@@ -496,6 +497,119 @@ def test_build_suggestions_skips_plan_sell_or_cooldown_symbols():
     assert len(suggestions) == 1
     assert suggestions[0].kind == "buy"
     assert suggestions[0].symbol == "NVDA"
+
+
+def test_append_idle_cash_topup_noop_without_holdings():
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    suggestions: list = []
+    _append_idle_cash_topup(
+        FakeCfg(), [], {}, {"equity": 1000, "open_positions": []}, set(), suggestions
+    )
+    assert suggestions == []
+
+
+def test_append_idle_cash_topup_noop_when_cash_too_low():
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    holdings = [{"symbol": "AMD", "capital_usd": 990, "entry_price": 100}]
+    state = {"equity": 1000, "open_positions": holdings}  # available cash = $10
+    suggestions: list = []
+    _append_idle_cash_topup(FakeCfg(), holdings, {}, state, set(), suggestions)
+    assert suggestions == []
+
+
+def test_append_idle_cash_topup_respects_custom_min_cash():
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    cfg = FakeCfg(intraday_cash_topup_min_usd=500.0)
+    holdings = [{"symbol": "AMD", "capital_usd": 700, "entry_price": 100}]
+    state = {"equity": 1000, "open_positions": holdings}  # available cash = $300
+    suggestions: list = []
+    _append_idle_cash_topup(cfg, holdings, {}, state, set(), suggestions)
+    assert suggestions == []  # below the custom $500 floor
+
+
+def test_append_idle_cash_topup_noop_when_all_holdings_excluded():
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    holdings = [{"symbol": "AMD", "capital_usd": 300, "entry_price": 100}]
+    state = {"equity": 1000, "open_positions": holdings}  # available cash = $700
+    suggestions: list = []
+    _append_idle_cash_topup(FakeCfg(), holdings, {}, state, {"AMD"}, suggestions)
+    assert suggestions == []
+
+
+def test_append_idle_cash_topup_picks_best_scoring_holding():
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    holdings = [
+        {"symbol": "AMD", "capital_usd": 300, "entry_price": 100},
+        {"symbol": "NVDA", "capital_usd": 300, "entry_price": 200},
+    ]
+    state = {"equity": 1000, "open_positions": holdings}  # available cash = $400
+    scores = {"AMD": {"score": 8.0}, "NVDA": {"score": 14.0}}
+    suggestions: list = []
+    _append_idle_cash_topup(FakeCfg(), holdings, scores, state, set(), suggestions)
+    assert len(suggestions) == 1
+    assert suggestions[0].kind == "buy"
+    assert suggestions[0].symbol == "NVDA"
+    assert "$400" in suggestions[0].message
+    assert "אין מקום לפוזיציה חדשה" in suggestions[0].message
+
+
+def test_append_idle_cash_topup_uses_default_state_when_none():
+    """`state=None` falls back to a zero-equity stand-in — should stay quiet."""
+    from trading_pulse.agent.intraday_monitor import _append_idle_cash_topup
+
+    holdings = [{"symbol": "AMD", "capital_usd": 0}]
+    suggestions: list = []
+    _append_idle_cash_topup(FakeCfg(), holdings, {}, None, set(), suggestions)
+    assert suggestions == []
+
+
+def test_build_suggestions_idle_cash_topup_fires_even_with_no_scores():
+    """Idle-cash top-up must fire when full, even with zero new-buy candidates."""
+    cfg = FakeCfg(max_open_positions=1)
+    holdings = [{"symbol": "AMD", "entry_price": 100, "capital_usd": 300}]
+    state = {"equity": 1000, "open_positions": holdings}
+    suggestions = build_suggestions(cfg, holdings, {}, {}, {}, state=state)
+    assert len(suggestions) == 1
+    assert suggestions[0].kind == "buy"
+    assert suggestions[0].symbol == "AMD"
+
+
+def test_build_suggestions_idle_cash_topup_excludes_sell_flagged_holding():
+    cfg = FakeCfg(max_open_positions=1)
+    holdings = [{"symbol": "SOXL", "entry_price": 197.0, "capital_usd": 300}]
+    quotes = {"SOXL": {"last": 168.0, "change_pct": -14.0}}
+    alerts = {"SOXL": [PositionAlert("SOXL", "heavy_loss", "x", severity=2)]}
+    state = {"equity": 1000, "open_positions": holdings}
+    suggestions = build_suggestions(cfg, holdings, {}, quotes, alerts, state=state)
+    # SOXL is flagged for sell — the idle-cash top-up must not target it too.
+    assert not any(s.kind == "buy" for s in suggestions)
+
+
+def test_build_suggestions_idle_cash_topup_alongside_new_buy_candidate():
+    cfg = FakeCfg(max_open_positions=1)
+    holdings = [{"symbol": "AMD", "entry_price": 100, "capital_usd": 300}]
+    state = {"equity": 1000, "open_positions": holdings}
+    scores = {
+        "AMD": {"score": 8.0, "ret_5d_pct": 1.0, "vol_ratio": 1.0, "volume_ok": True},
+        "NVDA": {"score": 8.5, "ret_5d_pct": 2.0, "vol_ratio": 1.1, "volume_ok": True},
+    }
+    suggestions = build_suggestions(cfg, holdings, scores, {}, {}, state=state)
+    kinds = {(s.kind, s.symbol) for s in suggestions}
+    # Book is full (no open slots) so no new-buy suggestion for NVDA is added —
+    # only the idle-cash top-up for the existing holding (score gap too small
+    # for a swap/watch suggestion to also fire).
+    assert kinds == {("buy", "AMD")}
+
+
+def test_agent_config_default_intraday_cash_topup_min_usd():
+    from trading_pulse.agent.dryrun_agent import AgentConfig
+
+    assert AgentConfig().intraday_cash_topup_min_usd == 20.0
 
 
 def test_card_intraday_monitor_png_has_holding_squares():

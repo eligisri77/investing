@@ -1,9 +1,13 @@
-"""Pre-simulation reminders when approval or allocation is still pending."""
+"""Legacy pre-simulation reminders (disabled).
+
+Historically reminded users to approve before EOD fills. Approvals now happen
+the evening before, with fills at next open — so this reminder no longer runs.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any, Literal
 
 ReminderKind = Literal["approval", "allocation"]
@@ -17,6 +21,7 @@ def minutes_until_local_time(hhmm: str, *, now: datetime | None = None) -> int:
 
 
 def plan_reminder_kind(plan: dict[str, Any]) -> ReminderKind | None:
+    """Legacy classifier — unused while send_pre_simulation_reminder is a no-op."""
     recs = plan.get("recommendations", [])
     if not recs:
         return None
@@ -30,44 +35,13 @@ def plan_reminder_kind(plan: dict[str, Any]) -> ReminderKind | None:
 
 
 def send_pre_simulation_reminder(cfg: Any, trading_day: date) -> bool:
-    """Send one reminder per plan if approval/allocation still pending. Returns True if sent."""
-    from trading_pulse.agent.dryrun_agent import plan_path, read_json, report_path, save_json, should_run_simulation_today
-    from trading_pulse.core.schedule_tz import minutes_until_utc_hhmm
-    from trading_pulse.telegram.telegram_format import format_pre_sim_reminder
+    """Disabled — leftover from old EOD-fill flow.
 
-    if not should_run_simulation_today(trading_day):
-        return False
-    if report_path(trading_day).exists():
-        return False
-
-    path = plan_path(trading_day)
-    if not path.exists():
-        return False
-
-    plan = read_json(path)
-    if plan.get("pre_sim_reminder_sent_at"):
-        return False
-
-    kind = plan_reminder_kind(plan)
-    if kind is None:
-        return False
-
-    minutes = minutes_until_utc_hhmm(str(cfg.market_close_sim_time))
-    text = format_pre_sim_reminder(minutes, kind)
-    # Use send_user_notification once — do NOT nest notify_user(send_telegram_message)
-    # (that double-logged reminder:pre_sim into the inbox).
-    from trading_pulse.agent.dryrun_agent import send_user_notification
-
-    sent = send_user_notification(cfg, text, context="reminder:pre_sim", parse_mode="HTML")
-    if not sent:
-        return False
-
-    plan["pre_sim_reminder_sent_at"] = datetime.now(timezone.utc).isoformat()
-    save_json(path, plan)
-    logging.info(
-        "Pre-simulation reminder sent for %s (%s, %d min to sim)",
+    Always returns False so old callers/config keys do not crash.
+    """
+    del cfg  # unused
+    logging.debug(
+        "Pre-simulation reminder disabled (skipped for %s)",
         trading_day.isoformat(),
-        kind,
-        minutes,
     )
-    return True
+    return False

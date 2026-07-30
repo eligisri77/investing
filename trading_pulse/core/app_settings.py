@@ -52,10 +52,12 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
         "note": "השעות נשמרות ב-UTC. מתחת לכל שדה — גם בשעון ישראל.",
         "fields": [
             {
-                "key": "planning_time",
-                "label": "שעת תוכנית יומית",
+                "key": "portfolio_review_time",
+                "label": "שעת סקירה לפני הפתיחה",
                 "type": "time",
-                "hint": "אחרי סגירת וול סטריט — תוכנית למחר",
+                "default": "15:00",
+                "restart_required": True,
+                "hint": "שעון ישראל, לפני פתיחת השוק — סריקה/סקירה + הצעות קנייה אחת-אחת",
             },
             {
                 "key": "entry_sim_time",
@@ -108,11 +110,14 @@ SETTINGS_SECTIONS: list[dict[str, Any]] = [
                 "type": "time",
             },
             {
-                "key": "plan_reminder_time",
-                "label": "תזכורת לפני סימולציה",
-                "type": "time",
-                "restart_required": True,
-                "hint": "הודעה אם חסר אישור או חלוקה (ברירת מחדל 22:00)",
+                "key": "intraday_cash_topup_min_usd",
+                "label": "מזומן מינימלי להצעת חיזוק (מעקב שעתי, $)",
+                "type": "number",
+                "min": 5,
+                "max": 500,
+                "step": 5,
+                "default": 20,
+                "hint": "כשאין מקום לפוזיציה חדשה אבל יש מזומן פנוי — הצעה לחזק החזקה קיימת",
             },
             {
                 "key": "weekly_scan_enabled",

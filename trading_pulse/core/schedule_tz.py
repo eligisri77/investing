@@ -22,12 +22,31 @@ def utc_hhmm_to_zone(hhmm: str, tz: ZoneInfo, *, on_day: date | None = None) -> 
     return dt_utc.astimezone(tz).strftime("%H:%M")
 
 
+def zone_hhmm_to_utc(hhmm: str, tz: ZoneInfo, *, on_day: date | None = None) -> str:
+    if not hhmm or not TIME_RE.fullmatch(str(hhmm).strip()):
+        return ""
+    hour, minute = (int(x) for x in str(hhmm).strip().split(":"))
+    base = on_day or date.today()
+    dt_local = datetime.combine(base, time(hour, minute), tzinfo=tz)
+    return dt_local.astimezone(UTC).strftime("%H:%M")
+
+
 def format_dual_time(hhmm: str, *, on_day: date | None = None) -> str:
     """e.g. ‎16:35‎ ישראל (‎13:35‎ UTC) — Israel first, LRM keeps times LTR."""
     if not hhmm or not TIME_RE.fullmatch(str(hhmm).strip()):
         return ""
     utc = str(hhmm).strip()
     il = utc_hhmm_to_zone(utc, ISRAEL, on_day=on_day)
+    lrm = "\u200e"
+    return f"{lrm}{il}{lrm} ישראל ({lrm}{utc}{lrm} UTC)"
+
+
+def format_dual_time_from_israel(hhmm: str, *, on_day: date | None = None) -> str:
+    """Same display as format_dual_time for times stored in Israel local wall clock."""
+    if not hhmm or not TIME_RE.fullmatch(str(hhmm).strip()):
+        return ""
+    il = str(hhmm).strip()
+    utc = zone_hhmm_to_utc(il, ISRAEL, on_day=on_day)
     lrm = "\u200e"
     return f"{lrm}{il}{lrm} ישראל ({lrm}{utc}{lrm} UTC)"
 
@@ -59,14 +78,15 @@ def format_local_entry_moment(iso_ts: str | None) -> str:
 SCHEDULE_TZ = "UTC"
 
 SCHEDULE_TIME_KEYS = (
-    "planning_time",
     "entry_sim_time",
     "market_open_sim_time",
     "market_close_sim_time",
     "heartbeat_time",
-    "plan_reminder_time",
     "weekly_scan_time",
 )
+
+# Times the user thinks about in their own wall clock, not in US market terms.
+ISRAEL_SCHEDULE_TIME_KEYS = ("portfolio_review_time",)
 
 
 def us_trading_session_date(*, now: datetime | None = None) -> date:
@@ -100,6 +120,13 @@ def schedule_daily_at(hhmm: str):
     return schedule.every().day.at(str(hhmm).strip(), SCHEDULE_TZ)
 
 
+def schedule_daily_at_israel(hhmm: str):
+    """Daily job at HH:MM Israel local time — stays put across DST shifts."""
+    import schedule
+
+    return schedule.every().day.at(str(hhmm).strip(), "Asia/Jerusalem")
+
+
 def schedule_weekday_at(day: str, hhmm: str):
     """Register a weekly job on a named weekday at HH:MM UTC."""
     import schedule
@@ -117,4 +144,8 @@ def dual_times_from_config(cfg: dict) -> dict[str, str]:
         raw = cfg.get(key)
         if raw:
             out[key] = format_dual_time(str(raw))
+    for key in ISRAEL_SCHEDULE_TIME_KEYS:
+        raw = cfg.get(key)
+        if raw:
+            out[key] = format_dual_time_from_israel(str(raw))
     return out

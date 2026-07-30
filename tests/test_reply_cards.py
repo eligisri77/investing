@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from trading_pulse.telegram.reply_cards import (
+    _strip_html,
     card_buy,
     card_entry,
     card_from_plan_summary,
@@ -38,12 +39,26 @@ def test_html_message_card_strips_tags():
     assert png.startswith(b"\x89PNG")
 
 
-def test_html_message_card_wraps_long_reminder_title():
-    from trading_pulse.telegram.telegram_format import format_pre_sim_reminder
+def test_strip_html_removes_alarm_clock_and_lrm():
+    raw = "⏰ \u200e17:00\u200e תזכורת\ufe0f קנייה"
+    plain = _strip_html(raw)
+    assert "⏰" not in plain
+    assert "\u200e" not in plain
+    assert "\ufe0f" not in plain
+    assert "17:00" in plain
+    assert "תזכורת" in plain
+    assert "קנייה" in plain
 
-    png = render_html_message_card(format_pre_sim_reminder(19, "approval"))
+
+def test_html_message_card_wraps_long_title():
+    # Long bold title exercises wrap height (reminder copy was removed).
+    html = (
+        "⏰ <b>כותרת ארוכה לבדיקה — נשארו 19 דקות עד סגירת השוק "
+        "והטקסט ממשיך כדי לכפות שבירת שורה</b>\n"
+        "שלח <code>הכל</code> לאישור"
+    )
+    png = render_html_message_card(html)
     assert png.startswith(b"\x89PNG")
-    # Wrapped title needs more height than a single title line (~120px).
     from io import BytesIO
 
     from PIL import Image

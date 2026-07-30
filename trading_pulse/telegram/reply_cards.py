@@ -50,6 +50,10 @@ def _strip_html(text: str) -> str:
     t = t.replace("─", "-").replace("━", "-").replace("—", "-").replace("–", "-")
     t = re.sub(r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]", "", t)
     t = re.sub(r"[✅❌⏳📌📋💼📊🌟💰🔄🚀⭐❗❓]", "", t)
+    # Clock / media pictographs (⏰ ⏸️ …) and variation selectors also draw as boxes.
+    t = re.sub(r"[\U000023E9-\U000023FA\U0000FE0F]", "", t)
+    # BiDi marks help Telegram text but draw as bars here — the card does its own RTL.
+    t = t.replace("\u200e", "").replace("\u200f", "")
     t = re.sub(r"-{4,}", "---", t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 

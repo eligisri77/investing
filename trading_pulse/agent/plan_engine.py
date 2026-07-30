@@ -323,6 +323,66 @@ def _auto_watch_method2(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -
         save_json(STATE_FILE, state)
 
 
+def apply_partial_confirm_manual(
+    plan: dict[str, Any], symbol: str, capital_usd: float
+) -> dict[str, Any]:
+    """Approve one rec with a user-chosen amount (sequential offer-queue flow).
+
+    Unlike `apply_confirm`, this does not equal-split or touch other recs —
+    each offer in the queue is decided independently as the conversation goes.
+    """
+    for rec in plan.get("recommendations") or []:
+        if str(rec.get("symbol")) == str(symbol):
+            rec["approved"] = True
+            rec["capital_usd"] = round(float(capital_usd), 2)
+            rec["approved_at"] = datetime.now(timezone.utc).isoformat()
+            rec.pop("offer_skipped", None)
+            break
+    alloc = plan.setdefault("allocation", {})
+    alloc["status"] = "pending"
+    alloc["manual_offer_flow"] = True
+    amounts = alloc.setdefault("amounts", {})
+    amounts[str(symbol)] = round(float(capital_usd), 2)
+    return plan
+
+
+def mark_offer_skipped(plan: dict[str, Any], symbol: str) -> dict[str, Any]:
+    """Record that the user declined an offered symbol for today."""
+    for rec in plan.get("recommendations") or []:
+        if str(rec.get("symbol")) == str(symbol):
+            rec["approved"] = False
+            rec["offer_skipped"] = True
+            break
+    return plan
+
+
+def finalize_manual_confirm(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -> dict[str, Any]:
+    """Confirm the plan once the sequential offer queue is exhausted.
+
+    Uses the per-rec amounts already chosen through the conversation instead
+    of an equal split. If nothing was bought, the plan stays a draft.
+    """
+    approved = [r for r in plan.get("recommendations") or [] if r.get("approved")]
+    if not approved:
+        plan["status"] = STATUS_DRAFT
+        return plan
+    plan["status"] = STATUS_CONFIRMED
+    plan["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+    plan["pre_entry_equity"] = round(
+        float(state.get("equity", getattr(cfg, "initial_capital", 1000))), 2
+    )
+    plan["allocation"] = {
+        "status": "applied",
+        "auto": False,
+        "manual_offer_flow": True,
+        "title": "אחת-אחת — סכומים שנבחרו",
+        "applied_at": plan["confirmed_at"],
+        "amounts": {str(r["symbol"]): float(r.get("capital_usd") or 0) for r in approved},
+    }
+    _auto_watch_method2(plan, state, cfg)
+    return plan
+
+
 def cancel_plan(*, as_of: date | None = None) -> dict[str, Any]:
     """Cancel the active (draft/confirmed) plan for the next open session.
 

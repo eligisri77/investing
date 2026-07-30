@@ -68,6 +68,47 @@ def test_update_settings_rejects_unknown_strategy_mode(monkeypatch):
     assert "ערך לא חוקי" in str(exc.value.detail)
 
 
+def test_settings_payload_exposes_portfolio_review_time(monkeypatch):
+    monkeypatch.setattr(app_settings, "_read_config", lambda: {})
+
+    payload = app_settings.get_settings_payload()
+    values = payload["values"]
+    assert values["portfolio_review_time"] == "15:00"
+
+    keys = {
+        field["key"]
+        for section in payload["sections"]
+        for field in section["fields"]
+    }
+    assert "portfolio_review_time" in keys
+
+
+def test_update_settings_persists_portfolio_review_time(monkeypatch):
+    stored: dict = {}
+    monkeypatch.setattr(app_settings, "_read_config", lambda: dict(stored))
+    monkeypatch.setattr(
+        app_settings,
+        "_write_config",
+        lambda value: stored.update(value),
+    )
+
+    out = app_settings.update_settings({"portfolio_review_time": "16:30"})
+
+    assert out["ok"] is True
+    assert out["restart_recommended"] is True
+    assert stored["portfolio_review_time"] == "16:30"
+
+
+def test_update_settings_rejects_invalid_portfolio_review_time(monkeypatch):
+    monkeypatch.setattr(app_settings, "_read_config", lambda: {})
+
+    with pytest.raises(HTTPException) as exc:
+        app_settings.update_settings({"portfolio_review_time": "5pm"})
+
+    assert exc.value.status_code == 400
+    assert "HH:MM" in str(exc.value.detail)
+
+
 def test_strategy_performance_api_uses_current_state(monkeypatch):
     state = {"history": [{"trading_day": "2026-07-18"}]}
     expected = {"strategies": [], "total_signals": 0}

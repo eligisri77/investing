@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -152,3 +153,123 @@ def test_clear_pending_sell_confirm() -> None:
     set_pending_sell_confirm(state, "AAPL")
     clear_pending_sell_confirm(state)
     assert pending_sell_confirm_symbol(state) is None
+
+
+def _routing_setup(tmp_path, monkeypatch, *, text: str):
+    """Shared scaffolding for pending-offer routing tests in process_telegram_commands."""
+    import trading_pulse.agent.dryrun_agent as agent
+
+    state_path = tmp_path / "state.json"
+    state = {
+        "equity": 1000.0,
+        "open_positions": [],
+        "telegram_last_update_id": 10,
+        "history": [],
+        "pending_offer": {
+            "trading_day": "2026-07-20",
+            "queue": ["NVDA"],
+            "index": 0,
+            "decided": {},
+            "offered_at": None,
+            "nudged_at": None,
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+
+    plan_file = tmp_path / "plan_2026-07-20.json"
+    agent.save_json(
+        plan_file,
+        {
+            "for_trading_day": "2026-07-20",
+            "available_capital_usd": 100.0,
+            "holdings": [],
+            "recommendations": [{"symbol": "NVDA", "score": 12.0}],
+        },
+    )
+    monkeypatch.setattr(agent, "plan_path", lambda _day: plan_file)
+
+    def _fake_api(_token, method, _payload=None):
+        if method == "getUpdates":
+            return {
+                "ok": True,
+                "result": [{"update_id": 11, "message": {"chat": {"id": "1"}, "text": text}}],
+            }
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(agent, "telegram_api_call", _fake_api)
+    monkeypatch.setattr(agent, "uses_telegram_notifications", lambda _cfg: True)
+    monkeypatch.setattr(agent, "log_telegram_message", lambda *a, **k: None)
+    return agent, state_path, plan_file
+
+
+class _RoutingCfg:
+    telegram_bot_token = "t"
+    telegram_chat_id = "1"
+    initial_capital = 1000.0
+    notification_mode = "telegram"
+
+
+def test_pending_offer_does_not_intercept_direct_help_command(tmp_path, monkeypatch):
+    """A direct command (עזרה) must still work normally while an offer is pending."""
+    agent, state_path, _plan_file = _routing_setup(tmp_path, monkeypatch, text="עזרה")
+
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent, "send_telegram_message", lambda *a, **k: send_calls.append((a, k)) or True
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+
+    assert handled == 1
+    assert len(send_calls) == 1
+    assert send_calls[0][1].get("context") == "reply:help"
+    # Pending offer must be untouched — the reply was not consumed as an offer decision.
+    saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved_state["pending_offer"]["index"] == 0
+
+
+def test_pending_offer_does_not_intercept_sell_command(tmp_path, monkeypatch):
+    """A direct «מכור» must not be swallowed by the pending-offer reply parser."""
+    agent, state_path, _plan_file = _routing_setup(tmp_path, monkeypatch, text="מכור AAPL")
+
+    monkeypatch.setattr(agent, "resolve_sell_target", lambda ref: None)  # nothing held
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent, "send_telegram_message", lambda *a, **k: send_calls.append((a, k)) or True
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+
+    assert handled == 1
+    # Reached the "sell" branch (not swallowed as an unrecognized offer reply).
+    saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved_state["pending_offer"]["index"] == 0
+
+
+def test_pending_offer_intercepts_bare_yes_reply(tmp_path, monkeypatch):
+    """A bare «כן» while an offer is pending buys it — it must not reach normal parsing."""
+    agent, state_path, plan_file = _routing_setup(tmp_path, monkeypatch, text="כן")
+
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent, "send_telegram_message", lambda *a, **k: send_calls.append((a, k)) or True
+    )
+    notify_calls: list[dict] = []
+    monkeypatch.setattr(
+        agent,
+        "send_user_notification",
+        lambda cfg, text, **kw: notify_calls.append({"text": text, **kw}) or True,
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+
+    assert handled == 1
+    assert send_calls == []  # never fell through to normal command parsing
+    assert notify_calls  # offer decision (+ finish-offers) notifications sent instead
+    saved_plan = agent.read_json(plan_file)
+    nvda = saved_plan["recommendations"][0]
+    assert nvda["approved"] is True
+    assert saved_plan["status"] == "confirmed"
+    saved_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "pending_offer" not in saved_state  # queue exhausted after the only offer

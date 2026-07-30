@@ -16,16 +16,17 @@ def _format_interval_hebrew(minutes: int) -> str:
 
 
 def _schedule_note(cfg: dict[str, Any]) -> str:
-    from trading_pulse.core.schedule_tz import format_dual_time
+    from trading_pulse.core.schedule_tz import format_dual_time, format_dual_time_from_israel
 
-    plan_t = str(cfg.get("planning_time", "20:15"))
+    review_t = str(cfg.get("portfolio_review_time", "15:00"))
     entry_t = str(cfg.get("entry_sim_time", "13:35"))
     close_t = str(cfg.get("market_close_sim_time", "20:20"))
-    return (
-        f"תוכנית {format_dual_time(plan_t)} · "
-        f"כניסה {format_dual_time(entry_t)} · "
-        f"דוח {format_dual_time(close_t)}"
-    )
+    parts = [
+        f"סקירה {format_dual_time_from_israel(review_t)}",
+        f"כניסה {format_dual_time(entry_t)}",
+        f"דוח {format_dual_time(close_t)}",
+    ]
+    return " · ".join(parts)
 
 
 def _intraday_settings_help(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -86,36 +87,37 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     interval = int(cfg.get("intraday_check_interval_minutes", 60))
     open_t = str(cfg.get("market_open_sim_time", "13:30"))
     close_t = str(cfg.get("market_close_sim_time", "20:20"))
-    plan_t = str(cfg.get("planning_time", "20:15"))
+    review_t = str(cfg.get("portfolio_review_time", "15:00"))
     entry_t = str(cfg.get("entry_sim_time", "13:35"))
-    reminder_t = str(cfg.get("plan_reminder_time", "20:00"))
     sim_t = str(cfg.get("market_close_sim_time", "20:20"))
     heartbeat_t = str(cfg.get("heartbeat_time", "13:00"))
-    from trading_pulse.core.schedule_tz import format_dual_time
+    topup_min = float(cfg.get("intraday_cash_topup_min_usd", 20) or 20)
+    from trading_pulse.core.schedule_tz import format_dual_time, format_dual_time_from_israel
 
     def _dual(t: str) -> str:
         clean = str(t).lstrip("~")
         dual = format_dual_time(clean)
         return dual if dual else str(t)
 
+    def _dual_israel(t: str) -> str:
+        clean = str(t).lstrip("~")
+        dual = format_dual_time_from_israel(clean)
+        return dual if dual else str(t)
+
     flow = [
         {
-            "time": _dual(plan_t),
-            "label": "תוכנית ליום המסחר הבא",
+            "time": _dual_israel(review_t),
+            "label": "סקירת תיק לפני הפתיחה",
             "detail": (
-                "תמונת PNG «תוכנית למחר» (טבלאות HTML) + תיק + גרף לכל מניה "
-                "(פרטים בתמונה · כיתוב «#1 CLF») · שלח הכל לאישור"
+                "תיק ריק: סריקת שוק מלאה (~420 מניות) ואז הצעות קנייה אחת-אחת (גרף + הסבר + סכום מוצע). "
+                "יש תיק: כרטיס סקירה (החזק/מכור/החלף + עצה על מזומן פנוי) — ואם יש מניות חדשות, "
+                "הצעות אחת-אחת אחרי הכרטיס"
             ),
         },
         {
             "time": _dual(entry_t),
             "label": "כניסה בפתיחה",
             "detail": "תמונת טבלה HTML לכל כניסה · נרות סיניים 2 ממתינה לפריצה",
-        },
-        {
-            "time": _dual(reminder_t),
-            "label": "תזכורת",
-            "detail": "אם לא אושרה תוכנית — תזכורת לפני סגירת השוק",
         },
         {
             "time": _dual(sim_t),
@@ -133,32 +135,49 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     ]
     if enabled:
         flow.insert(
-            5,
+            2,
             {
                 "time": f"{_dual(open_t)} – {_dual(close_t)}",
                 "label": "מעקב מסחר",
                 "detail": (
                     f"{_format_interval_hebrew(interval)} — בדיקת מניות מושקעות, "
-                    "חריגות והצעות רכישה/החלפה (רק כשיש מה לדווח)"
+                    "חריגות והצעות רכישה/החלפה/חיזוק (רק כשיש מה לדווח)"
                 ),
             },
         )
 
     outgoing = [
         {
-            "icon": "📋",
-            "title": "תוכנית יומית",
-            "when": f"כל יום מסחר ~{plan_t}, אחרי תוכנית עכשיו, או אחרי תוכנית (שליחה מחדש)",
+            "icon": "🔎",
+            "title": "סריקת שוק מלאה (תיק ריק)",
+            "when": f"~{review_t} ישראל · יום מסחר · רק כשאין החזקות פתוחות (יום 1, או תיק שהתרוקן)",
             "parts": [
-                "תמונת PNG (כיתוב קצר «תוכנית …») — טבלאות HTML עם כותרות עבריות, לא חומת טקסט RTL",
-                "בראש: יום מסחר · מזומן פנוי · מושקע · הון · יעד חודשי",
-                "בתיק עכשיו: # · סימול · שיטה · מושקע · מהכניסה · המלצה (החזק/מכור/החלף)",
-                "מומלץ ידנית: הסבר + צ׳יפים להעתקה (מכור / החלף) — «הכל» לא מוכר",
-                "קניות חדשות ממזומן: סימול · שיטה · סכום · ציון · כניסה",
-                "למטה: איך לאשר (הכל) + לוח זמנים — בתוך הכרטיס (אין כרטיס «שלחתי שוב» נפרד אחרי תוכנית)",
-                "אחרי הכרטיס: תמונת תיק + גרף לכל מניה (רצועת פרטים בעברית מתחת לגרף בתוך ה־PNG · "
-                "כיתוב טלגרם קצר בלבד, למשל «#1 CLF» · מחיר תחתון: -12%)",
-                "אם התמונה נכשלת — נשלח טקסט HTML כגיבוי",
+                "הודעה קצרה «🔎 סריקת שוק מלאה» — נבדקה כל רשימת המניות (~420, כמו סריקה שבועית)",
+                "מיד אחר כך — ההצעות הראשונות נשלחות אחת-אחת (ראה «הצעת קנייה» למטה)",
+            ],
+        },
+        {
+            "icon": "📋",
+            "title": "סקירת תיק לפני הפתיחה",
+            "when": f"~{review_t} ישראל · יום מסחר · כשיש החזקות פתוחות",
+            "parts": [
+                "כרטיס HTML לכל החזקה: החזק / מכור / החלף + הסבר + צ׳יפים להעתקה (מכור / החלף)",
+                "אם אין מניות חדשות להציע: עצת מזומן פנוי — לחזק החזקה קיימת (תקנה) או להשאיר במזומן",
+                "אם יש מניות חדשות: הודעה על כמה הצעות מגיעות — ואז נשלחות אחת-אחת (למטה)",
+            ],
+        },
+        {
+            "icon": "💡",
+            "title": "הצעת קנייה (אחת-אחת)",
+            "when": "לכל מניה חדשה שעברה סף, בזו אחר זו — אחרי הסריקה המלאה או הסקירה",
+            "parts": [
+                "גרף PNG למניה, ואז כרטיס «הצעה N/M: SYMBOL» — ציון, הסבר, מזומן פנוי, סכום מוצע",
+                "תשובה: כן (לקנות בסכום המוצע) · סכום (למשל 150 או $150) · דלג",
+                "הבוט ממתין לתשובה לפני ההצעה הבאה — פקודות ישירות (מכור / קנה SYMBOL / תיק / סטטוס) עובדות כרגיל בינתיים",
+                "בלי תשובה ~10 דקות — תזכורת עדינה חד-פעמית «עדיין מחכה לתשובה על SYMBOL»",
+                "השוק נפתח לפני שסיימנו לענות — «השוק נפתח»: מה שלא נענה יורד (עדיין אפשר "
+                "קנה SYMBOL בנפרד), ומה שכן נקבע נכנס בפתיחה כרגיל",
+                "בסוף הסבב — הודעת סיכום: מה נקנה (או שלא נקנה כלום היום)",
             ],
         },
         {
@@ -256,20 +275,10 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                 "מה לשלוח עכשיו לפי השלב",
             ],
         },
-        {
-            "icon": "⏰",
-            "title": "תזכורת לפני סגירה",
-            "when": f"~{reminder_t} אם לא אושרה תוכנית",
-            "parts": [
-                "כמה דקות נותרו עד סגירת השוק",
-                "מה לשלוח: הכל או מכור + הכל",
-                "אפשר גם בדשבורד: תוכנית פעילה (#/plan)",
-            ],
-        },
     ]
     if enabled:
         outgoing.insert(
-            5,
+            7,
             {
                 "icon": "🔍",
                 "title": "מעקב מסחר (שעתי)",
@@ -284,6 +293,8 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                     "יציאות רף, חריגות וצ׳יפי הצעות (פקודה להעתקה) בתוך התמונה",
                     "חריגות: מתחת למחיר תחתון, קרוב לרף, ירידה חדה",
                     "מכירה אוטומטית מתחת לרף — «הפסד» או «רווח» עם $ חתום",
+                    f"אין מקום לפוזיציה חדשה אבל יש מזומן פנוי (≥ ${topup_min:.0f}) — הצעה לחזק "
+                    "את ההחזקה הכי חזקה: תקנה SYMBOL (זה מחליף את תזכורת המזומן היומית שהוסרה)",
                     "אם התמונה נכשלת — נשלח טקסט HTML כגיבוי",
                     "לא מציע לקנות מניות שמסומנות למכירה/החלפה בתוכנית, ב-cooldown, או שנסגרו היום",
                     "נשלח רק כשיש משהו לדווח — לא ספאם כל שעה",
@@ -298,9 +309,17 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "חלוקה ידנית (מתקדם): תמונת טבלת HTML (מחזיק/חדש) וצ׳יפי ח1…ח5 — שלח חלוקה להציג שוב.",
         "מניה חדשה בלי מזומן: מכור SYMBOL או החלף X Y, ואז הכל.",
         "יש מזומן פנוי (~$20+)? תקנה 1 / קנה SYMBOL = כל המזומן; תקנה 1 $50 לסכום מדויק.",
+        (
+            f"הצעות קנייה בסקירה לפני הפתיחה ({review_t} ישראל): כן / סכום / דלג — "
+            "הבוט ממתין לתשובה לפני שממשיך למניה הבאה."
+        ),
+        (
+            f"אין מקום לפוזיציה חדשה אבל יש מזומן פנוי (≥ ${topup_min:.0f})? "
+            "מעקב המסחר השעתי יציע לחזק את ההחזקה הכי חזקה — תקנה SYMBOL."
+        ),
         "אישור אפשרי גם בדשבורד: תוכנית פעילה (#/plan).",
         "דפי עזרה: מדריך (#/guide) · בחירת מניות (#/selection) · חיבור בוט (#/bot-guide).",
-        "שעות נשמרות ב-UTC — בכל מקום מוצג גם שעון ישראל (Asia/Jerusalem).",
+        "רוב השעות ב-UTC (מוצג גם ישראל); portfolio_review_time נשמר בשעון ישראל וקבוע גם בחורף.",
         "בלי תאריך — כל הפקודות על התוכנית האחרונה.",
         "שינוי מרווח בדיקת טלגרם בהגדרות נכנס לתוקף תוך ~דקה.",
         "במסך הודעות מוצג אם הודעה נמסרה לאפליקציה ולטלגרם; בשליחת טלגרם שנכשלה אפשר ללחוץ נסה שוב בטלגרם.",
@@ -308,7 +327,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "סכומי הדולר בתוכנית = מה ש«הכל» יקצה לקניות ממזומן (החלפות/מכירות נשארות ידניות).",
         "«הכל» בלי קניות ממזומן לאשר → «אין קניות ממזומן לאשר» (לא שגיאת מספרים) + טיפ מכור/החלף.",
         "ציון שעתי / מעקב נרות סיניים 2: עדכונים שקטים + מרחק לפריצה; המעקב נעצר אחרי מכירה או כשהפוזיציה נעלמת.",
-        "הצעות החלפה בערב מוגבלות (עד ~2) — בלי כמה פעמים לאותה מניית יעד.",
+        "הצעות החלפה בסקירה לפני הפתיחה מוגבלות (עד ~2) — בלי כמה פעמים לאותה מניית יעד.",
         "מעקב מסחר: intraday_check_enabled / intraday_check_interval_minutes — נכנס לתוקף תוך ~דקה.",
         "סריקה שבועית: weekly_scan_enabled / weekly_watchlist_size / weekly_strategy_rank_enabled — #/settings · לוח זמנים.",
         f"מעקב מסחר כרגע: {intraday['status']}"
@@ -323,7 +342,7 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
 
     return {
         "title": "מדריך טלגרם",
-        "subtitle": "תוכנית בערב · כניסה בבוקר · דוח בערב — פשוט וברור",
+        "subtitle": "סקירה לפני הפתיחה · כניסה בבוקר · דוח בערב — פשוט וברור",
         "schedule_note": _schedule_note(cfg),
         "getting_started": [
             {
@@ -370,6 +389,16 @@ def get_telegram_guide(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
                     },
                     {"cmd": "1,2,3", "desc": "לאשר רק את המספרים האלה"},
                     {"cmd": "דחה 4", "desc": "לדחות המלצה מס' 4"},
+                ],
+            },
+            {
+                "id": "offers",
+                "title": "מענה להצעת קנייה (אחת-אחת)",
+                "warning": "רק כשמחכה הצעה פתוחה — אחרת נחשב כפקודה רגילה (למשל תיק/סטטוס)",
+                "items": [
+                    {"cmd": "כן", "desc": "לקנות את המניה המוצעת בסכום המומלץ"},
+                    {"cmd": "150", "desc": "לקנות בסכום מדויק (גם $150) — לא הסכום המומלץ"},
+                    {"cmd": "דלג", "desc": "לדלג על המניה הזו ולעבור להצעה הבאה"},
                 ],
             },
             {

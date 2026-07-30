@@ -37,29 +37,36 @@ Module: `trading_pulse/agent/plan_engine.py`
 
 | Status | Meaning |
 |--------|---------|
-| `draft` | Evening research — awaiting user confirm |
+| `draft` | Pre-market research — awaiting user confirm |
 | `confirmed` | Order placed — fills at market open |
 | `executed` | Filled at open |
 | `closed` | EOD report done |
-| `superseded` | Replaced by newer evening plan |
+| `superseded` | Replaced by a newer pre-market review |
 
-**Evening (~20:15 UTC)** — fresh scan from current portfolio; supersedes stale plans  
-**Confirm** — one step (`הכל` / אשר הזמנה): approve + equal split  
+**Pre-market review (~15:00 Israel, `portfolio_review_time`)** — same-day, before US open; supersedes stale plans  
+**Confirm** — one step (`הכל` / אשר הזמנה) or answer sequential offers (`כן` / amount / `דלג`)  
 **Morning (~13:35 UTC)** — fill confirmed orders at open price  
 **Evening (~20:20 UTC)** — EOD report, plan → `closed`
 
 Locked only when `confirmed` + pending buys + before market open.  
-Holding all picks already → evening regenerates.
+Holding all picks already → review regenerates.
 
 ## Telegram: simplified user flow
 
-**ערב (~20:15 UTC)** — תוכנית למחר + `הכל` לאישור (חלוקה אוטומטית)  
+**לפני הפתיחה (~15:00 ישראל, `portfolio_review_time`)** — same-day pre-market review:
+- תיק ריק (יום 1, או תיק שהתרוקן): סריקת שוק מלאה (`build_weekly_watchlist`, ~420 מניות) → הצעות קנייה אחת-אחת
+- יש תיק: כרטיס סקירה (`format_portfolio_review_digest` — `format_holding_actions` + `format_cash_deploy_advice`) → הצעות אחת-אחת אם יש מניות חדשות
+
+**הצעות אחת-אחת (`offer_queue.py`)** — גרף + כרטיס «הצעה N/M» לכל מניה; הבוט ממתין ל-`כן` / סכום / `דלג`; תזכורת אחרי ~10 דק׳ בלי תשובה; בפתיחת השוק — מה שלא נענה יורד (`קנה SYMBOL` תמיד עובד בנפרד), מה שכן נקבע מאושר  
 **בוקר (~13:35 UTC)** — כניסה במחיר פתיחה + הודעה  
+**מהלך היום** — מעקב שעתי (`intraday_check_*`) גם מציע לחזק החזקה קיימת (`תקנה SYMBOL`) כשאין מקום לפוזיציה חדשה אבל יש מזומן פנוי ≥ `intraday_cash_topup_min_usd` (מחליף את תזכורת המזומן היומית שהוסרה)  
 **ערב (~20:20 UTC)** — דוח יומי (ממומש + עתידי)
 
 **יום ראשון:** `הכל` מחלק $1,000 על ~3 מניות (`initial_deploy_stocks`)  
 **מניה חדשה בלי מזומן:** `מכור SYMBOL` / `החלף X Y` → אז `הכל`  
 **חלוקה ידנית (מתקדם):** `ח1`…`ח5` רק אם נשלחה הודעת חלוקה ידנית
+
+**Legacy/unused config keys** (kept for compat, no longer scheduled): `planning_time`, `plan_reminder_time`, `cash_reminder_time`. `cash_reminder_enabled`/`cash_reminder_min_usd` and `trading_pulse/agent/cash_reminder.py` were removed entirely.
 
 Parser: `parse_telegram_user_command()` in `dryrun_agent.py`.  
 Flow helpers: `trading_flow.py` (`plan_intent`, `auto_allocate_equal`, `funding_gap`).
@@ -122,7 +129,7 @@ Nav links in `renderNav()` in `app.js`. Reuse `.guide-*` CSS classes.
 - User guides: `user_guide_step1()`, `user_guide_step2()`, `user_guide_done()` in `telegram_format.py`
 - Status/allocation replies show contextual "מה לשלוח עכשיו"
 - Plan summary is short; per-stock detail in separate photo messages
-- **How-to commands**: evening `format_holding_actions` / new picks and intraday `format_intraday_monitor` must show `✅ איך לבצע:` + `<code>…</code>` copy-paste (`החלף X Y`, `מכור SYM`, `תקנה SYM`)
+- **How-to commands**: pre-market review `format_holding_actions` / new picks and intraday `format_intraday_monitor` must show `✅ איך לבצע:` + `<code>…</code>` copy-paste (`החלף X Y`, `מכור SYM`, `תקנה SYM`)
 - **No picks**: `format_no_new_buys_banner` — same clarity in Telegram and app (`format_plan_message_for_app` = strip HTML of `format_plan_message`)
 - **Empty morning entry**: `format_no_entries_morning` — always notify, do not stay silent
 
@@ -147,7 +154,8 @@ A `stop` hook nudges once if product files were edited without these specialists
 
 - Restart app after code changes: `.\scripts\run_app.ps1` (quit tray first)
 - `telegram_poll_interval_sec` (default **10**) reloads from config on the next scheduler loop (no restart)
-- Schedule times (`plan_reminder_time`, etc.) need restart
+- Schedule times (`portfolio_review_time`, `entry_sim_time`, `market_close_sim_time`, etc.) need restart
+- `portfolio_review_time` is **Israel local** wall clock (not UTC); stays 15:00 in winter too
 - `notification_mode`: `app` | `telegram` | `both`
 - Single instance lock — don't run duplicate schedulers
 

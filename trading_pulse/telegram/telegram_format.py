@@ -67,34 +67,21 @@ def user_guide_done() -> str:
     )
 
 
-def format_pre_sim_reminder(minutes: int, kind: str) -> str:
-    mins = max(0, int(minutes))
-    if kind == "allocation":
-        action = "שלח <code>הכל</code> לאישור (או בחר חלוקה ידנית אם נשלחה)"
-    else:
-        action = "שלח <code>הכל</code> לאישור · אם אין מזומן — <code>מכור SYMBOL</code> קודם"
-    return "\n".join(
-        [
-            f"⏰ <b>תזכורת</b> — נשארו <b>{mins}</b> דקות עד סגירת השוק",
-            action,
-            "",
-            "<i>אפשר גם בדשבורד: תוכנית פעילה (#/plan)</i>",
-        ]
-    )
-
-
 def user_guide_full() -> str:
     return "\n".join(
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. בערב — כרטיס PNG «תוכנית למחר» (+ תיק + גרף לכל מניה: פרטים בתמונה · כיתוב <code>#1 CLF</code>) · <code>הכל</code> / <code>התחל</code> לאישור קניות ממזומן",
+            "1. לפני הפתיחה — סקירת תיק (או סריקת שוק מלאה בתיק ריק), ואז הצעות קנייה אחת-אחת "
+            "(גרף + הסבר + סכום מוצע) · <code>כן</code> / סכום / <code>דלג</code> לכל אחת",
             "2. בפתיחה — תמונת כניסה; נרות סיניים 2 ממתינה לפריצה ולא נקנית אוטומטית",
-            "3. בערב אחרי סגירה — כרטיס PNG «דוח יומי» על הרווח/הפסד",
+            "3. אין מקום לפוזיציה חדשה אבל יש מזומן פנוי? מעקב שעתי יציע לחזק החזקה קיימת — <code>תקנה SYMBOL</code>",
+            "4. בערב אחרי סגירה — כרטיס PNG «דוח יומי» על הרווח/הפסד",
             "",
-            "אין קניות ממזומן? <code>הכל</code> → «אין קניות ממזומן לאשר» (לא שגיאת מספרים) · <code>מכור</code> / <code>החלף</code>",
+            "לא ענית להצעה? תזכורת עדינה אחרי ~10 דק׳; בפתיחת השוק — לא נענה יורד "
+            "(עדיין אפשר <code>קנה SYMBOL</code> בנפרד), מה שכן נקבע נכנס",
             "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
-            "יש מזומן פנוי? הבוט מציע מה לעשות · חיזוק: <code>תקנה 1</code> (כל המזומן) · <code>קנה BEAM $50</code>",
+            "יש מזומן פנוי? הבוט מציע מה לעשות בסקירה ובמעקב השעתי · חיזוק: <code>תקנה 1</code> (כל המזומן) · <code>קנה BEAM $50</code>",
             "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
             "שני סכומים: <code>מכור 1 200$ קנה 2 100$</code>",
             "ניתוח מניה: <code>מניה NVDA</code> · <code>ציון AAPL</code>",
@@ -686,6 +673,42 @@ def format_cash_deploy_advice(
         "<i>טיפ: <code>תקנה 1 $50</code> מוסיף למניה #1 בתיק בלי למכור אחרת</i>"
     )
     return lines
+
+
+def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
+    """Day 2+ pre-market digest: buy-more/sell/swap on holdings + idle-cash advice.
+
+    New-buy candidates are not listed here — they go out one at a time via the
+    sequential offer queue right after this digest.
+    """
+    holdings = plan.get("holdings") or []
+    actions = plan.get("holding_actions") or []
+    cash = float(plan.get("available_capital_usd", 0) or 0)
+    lines = ["<b>📋 סקירת תיק לפני הפתיחה</b>", SEP]
+    if not holdings:
+        lines.append("אין החזקות פתוחות כרגע.")
+    else:
+        lines.extend(format_holding_actions(actions, holdings))
+
+    held_syms = {str(h.get("symbol")) for h in holdings}
+    new_recs = [
+        r
+        for r in (plan.get("recommendations") or [])
+        if not r.get("below_bar")
+        and not r.get("approved")
+        and not r.get("offer_skipped")
+        and str(r.get("symbol")) not in held_syms
+    ]
+    if new_recs:
+        lines.append("")
+        n = len(new_recs)
+        word = "הצעת קנייה חדשה אחת" if n == 1 else f"{n} הצעות קנייה חדשות"
+        lines.append(f"<i>יש {word} — נשלח אחת-אחת בהודעות הבאות</i>")
+    elif cash >= 20:
+        lines.extend(
+            format_cash_deploy_advice(cash, holdings, actions=actions, new_buy_symbols=set())
+        )
+    return "\n".join(lines)
 
 
 def format_no_new_buys_banner(
@@ -1756,15 +1779,13 @@ def format_heartbeat(
             lines.append(escape_html(truncate(monthly_fn(cfg, state), 140)))
 
     if market_day:
-        plan_utc = str(cfg.planning_time)
+        plan_il = str(getattr(cfg, "portfolio_review_time", "15:00"))
         report_utc = str(cfg.market_close_sim_time)
-        plan_il = utc_hhmm_to_zone(plan_utc, ISRAEL) or plan_utc
         report_il = utc_hhmm_to_zone(report_utc, ISRAEL) or report_utc
         lines.extend(
             [
                 "",
-                f"תוכנית: {_ltr_code(plan_il)} ישראל "
-                f"({_ltr_code(plan_utc)} UTC)",
+                f"סקירה: {_ltr_code(plan_il)} ישראל",
                 f"דוח: {_ltr_code(report_il)} ישראל "
                 f"({_ltr_code(report_utc)} UTC)",
             ]

@@ -383,6 +383,52 @@ def _sell_recommendations(
     return out
 
 
+def _append_idle_cash_topup(
+    cfg: Any,
+    holdings: list[dict[str, Any]],
+    scores: dict[str, dict[str, Any]],
+    state: dict[str, Any] | None,
+    exclude_symbols: set[str],
+    suggestions: list[TradeSuggestion],
+) -> None:
+    """No open slots, but cash sits idle — offer to top up the strongest holding.
+
+    Closes the gap left by the removed once-daily cash reminder: this is the
+    only place idle cash gets surfaced during market hours once the book is
+    at max position count. `exclude_symbols` are holdings already flagged for
+    sell/swap/cooldown (not candidates for adding more cash).
+    """
+    if not holdings:
+        return
+    from trading_pulse.agent.positions import available_capital
+
+    state_obj = state or {"equity": 0, "open_positions": holdings}
+    cash = available_capital(cfg, state_obj)
+    min_cash = float(getattr(cfg, "intraday_cash_topup_min_usd", 20.0) or 20.0)
+    if cash < min_cash:
+        return
+    candidates = [h for h in holdings if str(h.get("symbol")) not in exclude_symbols]
+    if not candidates:
+        return
+    best_held = max(
+        candidates,
+        key=lambda h: float(scores.get(str(h.get("symbol")), {}).get("score", 0)),
+    )
+    sym = str(best_held.get("symbol"))
+    score = float(scores.get(sym, {}).get("score", 0))
+    suggestions.append(
+        TradeSuggestion(
+            kind="buy",
+            symbol=sym,
+            score=score,
+            message=(
+                f"אין מקום לפוזיציה חדשה, אבל יש ${cash:.0f} מזומן פנוי — "
+                f"אפשר לחזק את {sym} (ציון {score:.1f})"
+            ),
+        )
+    )
+
+
 def build_suggestions(
     cfg: Any,
     holdings: list[dict[str, Any]],
@@ -407,6 +453,18 @@ def build_suggestions(
         elif s.kind == "swap" and s.swap_from:
             sell_symbols.add(str(s.swap_from))
 
+    max_open = int(getattr(cfg, "max_open_positions", 4))
+    open_slots = max(0, max_open - len(holdings))
+    if open_slots <= 0:
+        _append_idle_cash_topup(
+            cfg,
+            holdings,
+            scores,
+            state,
+            sell_symbols | _plan_sell_or_cooldown_symbols(cfg, state),
+            suggestions,
+        )
+
     if not scores:
         return suggestions
 
@@ -414,9 +472,6 @@ def build_suggestions(
     if top is None:
         return suggestions
     best_sym, best = top
-
-    max_open = int(getattr(cfg, "max_open_positions", 4))
-    open_slots = max(0, max_open - len(holdings))
 
     if open_slots > 0:
         from trading_pulse.agent.positions import available_capital

@@ -1,15 +1,21 @@
-"""Tests for pre-simulation reminders (UTC countdown)."""
+"""Tests for plan reminder helpers (pre-sim reminder is disabled)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from trading_pulse.agent.plan_reminders import minutes_until_local_time, plan_reminder_kind
+import pytest
+
+from trading_pulse.agent.plan_reminders import (
+    minutes_until_local_time,
+    plan_reminder_kind,
+    send_pre_simulation_reminder,
+)
 from trading_pulse.core.schedule_tz import minutes_until_utc_hhmm
 
 
-def test_minutes_until_utc_at_reminder_time():
-    # plan_reminder_time 20:00 UTC → market_close 20:20 UTC = 20 minutes
+def test_minutes_until_utc_countdown():
+    # 20:00 UTC → market_close 20:20 UTC = 20 minutes
     now = datetime(2026, 7, 10, 20, 0, tzinfo=timezone.utc)
     assert minutes_until_utc_hhmm("20:20", now=now) == 20
     # Deprecated alias must match (was buggy with local Israel clock)
@@ -27,6 +33,64 @@ def test_plan_reminder_kind_ready():
         "allocation": {"status": "applied"},
     }
     assert plan_reminder_kind(plan) is None
+
+
+def test_send_pre_simulation_reminder_is_noop():
+    assert send_pre_simulation_reminder(cfg={}, trading_day=date(2026, 7, 10)) is False
+
+
+def test_scheduler_does_not_register_plan_reminder(monkeypatch):
+    import schedule
+
+    from trading_pulse.agent import dryrun_agent as agent
+    from trading_pulse.agent import health_tracker
+    from trading_pulse.core import instance_lock, schedule_tz
+
+    class StopScheduler(Exception):
+        pass
+
+    class PendingJob:
+        def do(self, _func):
+            return self
+
+    cfg = agent.AgentConfig(
+        notification_mode="app",
+        intraday_check_enabled=False,
+        weekly_scan_enabled=False,
+        send_heartbeat_on_startup=False,
+        plan_reminder_time="19:59",
+    )
+    scheduled_times: list[str] = []
+    scheduled_israel_times: list[str] = []
+
+    monkeypatch.setattr(instance_lock, "acquire_instance_lock", lambda _name: True)
+    monkeypatch.setattr(health_tracker, "record_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(agent, "setup_logger", lambda _path=None: None)
+    monkeypatch.setattr(agent, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        schedule_tz,
+        "schedule_daily_at",
+        lambda hhmm: scheduled_times.append(hhmm) or PendingJob(),
+    )
+    monkeypatch.setattr(
+        schedule_tz,
+        "schedule_daily_at_israel",
+        lambda hhmm: scheduled_israel_times.append(hhmm) or PendingJob(),
+    )
+    monkeypatch.setattr(schedule, "run_pending", lambda: (_ for _ in ()).throw(StopScheduler))
+
+    with pytest.raises(StopScheduler):
+        agent.run_scheduler_loop(service=False)
+
+    assert scheduled_times == [
+        cfg.entry_sim_time,
+        cfg.market_close_sim_time,
+        cfg.heartbeat_time,
+    ]
+    assert scheduled_israel_times == [cfg.portfolio_review_time]
+    assert cfg.planning_time not in scheduled_times
+    assert cfg.plan_reminder_time not in scheduled_times
 
 
 def test_parse_indices_all_skips_below_bar():

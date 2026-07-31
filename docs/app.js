@@ -9,7 +9,7 @@
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
-// Resolve data/*.json next to this script so /investing (no trailing slash) still works.
+// Resolve data/*.json next to this script (works with /investing and /investing/).
 const ASSET_BASE = new URL(".", document.currentScript?.src || location.href).href;
 
 async function fetchJson(url) {
@@ -25,20 +25,160 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+function fmtUsd(n, { signed = false } = {}) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const body = `$${Math.abs(v).toFixed(v % 1 === 0 ? 0 : 2)}`;
+  if (!signed) return body;
+  if (v > 0) return `+${body}`;
+  if (v < 0) return `-${body}`;
+  return body;
+}
+
+function fmtPct(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const sign = v > 0 ? "+" : v < 0 ? "-" : "";
+  return `${sign}${Math.abs(v).toFixed(1)}%`;
+}
+
 const DEMO_BANNER = `
   <div class="guide-note" style="margin-bottom:1.25rem">
     👁 הדגמה ציבורית וסטטית — תוכן גנרי מהגדרות דוגמה, בלי חיבור לאף מכשיר/חשבון אמיתי.
     <a href="https://github.com/eligisri77/investing" style="color:var(--cyan)">קוד המקור וההתקנה ב-GitHub</a>
   </div>`;
 
+const ROUTES = [
+  { hash: "#/", label: "דשבורד" },
+  { hash: "#/selection", label: "🎯 בחירה" },
+  { hash: "#/guide", label: "📖 מדריך" },
+  { hash: "#/bot-guide", label: "🤖 חיבור בוט" },
+];
+
 function renderNav() {
-  const hash = location.hash || "#/selection";
-  nav.innerHTML = `
-    <a href="#/selection" class="${hash === "#/selection" ? "active" : ""}">🎯 בחירה</a>
-    <a href="#/guide" class="${hash === "#/guide" ? "active" : ""}">📖 מדריך</a>
-    <a href="#/bot-guide" class="${hash === "#/bot-guide" ? "active" : ""}">🤖 חיבור בוט</a>
+  const hash = location.hash || "#/";
+  nav.innerHTML = ROUTES.map(
+    (r) =>
+      `<a href="/investing/${r.hash}" data-route="${r.hash}" class="${hash === r.hash ? "active" : ""}">${r.label}</a>`
+  ).join("");
+  nav.querySelectorAll("a[data-route]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const route = a.getAttribute("data-route");
+      if (location.hash !== route) location.hash = route;
+      else router();
+    });
+  });
+}
+
+async function renderDashboardDemo() {
+  const data = await fetchJson("data/dashboard.json");
+  const monthPnl = Number(data.equity) - Number(data.month_start_equity || data.equity);
+  const monthPct = data.month_start_equity
+    ? (monthPnl / Number(data.month_start_equity)) * 100
+    : 0;
+
+  const holdingsHtml = (data.holdings || [])
+    .map(
+      (h, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="sym">${escapeHtml(h.symbol)}</td>
+        <td>${escapeHtml(h.method || "—")}</td>
+        <td class="num">${fmtUsd(h.capital_usd)}</td>
+        <td class="num">${fmtUsd(h.entry_price)}</td>
+        <td class="num">${fmtUsd(h.value)}</td>
+        <td class="num ${h.pnl_usd >= 0 ? "pos" : "neg"}">${fmtUsd(h.pnl_usd, { signed: true })}</td>
+        <td class="muted">${escapeHtml(h.entry_at || "")}</td>
+      </tr>`
+    )
+    .join("");
+
+  const picksHtml = (data.recent_picks || [])
+    .map((p) => {
+      const pnlClass = p.pnl_usd >= 0 ? "up" : "down";
+      const hypo = p.hypo ? " · סימולציה" : "";
+      return `
+        <article class="pick-card" style="cursor:default">
+          <div class="pick-card-header">
+            <span class="pick-symbol">${escapeHtml(p.symbol)}</span>
+            <span class="badge badge-${p.status === "invested" ? "invested" : "skipped"}">${escapeHtml(p.status_label || "")}</span>
+          </div>
+          <div class="pick-date">${escapeHtml(p.trading_day)}</div>
+          <div class="pick-meta">
+            <span>${fmtUsd(p.capital_usd)}</span>
+            <span>ציון ${Number(p.score).toFixed(1)}</span>
+          </div>
+          <div class="pick-pnl ${pnlClass}">${fmtUsd(p.pnl_usd, { signed: true })} (${fmtPct(p.pnl_pct)})${hypo}</div>
+        </article>`;
+    })
+    .join("");
+
+  const hist = data.equity_history || [];
+  const maxEq = Math.max(...hist.map((h) => h.equity), 1);
+  const barsHtml = hist
+    .map(
+      (h) => `
+      <div class="demo-bar-col" title="${escapeHtml(h.day)}: ${fmtUsd(h.equity)}">
+        <div class="demo-bar" style="height:${Math.max(8, (h.equity / maxEq) * 120)}px"></div>
+        <span>${escapeHtml(h.day)}</span>
+      </div>`
+    )
+    .join("");
+
+  app.innerHTML = `
+    ${DEMO_BANNER}
+    <section class="hero">
+      <h1>⚡ ${escapeHtml(data.title || "דשבורד לדוגמה")}</h1>
+      <p>${escapeHtml(data.subtitle || "")}</p>
+    </section>
+
+    <div class="stats-grid">
+      <div class="stat-card accent">
+        <div class="label">הון נוכחי</div>
+        <div class="value">${fmtUsd(data.equity)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">מזומן פנוי</div>
+        <div class="value">${fmtUsd(data.cash)}</div>
+      </div>
+      <div class="stat-card ${data.open_pnl >= 0 ? "positive" : "negative"}">
+        <div class="label">רווח פתוח</div>
+        <div class="value">${fmtUsd(data.open_pnl, { signed: true })}</div>
+      </div>
+      <div class="stat-card ${monthPnl >= 0 ? "positive" : "negative"}">
+        <div class="label">החודש</div>
+        <div class="value">${fmtUsd(monthPnl, { signed: true })} <span class="muted" style="font-size:0.85rem">${fmtPct(monthPct)}</span></div>
+      </div>
+    </div>
+
+    <section class="guide-section">
+      <h2 class="section-title">בתיק עכשיו (דוגמה)</h2>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr>
+              <th>#</th><th>סימול</th><th>שיטה</th><th>מושקע</th><th>כניסה</th><th>שווי</th><th>רווח</th><th>זמן</th>
+            </tr>
+          </thead>
+          <tbody>${holdingsHtml || `<tr><td colspan="8" class="muted">אין החזקות בדוגמה</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">המלצות אחרונות (דוגמה)</h2>
+      <div class="cards-grid">${picksHtml}</div>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">עקומת הון (דוגמה)</h2>
+      <div class="demo-bars">${barsHtml}</div>
+      <p class="guide-note" style="margin-top:1rem">יעד חודשי לדוגמה: ${fmtUsd(data.monthly_target_usd)} · רווח ממומש: ${fmtUsd(data.realized_pnl, { signed: true })}</p>
+    </section>
   `;
 }
+
 
 async function renderSelectionGuide() {
   const data = await fetchJson("data/selection.json");
@@ -420,15 +560,25 @@ async function renderBotGuide() {
 
 async function router() {
   renderNav();
-  const hash = location.hash || "#/selection";
+  const hash = location.hash || "#/";
   try {
     if (hash === "#/guide") await renderTelegramGuide();
     else if (hash === "#/bot-guide") await renderBotGuide();
-    else await renderSelectionGuide();
+    else if (hash === "#/selection") await renderSelectionGuide();
+    else await renderDashboardDemo();
   } catch (err) {
-    app.innerHTML = `<p class="empty">שגיאה: ${err.message}</p>`;
+    app.innerHTML = `${DEMO_BANNER}<p class="empty">שגיאה: ${escapeHtml(err.message)}</p>`;
   }
 }
 
 window.addEventListener("hashchange", router);
-router();
+document.querySelectorAll("a[data-route]").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const route = a.getAttribute("data-route");
+    if (location.hash !== route) location.hash = route;
+    else router();
+  });
+});
+if (!location.hash) location.replace(`${location.pathname}${location.search}#/`);
+else router();

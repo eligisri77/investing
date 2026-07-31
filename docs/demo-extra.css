@@ -1,0 +1,42 @@
+/* Public demo dashboard extras (kept separate so rebuild of style.css won't wipe them) */
+.demo-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 160px;
+  padding: 1rem 0.5rem 0.25rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.demo-bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.demo-bar {
+  width: 100%;
+  max-width: 48px;
+  border-radius: 8px 8px 2px 2px;
+  background: linear-gradient(180deg, var(--cyan), rgba(0, 240, 255, 0.25));
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.25);
+}
+.portfolio-table .pos { color: var(--green); font-weight: 700; }
+.portfolio-table .neg { color: var(--pink); font-weight: 700; }
+.portfolio-table .sym {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-weight: 700;
+  color: var(--cyan);
+}
+.portfolio-table .num {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

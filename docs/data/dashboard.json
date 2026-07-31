@@ -1,0 +1,71 @@
+{
+  "title": "דשבורד לדוגמה",
+  "subtitle": "תצוגה סטטית — מספרים בדויים, לא התיק האמיתי שלך",
+  "equity": 1090.0,
+  "cash": 490.0,
+  "open_value": 600.0,
+  "open_pnl": 40.0,
+  "realized_pnl": 90.0,
+  "monthly_target_usd": 2000.0,
+  "month_start_equity": 1000.0,
+  "holdings": [
+    {
+      "symbol": "NVDA",
+      "method": "מומנטום וציון",
+      "capital_usd": 300,
+      "entry_price": 120.5,
+      "value": 330,
+      "pnl_usd": 30,
+      "entry_at": "16:35 28/07"
+    },
+    {
+      "symbol": "AMD",
+      "method": "חוזק יחסי",
+      "capital_usd": 250,
+      "entry_price": 145.0,
+      "value": 270,
+      "pnl_usd": 20,
+      "entry_at": "16:35 29/07"
+    }
+  ],
+  "recent_picks": [
+    {
+      "symbol": "NVDA",
+      "trading_day": "2026-07-28",
+      "score": 14.2,
+      "capital_usd": 300,
+      "status": "invested",
+      "status_label": "השקעת",
+      "pnl_usd": 30,
+      "pnl_pct": 10.0
+    },
+    {
+      "symbol": "AMD",
+      "trading_day": "2026-07-29",
+      "score": 12.1,
+      "capital_usd": 250,
+      "status": "invested",
+      "status_label": "השקעת",
+      "pnl_usd": 20,
+      "pnl_pct": 8.0
+    },
+    {
+      "symbol": "SOXS",
+      "trading_day": "2026-07-30",
+      "score": 11.5,
+      "capital_usd": 200,
+      "status": "skipped",
+      "status_label": "דילגת",
+      "pnl_usd": -18,
+      "pnl_pct": -9.0,
+      "hypo": true
+    }
+  ],
+  "equity_history": [
+    { "day": "07-27", "equity": 1000 },
+    { "day": "07-28", "equity": 1030 },
+    { "day": "07-29", "equity": 1050 },
+    { "day": "07-30", "equity": 1070 },
+    { "day": "07-31", "equity": 1090 }
+  ]
+}

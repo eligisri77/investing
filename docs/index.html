@@ -3,14 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- Project Pages live under /investing/ — keep relative CSS/JS/JSON rooted here. -->
-  <base href="/investing/" />
   <title>Trading Pulse — הדגמה ציבורית</title>
-  <meta name="description" content="הדגמה ציבורית וסטטית של Trading Pulse: איך בוחרים מניות, פקודות טלגרם, וחיבור בוט. בלי מידע פיננסי, בלי חיבור למכשיר או לחשבון של אף אחד." />
+  <meta name="description" content="הדגמה ציבורית וסטטית של Trading Pulse: דשבורד לדוגמה, איך בוחרים מניות, פקודות טלגרם, וחיבור בוט. בלי מידע פיננסי אמיתי." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/investing/style.css" />
+  <link rel="stylesheet" href="/investing/demo-extra.css" />
 </head>
 <body>
   <div class="bg-glow bg-glow-1"></div>
@@ -18,7 +17,7 @@
   <div class="bg-glow bg-glow-3"></div>
 
   <header class="topbar">
-    <a href="#/" class="logo">
+    <a href="/investing/#/" class="logo" data-route="#/">
       <span class="logo-icon">⚡</span>
       <span>Trading Pulse</span>
     </a>
@@ -26,15 +25,15 @@
   </header>
 
   <main id="app" class="app">
-    <p class="empty">טוען את המדריכים…</p>
+    <p class="empty">טוען…</p>
   </main>
   <noscript>
     <p class="empty" style="padding:2rem;text-align:center">
-      צריך JavaScript כדי להציג את המדריכים.
+      צריך JavaScript כדי להציג את ההדגמה.
       <a href="https://github.com/eligisri77/investing">קוד המקור ב-GitHub</a>
     </p>
   </noscript>
 
-  <script src="app.js"></script>
+  <script src="/investing/app.js"></script>
 </body>
 </html>

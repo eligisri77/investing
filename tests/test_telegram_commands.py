@@ -273,3 +273,122 @@ def test_pending_offer_intercepts_bare_yes_reply(tmp_path, monkeypatch):
     assert saved_plan["status"] == "confirmed"
     saved_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "pending_offer" not in saved_state  # queue exhausted after the only offer
+
+
+def test_sell_confirmation_reply_has_no_leading_question_emoji(tmp_path, monkeypatch):
+    """«תמכור BE» asks for confirm — reply must not start with ❓ (looked like an error)."""
+    import trading_pulse.agent.dryrun_agent as agent
+
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "equity": 1000.0,
+                "open_positions": [
+                    {
+                        "symbol": "BE",
+                        "capital_usd": 200.0,
+                        "entry_price": 10.0,
+                        "entry_day": "2026-07-08",
+                    }
+                ],
+                "telegram_last_update_id": 10,
+                "history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+
+    def _fake_api(_token, method, _payload=None):
+        if method == "getUpdates":
+            return {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 11,
+                        "message": {"chat": {"id": "1"}, "text": "תמכור BE"},
+                    }
+                ],
+            }
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(agent, "telegram_api_call", _fake_api)
+    monkeypatch.setattr(agent, "uses_telegram_notifications", lambda _cfg: True)
+    monkeypatch.setattr(agent, "log_telegram_message", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "resolve_sell_target", lambda ref: "BE")
+
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_message",
+        lambda *a, **k: send_calls.append((a, k)) or True,
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+    assert handled == 1
+    assert len(send_calls) == 1
+    reply = send_calls[0][0][1]
+    assert send_calls[0][1].get("context") == "reply:sell_confirmation"
+    assert not reply.startswith("❓")
+    assert reply.startswith("<b>למכור את BE?</b>")
+    assert "כן" in reply
+    assert "מכור BE" in reply
+    assert "לא בוצעה פעולה עדיין" in reply
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["pending_sell_confirm"]["symbol"] == "BE"
+    assert saved["telegram_last_update_id"] == 11
+
+
+def test_telegram_command_error_reply_truncates_exception(tmp_path, monkeypatch):
+    """Handler failures send a short error card — not a wall of exception text."""
+    import trading_pulse.agent.dryrun_agent as agent
+
+    agent, state_path, _plan = _routing_setup(tmp_path, monkeypatch, text="עזרה")
+    monkeypatch.setattr(
+        agent,
+        "telegram_help_text",
+        lambda: (_ for _ in ()).throw(RuntimeError("x" * 500)),
+    )
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_message",
+        lambda *a, **k: send_calls.append((a, k)) or True,
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+    assert handled == 1
+    assert len(send_calls) == 1
+    reply = send_calls[0][0][1]
+    assert send_calls[0][1].get("context") == "reply:error"
+    assert reply.startswith("❌ <b>שגיאה:</b> ")
+    # Truncated to 200 chars of exception text + surrounding HTML/hint.
+    assert "x" * 200 in reply
+    assert "x" * 201 not in reply
+    assert "עזרה" in reply
+
+
+def test_inbound_log_failure_still_acks_and_handles(tmp_path, monkeypatch):
+    """Inbound inbox log must not stall the poll — offset is acked and command runs."""
+    import trading_pulse.agent.dryrun_agent as agent
+
+    agent, state_path, _plan = _routing_setup(tmp_path, monkeypatch, text="עזרה")
+
+    def _boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent, "log_telegram_message", _boom)
+    send_calls: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_message",
+        lambda *a, **k: send_calls.append((a, k)) or True,
+    )
+
+    handled = agent.process_telegram_commands(_RoutingCfg())
+    assert handled == 1
+    assert len(send_calls) == 1
+    assert send_calls[0][1].get("context") == "reply:help"
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["telegram_last_update_id"] == 11

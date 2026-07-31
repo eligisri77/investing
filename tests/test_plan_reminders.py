@@ -46,7 +46,8 @@ def test_scheduler_does_not_register_plan_reminder(monkeypatch):
     from trading_pulse.agent import health_tracker
     from trading_pulse.core import instance_lock, schedule_tz
 
-    class StopScheduler(Exception):
+    # BaseException: tick failures are now caught as Exception and the loop continues.
+    class StopScheduler(BaseException):
         pass
 
     class PendingJob:
@@ -91,6 +92,56 @@ def test_scheduler_does_not_register_plan_reminder(monkeypatch):
     assert scheduled_israel_times == [cfg.portfolio_review_time]
     assert cfg.planning_time not in scheduled_times
     assert cfg.plan_reminder_time not in scheduled_times
+
+
+def test_scheduler_tick_failure_does_not_kill_loop(monkeypatch):
+    """One failed schedule.run_pending() must not exit run_scheduler_loop."""
+    import schedule
+
+    from trading_pulse.agent import dryrun_agent as agent
+    from trading_pulse.agent import health_tracker
+    from trading_pulse.core import instance_lock, schedule_tz
+
+    class StopScheduler(BaseException):
+        pass
+
+    class PendingJob:
+        def do(self, _func):
+            return self
+
+    cfg = agent.AgentConfig(
+        notification_mode="app",
+        intraday_check_enabled=False,
+        weekly_scan_enabled=False,
+        send_heartbeat_on_startup=False,
+    )
+    calls = {"n": 0}
+
+    def _run_pending() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("tick boom")
+        raise StopScheduler()
+
+    monkeypatch.setattr(instance_lock, "acquire_instance_lock", lambda _name: True)
+    monkeypatch.setattr(health_tracker, "record_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(agent, "setup_logger", lambda _path=None: None)
+    monkeypatch.setattr(agent, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        schedule_tz, "schedule_daily_at", lambda _hhmm: PendingJob()
+    )
+    monkeypatch.setattr(
+        schedule_tz, "schedule_daily_at_israel", lambda _hhmm: PendingJob()
+    )
+    monkeypatch.setattr(schedule, "run_pending", _run_pending)
+    monkeypatch.setattr(schedule, "idle_seconds", lambda: 0)
+    monkeypatch.setattr(agent.time, "sleep", lambda _sec: None)
+
+    with pytest.raises(StopScheduler):
+        agent.run_scheduler_loop(service=False)
+
+    assert calls["n"] == 2
 
 
 def test_parse_indices_all_skips_below_bar():

@@ -54,10 +54,16 @@ class TradingPulseApp:
         return DASHBOARD_URL
 
     def _run_scheduler_safe(self) -> None:
-        try:
-            run_scheduler_loop(service=True)
-        except Exception:
-            logging.exception("Scheduler thread crashed")
+        """Keep the scheduler alive — a single crash must not kill EOD / Telegram forever."""
+        backoff_sec = 5.0
+        while True:
+            try:
+                run_scheduler_loop(service=True)
+                logging.warning("Scheduler loop exited; restarting in %.0fs", backoff_sec)
+            except Exception:
+                logging.exception("Scheduler thread crashed; restarting in %.0fs", backoff_sec)
+            time.sleep(backoff_sec)
+            backoff_sec = min(60.0, backoff_sec * 1.5)
 
     def start_background_services(self) -> None:
         with self._lock:

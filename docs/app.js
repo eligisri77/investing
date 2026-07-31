@@ -9,8 +9,13 @@
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
-// Resolve data/*.json next to this script (works with /investing and /investing/).
-const ASSET_BASE = new URL(".", document.currentScript?.src || location.href).href;
+// Resolve data/*.json under /investing/ even when currentScript is unavailable
+// (some mobile browsers) or the URL is /investing without a trailing slash.
+const ASSET_BASE = (() => {
+  const fromScript = document.currentScript?.src;
+  if (fromScript) return new URL(".", fromScript).href;
+  return `${location.origin}/investing/`;
+})();
 
 async function fetchJson(url) {
   const res = await fetch(new URL(url, ASSET_BASE));
@@ -44,7 +49,8 @@ function fmtPct(n) {
 
 const DEMO_BANNER = `
   <div class="guide-note" style="margin-bottom:1.25rem">
-    👁 הדגמה ציבורית וסטטית — תוכן גנרי מהגדרות דוגמה, בלי חיבור לאף מכשיר/חשבון אמיתי.
+    👁 הדגמה ציבורית וסטטית בלבד (לא התיק החי) — תוכן גנרי מהגדרות דוגמה,
+    בלי חיבור לאף מכשיר/חשבון/תיק אמיתי.
     <a href="https://github.com/eligisri77/investing" style="color:var(--cyan)">קוד המקור וההתקנה ב-GitHub</a>
   </div>`;
 

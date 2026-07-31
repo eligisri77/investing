@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -143,6 +144,66 @@ def test_message_metadata_update_merges_and_persists(tmp_path, monkeypatch):
     persisted = telegram_store.get_message("out:fixed")
     assert persisted["metadata"]["keep"] == "value"
     assert persisted["metadata"]["delivery"]["telegram"]["status"] == "failed"
+
+
+def test_concurrent_append_and_update_keeps_valid_json(tmp_path, monkeypatch):
+    """Web + scheduler may touch messages.json together — RLock must prevent corruption."""
+    from trading_pulse.telegram import telegram_store
+
+    messages_file = tmp_path / "messages.json"
+    monkeypatch.setattr(telegram_store, "MESSAGES_FILE", messages_file)
+    monkeypatch.setattr(telegram_store, "TELEGRAM_DIR", tmp_path)
+
+    seed = telegram_store.append_message(
+        "out",
+        "seed",
+        "seed",
+        message_id="out:seed",
+        metadata={"n": 0},
+    )
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def _appender() -> None:
+        try:
+            barrier.wait(timeout=5)
+            for i in range(40):
+                telegram_store.append_message(
+                    "out",
+                    "append",
+                    f"msg-{i}",
+                    message_id=f"out:a{i}",
+                )
+        except BaseException as ex:  # noqa: BLE001 — collect for main thread
+            errors.append(ex)
+
+    def _updater() -> None:
+        try:
+            barrier.wait(timeout=5)
+            for i in range(40):
+                telegram_store.update_message_metadata(
+                    seed["id"], {"n": i, "last": f"u{i}"}
+                )
+        except BaseException as ex:  # noqa: BLE001 — collect for main thread
+            errors.append(ex)
+
+    t1 = threading.Thread(target=_appender)
+    t2 = threading.Thread(target=_updater)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert errors == []
+
+    raw = messages_file.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert isinstance(data, list)
+    ids = {row["id"] for row in data}
+    assert "out:seed" in ids
+    assert len([i for i in ids if i.startswith("out:a")]) == 40
+    seed_row = next(row for row in data if row["id"] == "out:seed")
+    assert seed_row["metadata"]["last"].startswith("u")
 
 
 def test_retry_api_updates_delivery_metadata(monkeypatch):

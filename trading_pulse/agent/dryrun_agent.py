@@ -434,10 +434,46 @@ class _SafeConsoleFilter(logging.Filter):
         return True
 
 
+class _ReplaceStderrHandler(logging.StreamHandler):
+    """Console handler that never raises UnicodeEncodeError on Windows cp1252."""
+
+    def __init__(self) -> None:
+        stream = sys.stderr
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        super().__init__(stream=stream)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except UnicodeEncodeError:
+            try:
+                msg = self.format(record).encode("ascii", "replace").decode("ascii")
+                self.stream.write(msg + self.terminator)
+                self.flush()
+            except Exception:
+                self.handleError(record)
+
+
+def _configure_stdio_utf8() -> None:
+    """Best-effort: keep Hebrew/emoji from killing the scheduler on Windows consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+
 def setup_logger(log_file: Path | None = None) -> None:
     from trading_pulse.core.log_redact import RedactSecretsFilter
 
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    _configure_stdio_utf8()
+    handlers: list[logging.Handler] = [_ReplaceStderrHandler()]
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
@@ -451,7 +487,7 @@ def setup_logger(log_file: Path | None = None) -> None:
     for handler in logging.root.handlers:
         handler.addFilter(redact)
     for handler in handlers:
-        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+        if isinstance(handler, _ReplaceStderrHandler):
             handler.addFilter(_SafeConsoleFilter())
 
 
@@ -3461,6 +3497,13 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
     handled = 0
     for upd in updates:
         last_id = max(last_id, int(upd.get("update_id", 0)))
+        # Ack early so a crash mid-reply cannot stall the poll forever on one update.
+        try:
+            state = load_state(cfg)
+            state["telegram_last_update_id"] = last_id
+            save_json(STATE_FILE, state)
+        except Exception:
+            logging.exception("Failed to persist telegram_last_update_id=%s", last_id)
         msg = upd.get("message", {})
         msg_chat_id = str(msg.get("chat", {}).get("id", ""))
         if msg_chat_id != chat_id:
@@ -3469,7 +3512,10 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
         text = str(msg.get("text", "")).strip()
         if not text:
             continue
-        log_telegram_message("in", "user", text)
+        try:
+            log_telegram_message("in", "user", text)
+        except Exception:
+            logging.exception("Failed to log inbound Telegram message")
         reply = telegram_unknown_reply()
         reply_context = "reply"
         logging.info("Telegram command received: %s", text)
@@ -3764,7 +3810,7 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                     set_pending_sell_confirm(state, symbol)
                     save_json(STATE_FILE, state)
                     reply = (
-                        f"❓ <b>למכור את {escape_html(symbol)}?</b>\n"
+                        f"<b>למכור את {escape_html(symbol)}?</b>\n"
                         f"שלח <code>כן</code> / <code>אישור</code> לביצוע\n"
                         f"או <code>מכור {escape_html(symbol)}</code>\n"
                         "<i>לא בוצעה פעולה עדיין.</i>"
@@ -3916,12 +3962,16 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 reply = "⚠️ <b>תאריך לא תקין.</b>"
             reply_context = "reply:error"
         except Exception as ex:
-            from trading_pulse.telegram.telegram_format import escape_html
-
-            reply = f"❌ <b>שגיאה:</b> {escape_html(str(ex))}\n\nנסה שוב או שלח <code>עזרה</code>"
+            reply = (
+                f"❌ <b>שגיאה:</b> {escape_html(str(ex)[:200])}\n\n"
+                "נסה שוב או שלח <code>עזרה</code>"
+            )
             reply_context = "reply:error"
             logging.exception("Telegram command failed: %s", ex)
-        send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+        try:
+            send_telegram_message(cfg, reply, context=reply_context, parse_mode="HTML")
+        except Exception:
+            logging.exception("Telegram reply send failed (%s)", reply_context)
         handled += 1
 
     # Reload — sell/buy/swap already saved a fresh state; don't overwrite with stale snapshot.
@@ -5482,24 +5532,31 @@ def run_scheduler_loop(service: bool = True) -> None:
     intraday_interval = cfg.intraday_check_interval_minutes
     intraday_scheduled = bool(cfg.intraday_check_enabled)
     while True:
-        fresh = load_config()
-        cfg_holder["cfg"] = fresh
-        if uses_telegram_notifications(fresh) and fresh.telegram_poll_interval_sec != poll_interval:
-            poll_interval = fresh.telegram_poll_interval_sec
-            schedule_telegram_poll(poll_interval)
-            logging.info("Telegram poll interval reloaded: every %s sec", poll_interval)
-        if fresh.intraday_check_enabled:
-            if not intraday_scheduled or intraday_interval != fresh.intraday_check_interval_minutes:
-                intraday_interval = fresh.intraday_check_interval_minutes
-                schedule_intraday_check(intraday_interval)
-                intraday_scheduled = True
-                logging.info("Intraday check interval: every %s min", intraday_interval)
-        elif intraday_scheduled:
-            schedule.clear("intraday-check")
-            intraday_scheduled = False
-            logging.info("Intraday check disabled")
-        schedule.run_pending()
-        time.sleep(max(1, schedule.idle_seconds()))
+        try:
+            fresh = load_config()
+            cfg_holder["cfg"] = fresh
+            if uses_telegram_notifications(fresh) and fresh.telegram_poll_interval_sec != poll_interval:
+                poll_interval = fresh.telegram_poll_interval_sec
+                schedule_telegram_poll(poll_interval)
+                logging.info("Telegram poll interval reloaded: every %s sec", poll_interval)
+            if fresh.intraday_check_enabled:
+                if not intraday_scheduled or intraday_interval != fresh.intraday_check_interval_minutes:
+                    intraday_interval = fresh.intraday_check_interval_minutes
+                    schedule_intraday_check(intraday_interval)
+                    intraday_scheduled = True
+                    logging.info("Intraday check interval: every %s min", intraday_interval)
+            elif intraday_scheduled:
+                schedule.clear("intraday-check")
+                intraday_scheduled = False
+                logging.info("Intraday check disabled")
+            schedule.run_pending()
+        except Exception:
+            logging.exception("Scheduler tick failed — continuing")
+        try:
+            idle = schedule.idle_seconds()
+        except Exception:
+            idle = 1
+        time.sleep(max(1, idle if idle is not None else 1))
 
 
 def cmd_run_scheduler(args: argparse.Namespace) -> None:

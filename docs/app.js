@@ -50,6 +50,7 @@ const DEMO_BANNER = `
 
 const ROUTES = [
   { hash: "#/", label: "דשבורד" },
+  { hash: "#/plan", label: "תוכנית" },
   { hash: "#/selection", label: "🎯 בחירה" },
   { hash: "#/guide", label: "📖 מדריך" },
   { hash: "#/bot-guide", label: "🤖 חיבור בוט" },
@@ -179,6 +180,90 @@ async function renderDashboardDemo() {
   `;
 }
 
+async function renderPlanDemo() {
+  const data = await fetchJson("data/plan.json");
+
+  const actionsHtml = (data.holding_actions || [])
+    .map(
+      (a) => `
+      <article class="guide-card">
+        <div class="guide-card-head">
+          <span class="guide-card-icon">📌</span>
+          <div>
+            <h3>${escapeHtml(a.symbol)} — ${escapeHtml(a.action)}</h3>
+            <p class="guide-card-when">${escapeHtml(a.detail || "")}</p>
+          </div>
+        </div>
+      </article>`
+    )
+    .join("");
+
+  const offersHtml = (data.offers || [])
+    .map(
+      (o) => `
+      <article class="pick-card" style="cursor:default">
+        <div class="pick-card-header">
+          <span class="pick-symbol">#${o.position}/${o.total} ${escapeHtml(o.symbol)}</span>
+          <span class="badge badge-pending">${escapeHtml(o.entry_timing || "")}</span>
+        </div>
+        <div class="pick-meta">
+          <span>ציון ${Number(o.score).toFixed(1)}</span>
+          <span>${escapeHtml(o.method || "")}</span>
+          <span>מומלץ ${fmtUsd(o.suggested_usd)}</span>
+        </div>
+        <p class="guide-card-when" style="margin:0.65rem 0 0">${escapeHtml(o.note || "")}</p>
+        <div class="pick-meta" style="margin-top:0.5rem">
+          <span>ATR ${Number(o.atr_pct).toFixed(1)}%</span>
+          <span>5י ${fmtPct(o.ret_5d_pct)}</span>
+          <span>נפח ${Number(o.vol_ratio).toFixed(2)}×</span>
+        </div>
+      </article>`
+    )
+    .join("");
+
+  const howToHtml = (data.how_to || []).map((t) => `<li>${escapeHtml(t)}</li>`).join("");
+
+  app.innerHTML = `
+    ${DEMO_BANNER}
+    <section class="hero">
+      <h1>📋 ${escapeHtml(data.title || "תוכנית")}</h1>
+      <p>${escapeHtml(data.subtitle || "")}</p>
+      <p class="guide-note">יום מסחר: ${escapeHtml(data.for_trading_day || "—")} · ${escapeHtml(data.status_label || "")}</p>
+    </section>
+
+    <div class="stats-grid">
+      <div class="stat-card accent">
+        <div class="label">מזומן פנוי</div>
+        <div class="value">${fmtUsd(data.available_capital_usd)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">הצעות בסבב</div>
+        <div class="value">${(data.offers || []).length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">סטטוס</div>
+        <div class="value" style="font-size:1.1rem">${escapeHtml(data.status || "draft")}</div>
+      </div>
+    </div>
+
+    <p class="guide-note">${escapeHtml(data.review_note || "")}</p>
+
+    <section class="guide-section">
+      <h2 class="section-title">סקירת החזקות</h2>
+      <div class="guide-cards">${actionsHtml}</div>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">הצעות קנייה (אחת-אחת)</h2>
+      <div class="cards-grid">${offersHtml}</div>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">איך מאשרים בטלגרם</h2>
+      <ul class="guide-list guide-tips">${howToHtml}</ul>
+    </section>
+  `;
+}
 
 async function renderSelectionGuide() {
   const data = await fetchJson("data/selection.json");
@@ -565,6 +650,7 @@ async function router() {
     if (hash === "#/guide") await renderTelegramGuide();
     else if (hash === "#/bot-guide") await renderBotGuide();
     else if (hash === "#/selection") await renderSelectionGuide();
+    else if (hash === "#/plan") await renderPlanDemo();
     else await renderDashboardDemo();
   } catch (err) {
     app.innerHTML = `${DEMO_BANNER}<p class="empty">שגיאה: ${escapeHtml(err.message)}</p>`;

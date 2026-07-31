@@ -1,0 +1,68 @@
+{
+  "title": "תוכנית לדוגמה",
+  "subtitle": "סקירת תיק + הצעות קנייה — מספרים בדויים, לא תוכנית חיה",
+  "for_trading_day": "2026-08-01",
+  "status": "draft",
+  "status_label": "טיוטה — ממתינה לאישור",
+  "available_capital_usd": 490,
+  "review_note": "תיק לא ריק — סקירת החזקות ואז הצעות אחת-אחת אם יש מקום",
+  "holding_actions": [
+    {
+      "symbol": "NVDA",
+      "action": "החזק / אפשר להוסיף",
+      "detail": "ציון 14.2 · רווח פתוח +$30 — אפשר לחזק עם תקנה NVDA"
+    },
+    {
+      "symbol": "AMD",
+      "action": "החזק",
+      "detail": "ציון 12.1 · רווח פתוח +$20 — בלי שינוי מומלץ"
+    }
+  ],
+  "offers": [
+    {
+      "position": 1,
+      "total": 3,
+      "symbol": "RBLX",
+      "score": 13.0,
+      "method": "מומנטום וציון",
+      "entry_timing": "בפתיחה",
+      "suggested_usd": 160,
+      "atr_pct": 5.7,
+      "ret_5d_pct": 2.4,
+      "vol_ratio": 3.33,
+      "note": "דירוג #1 · נפח גבוה · לא בפריצה מול שיא 20 יום"
+    },
+    {
+      "position": 2,
+      "total": 3,
+      "symbol": "PBF",
+      "score": 11.8,
+      "method": "חוזק יחסי",
+      "entry_timing": "בפתיחה",
+      "suggested_usd": 160,
+      "atr_pct": 4.1,
+      "ret_5d_pct": 5.2,
+      "vol_ratio": 1.8,
+      "note": "ביצועי יתר מול SPY · מומלץ בסבב ההצעות"
+    },
+    {
+      "position": 3,
+      "total": 3,
+      "symbol": "DOCU",
+      "score": 10.5,
+      "method": "נרות סיניים 2",
+      "entry_timing": "בפריצה בלבד",
+      "suggested_usd": 160,
+      "atr_pct": 3.2,
+      "ret_5d_pct": 1.1,
+      "vol_ratio": 1.4,
+      "note": "Method 2 — לא נכנס בפתיחה; מחכה לפריצה מעל הרמה"
+    }
+  ],
+  "how_to": [
+    "כן / קנה — לאשר את ההצעה בסכום המומלץ",
+    "150 או קנה 150 — סכום אחר",
+    "דלג — להצעה הבאה",
+    "מכור / תקנה / תיק — תמיד זמינים גם באמצע הסבב"
+  ]
+}

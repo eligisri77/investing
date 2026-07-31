@@ -40,3 +40,12 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* Many demo nav links on a phone */
+.nav {
+  gap: 0.35rem;
+}
+.nav a {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.55rem;
+}

@@ -1,0 +1,95 @@
+{
+  "title": "תיק השקעות",
+  "subtitle": "דוגמה סטטית — לא התיק האמיתי שלך",
+  "equity": 1090.0,
+  "cash": 490.0,
+  "open_capital_usd": 550,
+  "open_value": 600,
+  "open_pnl": 40,
+  "open_count": 2,
+  "total_realized_pnl": 90,
+  "trade_count": 4,
+  "symbol_count": 3,
+  "open_positions": [
+    {
+      "symbol": "NVDA",
+      "method": "מומנטום וציון",
+      "trading_day": "2026-07-28",
+      "capital_usd": 300,
+      "entry_price": 120.5,
+      "value": 330,
+      "pnl_usd": 30,
+      "sl": 106.0,
+      "tp": 150.6,
+      "status": "פתוח"
+    },
+    {
+      "symbol": "AMD",
+      "method": "חוזק יחסי",
+      "trading_day": "2026-07-29",
+      "capital_usd": 250,
+      "entry_price": 145.0,
+      "value": 270,
+      "pnl_usd": 20,
+      "sl": 127.6,
+      "tp": 181.3,
+      "status": "פתוח"
+    }
+  ],
+  "by_symbol": [
+    {
+      "symbol": "NVDA",
+      "trades": 1,
+      "invested": 300,
+      "pnl_usd": 30,
+      "avg_pct": 10.0,
+      "win_rate": 100,
+      "last_day": "2026-07-28"
+    },
+    {
+      "symbol": "AMD",
+      "trades": 1,
+      "invested": 250,
+      "pnl_usd": 20,
+      "avg_pct": 8.0,
+      "win_rate": 100,
+      "last_day": "2026-07-29"
+    },
+    {
+      "symbol": "SOXS",
+      "trades": 2,
+      "invested": 400,
+      "pnl_usd": 40,
+      "avg_pct": 5.0,
+      "win_rate": 50,
+      "last_day": "2026-07-25"
+    }
+  ],
+  "history": [
+    {
+      "day": "2026-07-25",
+      "symbol": "SOXS",
+      "capital_usd": 200,
+      "pnl_usd": -40,
+      "pnl_pct": -20,
+      "exit": "רף יציאה"
+    },
+    {
+      "day": "2026-07-24",
+      "symbol": "SOXS",
+      "capital_usd": 200,
+      "pnl_usd": 80,
+      "pnl_pct": 40,
+      "exit": "יעד רווח"
+    },
+    {
+      "day": "2026-07-22",
+      "symbol": "TSLA",
+      "capital_usd": 150,
+      "pnl_usd": 50,
+      "pnl_pct": 33.3,
+      "exit": "מכירה ידנית"
+    }
+  ],
+  "chips": ["מכור 1 $100", "תקנה 1 $50", "מכור 1 תקנה 2 $100"]
+}

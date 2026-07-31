@@ -50,10 +50,13 @@ const DEMO_BANNER = `
 
 const ROUTES = [
   { hash: "#/", label: "דשבורד" },
+  { hash: "#/portfolio", label: "תיק" },
   { hash: "#/plan", label: "תוכנית" },
+  { hash: "#/messages", label: "הודעות" },
   { hash: "#/selection", label: "🎯 בחירה" },
   { hash: "#/guide", label: "📖 מדריך" },
   { hash: "#/bot-guide", label: "🤖 חיבור בוט" },
+  { hash: "#/settings", label: "⚙ הגדרות" },
 ];
 
 function renderNav() {
@@ -262,6 +265,197 @@ async function renderPlanDemo() {
       <h2 class="section-title">איך מאשרים בטלגרם</h2>
       <ul class="guide-list guide-tips">${howToHtml}</ul>
     </section>
+  `;
+}
+
+async function renderPortfolioDemo() {
+  const data = await fetchJson("data/portfolio.json");
+
+  const openRows = (data.open_positions || [])
+    .map(
+      (p) => `
+      <tr>
+        <td class="sym">${escapeHtml(p.symbol)}</td>
+        <td>${escapeHtml(p.method || "—")}</td>
+        <td>${escapeHtml(p.trading_day || "")}</td>
+        <td class="num">${fmtUsd(p.capital_usd)}</td>
+        <td class="num">${fmtUsd(p.entry_price)}</td>
+        <td class="num">${fmtUsd(p.value)}</td>
+        <td class="num ${p.pnl_usd >= 0 ? "pos" : "neg"}">${fmtUsd(p.pnl_usd, { signed: true })}</td>
+        <td class="num muted">${fmtUsd(p.sl)} / ${fmtUsd(p.tp)}</td>
+        <td>${escapeHtml(p.status || "")}</td>
+      </tr>`
+    )
+    .join("");
+
+  const symbolRows = (data.by_symbol || [])
+    .map(
+      (s) => `
+      <tr>
+        <td class="sym">${escapeHtml(s.symbol)}</td>
+        <td class="num">${s.trades}</td>
+        <td class="num">${fmtUsd(s.invested)}</td>
+        <td class="num ${s.pnl_usd >= 0 ? "pos" : "neg"}">${fmtUsd(s.pnl_usd, { signed: true })}</td>
+        <td class="num">${fmtPct(s.avg_pct)}</td>
+        <td class="num">${Number(s.win_rate).toFixed(0)}%</td>
+        <td>${escapeHtml(s.last_day || "")}</td>
+      </tr>`
+    )
+    .join("");
+
+  const histRows = (data.history || [])
+    .map(
+      (h) => `
+      <tr>
+        <td>${escapeHtml(h.day)}</td>
+        <td class="sym">${escapeHtml(h.symbol)}</td>
+        <td class="num">${fmtUsd(h.capital_usd)}</td>
+        <td class="num ${h.pnl_usd >= 0 ? "pos" : "neg"}">${fmtUsd(h.pnl_usd, { signed: true })}</td>
+        <td class="num ${h.pnl_pct >= 0 ? "pos" : "neg"}">${fmtPct(h.pnl_pct)}</td>
+        <td>${escapeHtml(h.exit || "")}</td>
+      </tr>`
+    )
+    .join("");
+
+  const chips = (data.chips || [])
+    .map((c) => `<code class="guide-cmd-chip">${escapeHtml(c)}</code>`)
+    .join(" ");
+
+  app.innerHTML = `
+    ${DEMO_BANNER}
+    <section class="hero">
+      <h1>💼 ${escapeHtml(data.title || "תיק")}</h1>
+      <p>${escapeHtml(data.subtitle || "")}</p>
+    </section>
+
+    <div class="stats-grid">
+      <div class="stat-card accent">
+        <div class="label">הון</div>
+        <div class="value">${fmtUsd(data.equity)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">מזומן פנוי</div>
+        <div class="value">${fmtUsd(data.cash)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">שווי פתוח</div>
+        <div class="value">${fmtUsd(data.open_value)}</div>
+        <div class="sub">${data.open_count} פוזיציות</div>
+      </div>
+      <div class="stat-card ${data.open_pnl >= 0 ? "positive" : "negative"}">
+        <div class="label">רווח פתוח</div>
+        <div class="value">${fmtUsd(data.open_pnl, { signed: true })}</div>
+      </div>
+      <div class="stat-card ${data.total_realized_pnl >= 0 ? "positive" : "negative"}">
+        <div class="label">רווח ממומש</div>
+        <div class="value">${fmtUsd(data.total_realized_pnl, { signed: true })}</div>
+        <div class="sub">${data.trade_count} עסקאות · ${data.symbol_count} מניות</div>
+      </div>
+    </div>
+
+    <section class="guide-section">
+      <h2 class="section-title">בתיק עכשיו</h2>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr>
+              <th>סימול</th><th>שיטה</th><th>יום</th><th>מושקע</th><th>כניסה</th><th>שווי</th><th>רווח</th><th>SL / TP</th><th>סטטוס</th>
+            </tr>
+          </thead>
+          <tbody>${openRows}</tbody>
+        </table>
+      </div>
+      <p class="guide-note" style="margin-top:0.75rem">דוגמאות פעולה: ${chips}</p>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">סיכום לפי מניה</h2>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr>
+              <th>סימול</th><th>עסקאות</th><th>הון</th><th>רווח</th><th>ממוצע %</th><th>Win</th><th>אחרונה</th>
+            </tr>
+          </thead>
+          <tbody>${symbolRows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="guide-section">
+      <h2 class="section-title">היסטוריית עסקאות</h2>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr>
+              <th>יום</th><th>סימול</th><th>הון</th><th>רווח</th><th>%</th><th>יציאה</th>
+            </tr>
+          </thead>
+          <tbody>${histRows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+async function renderMessagesDemo() {
+  const data = await fetchJson("data/messages.json");
+  const rows = (data.messages || [])
+    .map(
+      (m) => `
+      <article class="guide-card ${m.role === "user" ? "guide-card-highlight" : ""}">
+        <div class="guide-card-head">
+          <span class="guide-card-icon">${m.role === "user" ? "👤" : "🤖"}</span>
+          <div>
+            <h3>${escapeHtml(m.title || "")}</h3>
+            <p class="guide-card-when">${escapeHtml(m.time || "")} · ${escapeHtml(m.context || "")}</p>
+            <p class="guide-card-when" style="margin-top:0.35rem">${escapeHtml(m.body || "")}</p>
+          </div>
+        </div>
+      </article>`
+    )
+    .join("");
+
+  app.innerHTML = `
+    ${DEMO_BANNER}
+    <section class="hero">
+      <h1>💬 ${escapeHtml(data.title || "הודעות")}</h1>
+      <p>${escapeHtml(data.subtitle || "")}</p>
+    </section>
+    <div class="guide-cards">${rows}</div>
+  `;
+}
+
+async function renderSettingsDemo() {
+  const data = await fetchJson("data/settings.json");
+  const sections = (data.sections || [])
+    .map(
+      (sec) => `
+      <section class="guide-section">
+        <h2 class="section-title">${escapeHtml(sec.title)}</h2>
+        <div class="guide-cmd-grid">
+          ${(sec.fields || [])
+            .map(
+              (f) => `
+            <div class="guide-cmd">
+              <code class="guide-cmd-chip">${escapeHtml(f.label)}</code>
+              <span>${escapeHtml(f.value)}</span>
+            </div>`
+            )
+            .join("")}
+        </div>
+      </section>`
+    )
+    .join("");
+
+  app.innerHTML = `
+    ${DEMO_BANNER}
+    <section class="hero">
+      <h1>⚙ ${escapeHtml(data.title || "הגדרות")}</h1>
+      <p>${escapeHtml(data.subtitle || "")}</p>
+      <p class="guide-note">${escapeHtml(data.note || "")}</p>
+    </section>
+    ${sections}
   `;
 }
 
@@ -651,6 +845,9 @@ async function router() {
     else if (hash === "#/bot-guide") await renderBotGuide();
     else if (hash === "#/selection") await renderSelectionGuide();
     else if (hash === "#/plan") await renderPlanDemo();
+    else if (hash === "#/portfolio") await renderPortfolioDemo();
+    else if (hash === "#/messages") await renderMessagesDemo();
+    else if (hash === "#/settings") await renderSettingsDemo();
     else await renderDashboardDemo();
   } catch (err) {
     app.innerHTML = `${DEMO_BANNER}<p class="empty">שגיאה: ${escapeHtml(err.message)}</p>`;

@@ -22,6 +22,9 @@ instance/data/
 !.env.example
 config.json
 data/
+# Public GitHub Pages guide snapshots (not runtime instance data)
+!docs/data/
+!docs/data/**
 
 # Node
 node_modules/

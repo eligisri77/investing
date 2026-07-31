@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Project Pages live under /investing/ — keep relative CSS/JS/JSON rooted here. -->
+  <base href="/investing/" />
   <title>Trading Pulse — הדגמה ציבורית</title>
   <meta name="description" content="הדגמה ציבורית וסטטית של Trading Pulse: איך בוחרים מניות, פקודות טלגרם, וחיבור בוט. בלי מידע פיננסי, בלי חיבור למכשיר או לחשבון של אף אחד." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -23,7 +25,15 @@
     <nav class="nav" id="nav"></nav>
   </header>
 
-  <main id="app" class="app"></main>
+  <main id="app" class="app">
+    <p class="empty">טוען את המדריכים…</p>
+  </main>
+  <noscript>
+    <p class="empty" style="padding:2rem;text-align:center">
+      צריך JavaScript כדי להציג את המדריכים.
+      <a href="https://github.com/eligisri77/investing">קוד המקור ב-GitHub</a>
+    </p>
+  </noscript>
 
   <script src="app.js"></script>
 </body>

@@ -143,9 +143,16 @@ table.kv td.v {
 }
 .foot {
   color: #8c91a5;
-  font-size: 16px;
+  font-size: 18px;
   margin-top: 14px;
-  line-height: 1.4;
+  line-height: 1.45;
+}
+.detail {
+  color: #e6ebf5;
+  font-size: 20px;
+  font-weight: 600;
+  margin-top: 8px;
+  line-height: 1.45;
 }
 .alert {
   background: #0c0c1a;
@@ -158,6 +165,39 @@ table.kv td.v {
 }
 .alert.sev3 { border-color: #ff3366; color: #ff3366; }
 .alert.sev2 { border-color: #ff2d95; color: #ff9ec8; }
+.cubes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+.cube {
+  background: #0c0c1a;
+  border: 1px solid #282846;
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-height: 88px;
+}
+.cube.wide { grid-column: 1 / -1; }
+.cube-title {
+  color: #00f0ff;
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  line-height: 1.25;
+}
+.cube-blurb {
+  color: #8c91a5;
+  font-size: 14px;
+  margin-bottom: 8px;
+  line-height: 1.35;
+}
+.cube-value {
+  color: #e6ebf5;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.45;
+}
 """
 
 
@@ -1116,11 +1156,25 @@ def html_recommendation(
     tp_price = float(rec.get("take_profit_price") or 0)
     score = rec.get("score")
 
+    from trading_pulse.agent.strategy_labels import strategy_label
+
+    method = strategy_label(rec) or str(rec.get("strategy_id") or rec.get("strategy") or "").strip()
+    entry_policy = str(rec.get("entry_policy") or "")
+    if entry_policy == "stop_breakout":
+        timing = "כניסה בפריצה"
+    elif entry_policy == "market_open":
+        timing = "כניסה בפתיחה"
+    else:
+        timing = ""
+    method_value = " · ".join(p for p in (method, timing) if p)
+
     kv: list[tuple[str, str, str]] = [
         ("יום מסחר", day or "—", ""),
-        ("הצעה", fmt_money_plain(draft, whole=True), ""),
-        ("מחיר ייחוס", fmt_money_plain(price, digits=2), ""),
     ]
+    if method_value:
+        kv.append(("שיטת כניסה", method_value, ""))
+    kv.append(("הצעה", fmt_money_plain(draft, whole=True), ""))
+    kv.append(("מחיר ייחוס", fmt_money_plain(price, digits=2), ""))
     if score is not None:
         kv.append(("ציון", f"{float(score):.1f}", ""))
     kv.extend(
@@ -1171,19 +1225,57 @@ def html_recommendation(
     if clean_signals:
         parts.append("<h2>אותות</h2>")
         for line in clean_signals:
-            parts.append(f'<p class="foot">{_esc(line)}</p>')
+            parts.append(f'<p class="detail">{_esc(line)}</p>')
 
     headlines = list(rec.get("news_headlines") or [])[:1]
     if headlines:
         title = str(headlines[0].get("title") or "").strip()
         if title:
             parts.append("<h2>חדשות</h2>")
-            parts.append(f'<p class="foot">{_esc(title[:100])}</p>')
+            parts.append(f'<p class="detail">{_esc(title[:100])}</p>')
     summary = str(rec.get("news_summary") or "").strip()
     if summary:
-        parts.append(f'<p class="foot">{_esc(summary[:140])}</p>')
+        parts.append(f'<p class="detail">{_esc(summary[:140])}</p>')
 
     return wrap_card_html(f"#{idx} {sym}", "".join(parts))
+
+
+def html_offer_cubes(
+    rec: dict[str, Any],
+    *,
+    position_no: int,
+    total: int,
+    cash_free: float,
+    suggested_usd: float,
+    cubes: list[dict[str, str]],
+) -> str:
+    """Sequential-offer metrics as labeled cubes (PNG card — not a Telegram caption)."""
+    sym = str(rec.get("symbol") or "?")
+    score = rec.get("score")
+    subtitle = f"ציון {float(score):.1f}" if score is not None else ""
+    parts: list[str] = ['<div class="cubes">']
+    for cube in cubes:
+        wide = " wide" if cube.get("wide") else ""
+        parts.append(
+            f'<div class="cube{wide}">'
+            f'<div class="cube-title">{_esc(cube.get("title", ""))}</div>'
+            f'<div class="cube-blurb">{_esc(cube.get("blurb", ""))}</div>'
+            f'<div class="cube-value">{_esc(cube.get("value", ""))}</div>'
+            f"</div>"
+        )
+    parts.append("</div>")
+    parts.append(
+        '<p class="foot">'
+        f"מזומן פנוי {fmt_money_plain(cash_free, whole=True)} · "
+        f"מומלץ {fmt_money_plain(suggested_usd, whole=True)}"
+        "</p>"
+    )
+    parts.append('<p class="foot">הצעה בלבד — לא ביצוע אוטומטי</p>')
+    return wrap_card_html(
+        f"הצעה {position_no}/{total}: {sym}",
+        "".join(parts),
+        subtitle=subtitle,
+    )
 
 
 def card_png_from_html(

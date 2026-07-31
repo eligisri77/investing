@@ -103,6 +103,140 @@ def _advance(state: dict[str, Any]) -> None:
     po["nudged_at"] = None
 
 
+def build_offer_metric_cubes(rec: dict[str, Any], *, rank: int | None = None) -> list[dict[str, str]]:
+    """Structured metric cubes for the offer PNG card (title / blurb / value)."""
+    from trading_pulse.agent.signal_sources import SOURCE_LABELS
+    from trading_pulse.agent.strategy_labels import strategy_label
+
+    score = float(rec.get("score") or rec.get("score_technical") or 0)
+    ret5 = float(rec.get("ret_5d_pct") or 0)
+    vol_ratio = float(rec.get("vol_ratio") or 0)
+    volume_ok = bool(rec.get("volume_ok", False))
+    rank_n = int(rank) if rank is not None else 0
+    strategy = str(rec.get("strategy") or "")
+    cubes: list[dict[str, str]] = []
+
+    method = strategy_label(rec) or str(rec.get("strategy_id") or strategy or "").strip()
+    entry_policy = str(rec.get("entry_policy") or "")
+    if entry_policy == "stop_breakout":
+        timing = "כניסה רק בפריצה — לא אוטומטית בפתיחה"
+        timing_short = "בפריצה"
+    elif entry_policy == "market_open":
+        timing = "כניסה במחיר פתיחה אם אישרת"
+        timing_short = "בפתיחה"
+    else:
+        timing = "איך המערכת בחרה את המניה הזו"
+        timing_short = ""
+    method_value = " · ".join(p for p in (method or "—", timing_short) if p)
+    cubes.append(
+        {
+            "title": "שיטת כניסה",
+            "blurb": timing,
+            "value": method_value,
+            "wide": "1",
+        }
+    )
+
+    if strategy == "method2":
+        side = str(rec.get("side") or "LONG").upper()
+        side_he = "שורט" if side == "SHORT" else "לונג"
+        trig = str(rec.get("trigger") or "—")
+        entry = float(rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0)
+        stop = float(rec.get("method2_stop_ref") or rec.get("stop_loss_price") or 0)
+        cubes.append(
+            {
+                "title": "נרות סיניים 2",
+                "blurb": "רמות הפריצה והסטופ לשיטה הזו.",
+                "value": f"{side_he} · טריגר {trig} · פריצה ${entry:.2f} · סטופ ${stop:.2f}",
+                "wide": "1",
+            }
+        )
+    elif strategy == "rising_three_methods":
+        weak = " (חלש)" if rec.get("pattern_weak") else ""
+        cubes.append(
+            {
+                "title": "תבנית Rising Three",
+                "blurb": "זיהוי תבנית נרות — ציון התבנית מול דירוג היום.",
+                "value": f"דירוג #{rank_n or '—'}{weak} · ציון תבנית {float(rec.get('pattern_score', score)):.1f}",
+                "wide": "1",
+            }
+        )
+    else:
+        atr = float(rec.get("atr_pct") or 0)
+        score_bits = [f"דירוג #{rank_n}" if rank_n else "דירוג —", f"ציון {score:.1f}"]
+        if atr:
+            score_bits.append(f"ATR {atr:.1f}%")
+        cubes.append(
+            {
+                "title": "ציון ותנודתיות",
+                "blurb": "דירוג מול הרשימה וכמה המניה זזה ביום.",
+                "value": " · ".join(score_bits),
+            }
+        )
+
+        if rec.get("breakout_ok") is not None or rec.get("near_high_pct") is not None:
+            near = float(rec.get("near_high_pct") or 0)
+            if rec.get("breakout_ok"):
+                mom = f"פריצה · {near:.1f}% משיא 20 יום"
+            else:
+                mom = f"לא בפריצה · {near:.1f}% מתחת לשיא 20 יום"
+        elif rec.get("momentum_ok") is not None:
+            above = float(rec.get("above_ma20_pct") or 0)
+            mom = f"מעל MA20 ב-{above:+.1f}%" if rec.get("momentum_ok") else "מתחת ל-MA20"
+        else:
+            mom = "—"
+        ret_txt = f"{ret5:+.1f}% ב-5 ימים" if ret5 else "ללא שינוי משמעותי ב-5 ימים"
+        cubes.append(
+            {
+                "title": "מומנטום ומחיר",
+                "blurb": "האם המחיר חזק ביחס לממוצע / לשיא האחרון.",
+                "value": f"{mom} · {ret_txt}",
+            }
+        )
+
+    vol_label = "גבוה" if volume_ok else ("רגיל" if vol_ratio >= 0.8 else "נמוך")
+    cubes.append(
+        {
+            "title": "נפח",
+            "blurb": "האם יש עניין בשוק מעבר לתנועת מחיר בלבד.",
+            "value": f"{vol_ratio:.2f}× מהממוצע · {vol_label}",
+        }
+    )
+
+    source_scores = rec.get("source_scores") or {}
+    news_parts: list[str] = []
+    if source_scores:
+        breakdown = ", ".join(
+            f"{SOURCE_LABELS.get(k, k)} {v:.1f}"
+            for k, v in sorted(source_scores.items(), key=lambda x: -x[1])[:4]
+        )
+        news_parts.append(f"{int(rec.get('sources_used', len(source_scores)))} אתרים: {breakdown}")
+    adj = float(rec.get("sentiment_adjustment") or 0)
+    if adj:
+        news_parts.append(f"חדשות ({rec.get('sentiment_tone', 'neutral')}): {adj:+.1f}")
+    if rec.get("source_disagreement"):
+        news_parts.append("⚠️ מקורות לא מסכימים")
+    cubes.append(
+        {
+            "title": "חדשות ומקורות",
+            "blurb": "איך ציון חיצוני וסנטימנט משנים את התמונה.",
+            "value": " · ".join(news_parts) if news_parts else "אין פירוט מקורות להצעה הזו",
+        }
+    )
+
+    backtest = rec.get("backtest") or {}
+    bt_summary = str(backtest.get("summary") or "").strip()
+    cubes.append(
+        {
+            "title": "בדיקה לאחור",
+            "blurb": "איך הכלל הזה התנהג בעבר — לא הבטחה.",
+            "value": bt_summary if bt_summary else "אין מספיק עסקאות לבדיקה",
+            "wide": "1",
+        }
+    )
+    return cubes
+
+
 def format_offer_prompt(
     rec: dict[str, Any],
     *,
@@ -111,27 +245,31 @@ def format_offer_prompt(
     position_no: int,
     total: int,
 ) -> str:
+    """Short HTML reply strip — metric details live on the cubes PNG card."""
+    from trading_pulse.agent.strategy_labels import strategy_label
     from trading_pulse.telegram.telegram_format import escape_html
 
     sym = escape_html(str(rec.get("symbol")))
     score = float(rec.get("score") or rec.get("score_technical") or 0)
-    explanation = str(rec.get("explanation") or rec.get("reason") or "").strip()
-    lines = [f"💡 <b>הצעה {position_no}/{total}: {sym}</b>", f"ציון: <b>{score:.1f}</b>"]
-    if explanation:
-        lines.append(escape_html(explanation))
+    method = strategy_label(rec) or str(rec.get("strategy_id") or rec.get("strategy") or "").strip()
+    lines = [
+        f"💡 <b>הצעה {position_no}/{total}: {sym}</b> · ציון <b>{score:.1f}</b>",
+    ]
+    if method:
+        lines.append(f"שיטת כניסה: <b>{escape_html(method)}</b>")
     lines += [
+        f"מזומן פנוי: <b>${cash_free:.0f}</b> · מומלץ: <b>${suggested_usd:.0f}</b>",
         "",
-        f"מזומן פנוי: <b>${cash_free:.0f}</b>",
-        f"מומלץ: <b>${suggested_usd:.0f}</b>",
-        "",
-        "שלח <code>כן</code> / <code>קנה</code> בסכום המוצע, "
-        "סכום (למשל <code>150</code> או <code>קנה 150</code>), או <code>דלג</code>",
+        "✅ איך לבצע:",
+        f"<code>כן</code> / <code>קנה</code> — בסכום המוצע (${suggested_usd:.0f})",
+        "סכום (למשל <code>150</code> או <code>קנה 150</code>) — סכום אחר",
+        "<code>דלג</code> — להצעה הבאה",
     ]
     return "\n".join(lines)
 
 
 def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
-    """Send the current offer's chart + prompt. False = queue is empty."""
+    """Send the current offer's chart + cubes card + short prompt. False = queue empty."""
     from trading_pulse.agent.dryrun_agent import (
         format_rec_signal_block,
         send_telegram_photo,
@@ -150,10 +288,15 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
 
     total = len(po["queue"])
     position_no = int(po["index"]) + 1
+    cash = cash_remaining(plan, po)
+    suggested = suggested_amount(plan, po)
     try:
         speculative = plan.get("risk_profile") == "speculative"
         signal_lines = format_rec_signal_block(rec, speculative).splitlines()
-        from trading_pulse.telegram.reply_cards import chart_with_recommendation_details
+        from trading_pulse.telegram.reply_cards import (
+            chart_with_recommendation_details,
+            offer_cubes_card,
+        )
 
         img = chart_with_recommendation_details(
             rec,
@@ -166,13 +309,29 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             send_telegram_photo(
                 cfg, img, f"#{position_no} {symbol}", context=f"offer:{symbol}", parse_mode="HTML"
             )
+        cubes_img = offer_cubes_card(
+            rec,
+            position_no=position_no,
+            total=total,
+            cash_free=cash,
+            suggested_usd=suggested,
+            rank=position_no,
+        )
+        if cubes_img:
+            send_telegram_photo(
+                cfg,
+                cubes_img,
+                f"הצעה {position_no}/{total} {symbol}",
+                context=f"offer:cubes:{symbol}",
+                parse_mode="HTML",
+            )
     except Exception as ex:
-        logging.warning("Offer chart for %s failed: %s", symbol, ex)
+        logging.warning("Offer chart/cubes for %s failed: %s", symbol, ex)
 
     text = format_offer_prompt(
         rec,
-        cash_free=cash_remaining(plan, po),
-        suggested_usd=suggested_amount(plan, po),
+        cash_free=cash,
+        suggested_usd=suggested,
         position_no=position_no,
         total=total,
     )

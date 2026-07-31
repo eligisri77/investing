@@ -50,7 +50,7 @@ Bare `1`–`5` during pending allocation → allocation pick (with hint).
 | portfolio_review | HTML — day 2+ digest (`format_portfolio_review_digest`): holding actions + idle-cash advice, at `portfolio_review_time` (Israel) |
 | portfolio_review:intro | HTML — short "🔎 סריקת שוק מלאה" intro, empty-portfolio days only (before the day's first offer) |
 | portfolio_review:no_picks | HTML — empty-portfolio day, full scan ran but nothing qualified (`no_picks_reason`) — never stay silent |
-| offer | photo (chart, `offer:{symbol}`) + HTML text card «הצעה N/M: SYMBOL» — score, explanation, cash, suggested amount |
+| offer | photo (chart, `offer:{symbol}`) + photo (metric cubes, `offer:cubes:{symbol}`) + short HTML «הצעה N/M» action strip (cash, כן/סכום/דלג) — no free-form explanation wall |
 | offer:decision | HTML — one-line ack after a `כן`/amount/`דלג` reply |
 | offer:nudge | HTML — one-time "⏳ עדיין מחכה לתשובה" after ~10 min silence |
 | offer:cutoff | HTML — "⏰ השוק נפתח" when the queue is still unanswered at market open |

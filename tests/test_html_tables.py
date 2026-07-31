@@ -10,6 +10,7 @@ from trading_pulse.telegram.html_tables import (
     html_entry,
     html_heartbeat,
     html_intraday,
+    html_offer_cubes,
     html_plan,
     html_portfolio,
     html_recommendation,
@@ -396,6 +397,44 @@ def test_wrap_card_contains_rtl():
     assert "כותרת" in doc
 
 
+def test_html_offer_cubes_contains_titles_blurbs_and_wrap_title():
+    cubes = [
+        {
+            "title": "ציון ותנודתיות",
+            "blurb": "דירוג מול הרשימה וכמה המניה זזה ביום.",
+            "value": "דירוג #1 · ציון 13.0",
+        },
+        {
+            "title": "נפח",
+            "blurb": "האם יש עניין בשוק מעבר לתנועת מחיר בלבד.",
+            "value": "3.33× מהממוצע · גבוה",
+            "wide": "1",
+        },
+    ]
+    doc = html_offer_cubes(
+        {"symbol": "RBLX", "score": 13.0},
+        position_no=1,
+        total=5,
+        cash_free=1000.0,
+        suggested_usd=200.0,
+        cubes=cubes,
+    )
+    assert 'dir="rtl"' in doc
+    assert "<h1" in doc and "הצעה 1/5: RBLX" in doc
+    assert "ציון 13.0" in doc
+    assert 'class="cube-title"' in doc
+    assert "ציון ותנודתיות" in doc
+    assert "נפח" in doc
+    assert 'class="cube-blurb"' in doc
+    assert "דירוג מול הרשימה" in doc
+    assert "עניין בשוק" in doc
+    assert 'class="cube-value"' in doc
+    assert "דירוג #1" in doc
+    assert 'class="cube wide"' in doc
+    assert "מזומן פנוי" in doc
+    assert "הצעה בלבד" in doc
+
+
 def test_html_weekly_watchlist_labels_and_hebrew_strategies():
     doc = html_weekly_watchlist(
         {
@@ -596,12 +635,17 @@ def test_html_recommendation_leading_minus_and_labels():
             "floor_price": 9.64,
             "take_profit_price": 13.70,
             "score": 16.3,
+            "strategy": "score",
+            "strategy_id": "score_momentum",
+            "entry_policy": "market_open",
         },
         1,
         "2026-07-27",
         signal_lines=["מומנטום חיובי"],
     )
     assert "יום מסחר" in doc
+    assert "שיטת כניסה" in doc
+    assert "מומנטום וציון" in doc or "מומנטום" in doc
     assert "מחיר תחתון" in doc
     assert "-12%" in doc
     assert "12%-" not in doc
@@ -610,3 +654,5 @@ def test_html_recommendation_leading_minus_and_labels():
     assert "הצעה" in doc
     assert "CLF" in doc
     assert "מומנטום חיובי" in doc
+    assert 'class="detail"' in doc
+    assert "font-size: 20px" in doc  # .detail readable on phone

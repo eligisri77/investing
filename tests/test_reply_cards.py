@@ -13,6 +13,7 @@ from trading_pulse.telegram.reply_cards import (
     card_sell,
     card_swap,
     chart_with_recommendation_details,
+    offer_cubes_card,
     render_html_message_card,
     render_reply_card,
     stack_png_vertical,
@@ -799,6 +800,22 @@ def test_chart_with_recommendation_details_falls_back_to_chart(monkeypatch):
     )
     out = chart_with_recommendation_details({"symbol": "CLF"}, 1, "2026-07-27")
     assert out == chart
+
+
+def test_offer_cubes_card_returns_none_when_render_fails(monkeypatch):
+    monkeypatch.setattr(
+        "trading_pulse.telegram.html_tables.card_png_from_html",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("html boom")),
+    )
+    out = offer_cubes_card(
+        {"symbol": "RBLX", "score": 13.0, "vol_ratio": 1.0, "volume_ok": True},
+        position_no=1,
+        total=3,
+        cash_free=500.0,
+        suggested_usd=150.0,
+        rank=1,
+    )
+    assert out is None
 
 
 def test_send_plan_stock_charts_short_caption(monkeypatch):

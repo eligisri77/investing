@@ -8,11 +8,13 @@ import pytest
 
 from trading_pulse.agent import offer_queue
 from trading_pulse.agent.offer_queue import (
+    build_offer_metric_cubes,
     cash_remaining,
     current_offer_symbol,
     eligible_offer_symbols,
     expire_stale_offer,
     finish_offers,
+    format_offer_prompt,
     maybe_nudge_offer,
     pending_offer,
     start_and_send_first_offer,
@@ -134,12 +136,125 @@ def test_cash_remaining_never_negative():
     assert cash_remaining(plan, po) == 0.0
 
 
+def test_build_offer_metric_cubes_speculative_has_labeled_blocks():
+    rec = {
+        "symbol": "RBLX",
+        "score": 13.0,
+        "atr_pct": 5.7,
+        "breakout_ok": False,
+        "near_high_pct": -14.7,
+        "ret_5d_pct": 2.4,
+        "vol_ratio": 3.33,
+        "volume_ok": True,
+        "strategy": "score",
+        "strategy_id": "score_momentum",
+        "entry_policy": "market_open",
+        "source_scores": {"finviz": 14.1, "nasdaq": 13.2, "yahoo": 13.0},
+        "sources_used": 3,
+        "backtest": {"summary": "90d · win 62% · 13 trades"},
+    }
+    cubes = build_offer_metric_cubes(rec, rank=1)
+    titles = [c["title"] for c in cubes]
+    assert "שיטת כניסה" in titles
+    assert "ציון ותנודתיות" in titles
+    assert "מומנטום ומחיר" in titles
+    assert "נפח" in titles
+    assert "חדשות ומקורות" in titles
+    assert "בדיקה לאחור" in titles
+    assert all(c.get("blurb") for c in cubes)
+    method_cube = next(c for c in cubes if c["title"] == "שיטת כניסה")
+    assert "מומנטום" in method_cube["value"]
+    assert "בפתיחה" in method_cube["value"]
+
+
+def test_build_offer_metric_cubes_method2_variant():
+    rec = {
+        "symbol": "PATH",
+        "strategy": "method2",
+        "strategy_id": "method2",
+        "entry_policy": "stop_breakout",
+        "side": "LONG",
+        "trigger": "3-2-2",
+        "method2_entry_ref": 12.5,
+        "method2_stop_ref": 11.0,
+        "score": 9.0,
+        "vol_ratio": 1.2,
+        "volume_ok": True,
+    }
+    cubes = build_offer_metric_cubes(rec, rank=2)
+    by_title = {c["title"]: c for c in cubes}
+    assert "שיטת כניסה" in by_title
+    assert "נרות סיניים 2" in by_title["שיטת כניסה"]["value"]
+    assert "בפריצה" in by_title["שיטת כניסה"]["value"]
+    assert "נרות סיניים 2" in by_title
+    assert "ציון ותנודתיות" not in by_title
+    assert "מומנטום ומחיר" not in by_title
+    m2 = by_title["נרות סיניים 2"]
+    assert "רמות הפריצה" in m2["blurb"]
+    assert "לונג" in m2["value"]
+    assert "3-2-2" in m2["value"]
+    assert "$12.50" in m2["value"]
+    assert "$11.00" in m2["value"]
+    assert m2.get("wide") == "1"
+    assert "נפח" in by_title
+    assert "בדיקה לאחור" in by_title
+
+
+def test_build_offer_metric_cubes_rising_three_variant():
+    rec = {
+        "symbol": "CLF",
+        "strategy": "rising_three_methods",
+        "strategy_id": "rising_three_methods",
+        "entry_policy": "market_open",
+        "pattern_weak": True,
+        "pattern_score": 8.5,
+        "score": 11.0,
+        "vol_ratio": 0.5,
+        "volume_ok": False,
+    }
+    cubes = build_offer_metric_cubes(rec, rank=3)
+    by_title = {c["title"]: c for c in cubes}
+    assert "שיטת כניסה" in by_title
+    assert "Rising Three" in by_title["שיטת כניסה"]["value"]
+    assert "תבנית Rising Three" in by_title
+    assert "ציון ותנודתיות" not in by_title
+    rt = by_title["תבנית Rising Three"]
+    assert "זיהוי תבנית נרות" in rt["blurb"]
+    assert "דירוג #3" in rt["value"]
+    assert "(חלש)" in rt["value"]
+    assert "8.5" in rt["value"]
+    assert rt.get("wide") == "1"
+
+
+def test_format_offer_prompt_is_short_action_strip():
+    text = format_offer_prompt(
+        {
+            "symbol": "RBLX",
+            "score": 13.0,
+            "explanation": "WALL OF TEXT SHOULD NOT APPEAR",
+            "strategy_id": "score_momentum",
+            "entry_policy": "market_open",
+        },
+        cash_free=1000.0,
+        suggested_usd=200.0,
+        position_no=1,
+        total=5,
+    )
+    assert "הצעה 1/5" in text
+    assert "RBLX" in text
+    assert "שיטת כניסה" in text
+    assert "מומנטום" in text
+    assert "איך לבצע" in text
+    assert "דלג" in text
+    assert "WALL OF TEXT" not in text
+
+
 # --------------------------------------------------------------------------
 # send_offer
 # --------------------------------------------------------------------------
 
 
-def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None):
+def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None, cubes=b"\x89CUBES"):
     from trading_pulse.agent import dryrun_agent as agent
     from trading_pulse.telegram import reply_cards
 
@@ -159,9 +274,13 @@ def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None):
             raise chart_exc
         return chart
 
+    def fake_cubes(*args, **kwargs):
+        return cubes
+
     monkeypatch.setattr(agent, "send_telegram_photo", fake_photo)
     monkeypatch.setattr(agent, "send_user_notification", fake_notify)
     monkeypatch.setattr(reply_cards, "chart_with_recommendation_details", fake_chart)
+    monkeypatch.setattr(reply_cards, "offer_cubes_card", fake_cubes)
     return photo_calls, notify_calls
 
 
@@ -173,12 +292,15 @@ def test_send_offer_sends_photo_and_prompt(monkeypatch):
 
     assert offer_queue.send_offer(object(), state, plan) is True
 
-    assert len(photo_calls) == 1
+    assert len(photo_calls) == 2
     assert photo_calls[0]["caption"] == "#1 NVDA"
+    assert "הצעה 1/2" in photo_calls[1]["caption"]
     assert len(notify_calls) == 1
     text = notify_calls[0]["text"]
     assert "NVDA" in text
     assert "הצעה 1/2" in text
+    assert "איך לבצע" in text
+    assert "RBLX:" not in text  # no free-form explanation wall
     assert notify_calls[0]["parse_mode"] == "HTML"
     po = state["pending_offer"]
     assert po["offered_at"] is not None
@@ -197,7 +319,7 @@ def test_send_offer_skips_photo_when_chart_missing(monkeypatch):
     start_offer_queue(state, plan)
 
     assert offer_queue.send_offer(object(), state, plan) is True
-    assert photo_calls == []
+    assert len(photo_calls) == 1  # cubes card still sent
     assert len(notify_calls) == 1
 
 

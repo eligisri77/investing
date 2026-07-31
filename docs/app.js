@@ -9,9 +9,11 @@
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
+// Resolve data/*.json next to this script so /investing (no trailing slash) still works.
+const ASSET_BASE = new URL(".", document.currentScript?.src || location.href).href;
 
 async function fetchJson(url) {
-  const res = await fetch(url);
+  const res = await fetch(new URL(url, ASSET_BASE));
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

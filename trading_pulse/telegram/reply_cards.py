@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 from typing import Any, Literal
 
@@ -737,4 +738,33 @@ def chart_with_recommendation_details(
         return stack_png_vertical(chart, details)
     except Exception:
         return chart
+
+
+def offer_cubes_card(
+    rec: dict[str, Any],
+    *,
+    position_no: int,
+    total: int,
+    cash_free: float,
+    suggested_usd: float,
+    rank: int | None = None,
+) -> bytes | None:
+    """PNG card: metric cubes with a short blurb beside each block."""
+    from trading_pulse.agent.offer_queue import build_offer_metric_cubes
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_offer_cubes
+
+    try:
+        cubes = build_offer_metric_cubes(rec, rank=rank if rank is not None else position_no)
+        doc = html_offer_cubes(
+            rec,
+            position_no=position_no,
+            total=total,
+            cash_free=cash_free,
+            suggested_usd=suggested_usd,
+            cubes=cubes,
+        )
+        return card_png_from_html(doc, width=920, height=1600)
+    except Exception:
+        logging.exception("offer_cubes_card failed for %s", rec.get("symbol"))
+        return None
 

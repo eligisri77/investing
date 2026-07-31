@@ -11,6 +11,7 @@ only a bare yes/no/amount reply is consumed here.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,11 @@ OFFER_TTL_HOURS = 6  # covers the pre-market window through mid-morning
 
 _YES_WORDS = frozenset({"כן", "yes", "ok", "אוקי", "אישור", "יאללה", "מאשר", "אשר", "קנה", "buy"})
 _SKIP_WORDS = frozenset({"דלג", "skip", "לא", "no", "לא תודה", "דחה"})
+# Natural replies while an offer is open: "קנה 200", "buy $150", "קנה RBLX 200"
+_BUY_AMOUNT_RE = re.compile(
+    r"^(?:קנה|תקנה|buy)\s+(?:([A-Za-z][A-Za-z0-9.\-]*)\s+)?\$?\s*([\d]+(?:[.,]\d+)?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _rec_by_symbol(plan: dict[str, Any], symbol: str) -> dict[str, Any] | None:
@@ -118,7 +124,8 @@ def format_offer_prompt(
         f"מזומן פנוי: <b>${cash_free:.0f}</b>",
         f"מומלץ: <b>${suggested_usd:.0f}</b>",
         "",
-        "שלח <code>כן</code> לקנות בסכום המוצע, סכום (למשל <code>150</code>), או <code>דלג</code>",
+        "שלח <code>כן</code> / <code>קנה</code> בסכום המוצע, "
+        "סכום (למשל <code>150</code> או <code>קנה 150</code>), או <code>דלג</code>",
     ]
     return "\n".join(lines)
 
@@ -340,14 +347,28 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
     elif low in _SKIP_WORDS:
         decision = "skip"
     else:
-        cleaned = raw.replace("$", "").replace(",", "").strip()
-        try:
-            amount = float(cleaned)
+        m = _BUY_AMOUNT_RE.match(raw)
+        if m:
+            named_sym = (m.group(1) or "").upper()
+            if named_sym and named_sym != str(symbol).upper():
+                # Explicit different ticker — leave for normal `קנה SYMBOL` handling.
+                return False
+            try:
+                amount = float(m.group(2).replace(",", "."))
+            except ValueError:
+                return False
             if amount <= 0:
                 return False
             decision = "buy"
-        except ValueError:
-            return False  # not an offer reply — let normal command parsing try
+        else:
+            cleaned = raw.replace("$", "").replace(",", "").strip()
+            try:
+                amount = float(cleaned)
+                if amount <= 0:
+                    return False
+                decision = "buy"
+            except ValueError:
+                return False  # not an offer reply — let normal command parsing try
 
     if decision == "buy":
         amount = max(0.0, min(float(amount), cash_remaining(plan, po)))

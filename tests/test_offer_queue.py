@@ -511,6 +511,35 @@ def test_try_resolve_pending_offer_bare_amount(monkeypatch, tmp_path, text):
     assert nvda["capital_usd"] == 150.0
 
 
+@pytest.mark.parametrize("text", ["קנה 200", "תקנה 200", "buy $200", "קנה NVDA 200"])
+def test_try_resolve_pending_offer_buy_amount_phrase(monkeypatch, tmp_path, text):
+    """Users naturally type `קנה 200` — must count as amount for the open offer."""
+    plan = _plan(available_capital_usd=1000.0)
+    plan_file, notify_calls, *_ = _setup_try_resolve(monkeypatch, tmp_path, plan)
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, text) is True
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    nvda = next(r for r in saved["recommendations"] if r["symbol"] == "NVDA")
+    assert nvda["approved"] is True
+    assert nvda["capital_usd"] == 200.0
+    assert "נקנה" in notify_calls[0]["text"]
+
+
+def test_try_resolve_pending_offer_buy_other_symbol_falls_through(monkeypatch, tmp_path):
+    plan = _plan(available_capital_usd=1000.0)
+    plan_file, notify_calls, *_ = _setup_try_resolve(monkeypatch, tmp_path, plan)
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "קנה AAPL 200") is False
+    assert notify_calls == []
+    assert state["pending_offer"]["index"] == 0
+
+
 def test_try_resolve_pending_offer_amount_clamped_to_cash_remaining(monkeypatch, tmp_path):
     plan = _plan(available_capital_usd=100.0)
     plan_file, *_ = _setup_try_resolve(monkeypatch, tmp_path, plan)

@@ -24,8 +24,65 @@ def clear_all_price_watches(state: dict[str, Any]) -> list[str]:
     return cleared
 
 
+def _cleared_watch_quote(symbol: str) -> dict[str, Any] | None:
+    try:
+        return fetch_intraday_quote(symbol)
+    except Exception as ex:
+        logging.debug("EOD watch quote skip %s: %s", symbol, ex)
+        return None
+
+
+def build_watches_cleared_cubes(cleared: list[str]) -> list[dict[str, str]]:
+    """Labeled cubes for the EOD «סיום מעקב שעתי» PNG card."""
+    cubes: list[dict[str, str]] = [
+        {
+            "title": "סיכום",
+            "blurb": "סוף יום מסחר — המעקבים של היום נוקו.",
+            "value": f"נוקו {len(cleared)} מעקב(ים)",
+            "wide": "1",
+        }
+    ]
+    for symbol in cleared:
+        quote = _cleared_watch_quote(symbol)
+        if quote:
+            last = float(quote["last"])
+            day_chg = float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
+            sign = "+" if day_chg >= 0 else ""
+            high = float(quote.get("high", last))
+            low = float(quote.get("low", last))
+            cubes.append(
+                {
+                    "title": str(symbol).upper(),
+                    "blurb": "מחיר סגירה / שינוי / טווח היום.",
+                    "value": (
+                        f"${last:.2f} · היום {sign}{day_chg:.2f}% · "
+                        f"טווח ${low:.2f}–${high:.2f}"
+                    ),
+                    "wide": "1",
+                }
+            )
+        else:
+            cubes.append(
+                {
+                    "title": str(symbol).upper(),
+                    "blurb": "לא התקבל מחיר סגירה לעדכון.",
+                    "value": "אין מחיר סגירה",
+                    "wide": "1",
+                }
+            )
+    cubes.append(
+        {
+            "title": "מחר",
+            "blurb": "כדי להפעיל שוב מעקב שעתי.",
+            "value": "ציון שעתי SYMBOL",
+            "wide": "1",
+        }
+    )
+    return cubes
+
+
 def format_watches_cleared(cleared: list[str]) -> str:
-    """EOD notice for cleared hourly watches — not the daily P/L report."""
+    """Text fallback for EOD cleared watches (prefer cubes PNG)."""
     from trading_pulse.telegram.telegram_format import escape_html
 
     if not cleared:
@@ -38,11 +95,7 @@ def format_watches_cleared(cleared: list[str]) -> str:
     ]
     for symbol in cleared:
         sym = escape_html(symbol)
-        quote = None
-        try:
-            quote = fetch_intraday_quote(symbol)
-        except Exception as ex:
-            logging.debug("EOD watch quote skip %s: %s", symbol, ex)
+        quote = _cleared_watch_quote(symbol)
         if quote:
             last = float(quote["last"])
             day_chg = float(quote.get("day_change_pct", quote.get("change_pct", 0)) or 0)
@@ -63,6 +116,33 @@ def format_watches_cleared(cleared: list[str]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def send_watches_cleared_notice(cfg: Any, cleared: list[str]) -> bool:
+    """Send EOD clear as cubes PNG (short caption only). Text fallback if render fails."""
+    if not cleared:
+        return False
+    from trading_pulse.agent.dryrun_agent import send_telegram_photo, send_user_notification
+    from trading_pulse.telegram.reply_cards import watches_cleared_cubes_card
+
+    png = watches_cleared_cubes_card(cleared)
+    if png:
+        return bool(
+            send_telegram_photo(
+                cfg,
+                png,
+                "סיום מעקב שעתי",
+                context="price_watch:eod_clear",
+                parse_mode="HTML",
+                inbox_text=f"סיום מעקב שעתי · נוקו {len(cleared)}",
+            )
+        )
+    msg = format_watches_cleared(cleared)
+    if not msg:
+        return False
+    return bool(
+        send_user_notification(cfg, msg, context="price_watch:eod_clear", parse_mode="HTML")
+    )
 
 
 def _ensure_watches_dict(state: dict[str, Any]) -> dict[str, Any]:

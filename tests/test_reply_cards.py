@@ -6,6 +6,7 @@ import pytest
 
 from trading_pulse.telegram.reply_cards import (
     _strip_html,
+    build_swap_completed_cubes,
     card_buy,
     card_entry,
     card_from_plan_summary,
@@ -75,15 +76,115 @@ def test_trade_cards():
         from_symbol="RIVN",
         to_symbol="BEAM",
         sold_usd=200,
-        bought_usd=200,
-        entry_price=36.0,
+        bought_usd=47.65,
+        entry_price=209.0,
         cash=0,
+        sell_price=10.0,
+        sell_pnl_usd=-5.0,
     ).startswith(b"\x89PNG")
     assert card_help().startswith(b"\x89PNG")
+
+
+def test_build_swap_completed_cubes_labels_value_and_price():
+    cubes = build_swap_completed_cubes(
+        from_symbol="PBF",
+        to_symbol="CDNA",
+        sold_usd=200,
+        bought_usd=47.65,
+        buy_price=209.0,
+        cash=0,
+        sell_price=12.5,
+        sell_pnl_usd=3.0,
+    )
+    assert cubes[0]["title"] == "מכרת · PBF"
+    assert cubes[0]["value"] == "ערך $200.00"
+    assert "מחיר למניה $12.50" in cubes[0]["blurb"]
+    assert "רווח +$3.00" in cubes[0]["blurb"]
+    assert cubes[1]["title"] == "קנית · CDNA"
+    assert cubes[1]["value"] == "ערך $47.65"
+    assert "מחיר למניה $209.00" in cubes[1]["blurb"]
+    assert "≈" in cubes[1]["blurb"] and "מניות" in cubes[1]["blurb"]
+    assert cubes[2]["title"] == "מזומן פנוי"
+    assert cubes[2]["value"] == "$0.00"
     assert card_entry(
         [{"symbol": "BEAM", "capital_usd": 320, "entry_price": 36.6}],
         trading_day="2026-07-09",
     ).startswith(b"\x89PNG")
+
+
+def test_build_swap_completed_cubes_loss_and_fallback_blurbs():
+    loss = build_swap_completed_cubes(
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        sold_usd=333,
+        bought_usd=300,
+        buy_price=36.5,
+        cash=33,
+        sell_price=6.5,
+        sell_pnl_usd=-12.0,
+    )
+    assert "הפסד -$12.00" in loss[0]["blurb"]
+    assert "מחיר למניה $6.50" in loss[0]["blurb"]
+    assert loss[0]["value"] == "ערך $333.00"
+    assert loss[1]["value"] == "ערך $300.00"
+
+    flat = build_swap_completed_cubes(
+        from_symbol="A",
+        to_symbol="B",
+        sold_usd=50,
+        bought_usd=50,
+        buy_price=10.0,
+        cash=0,
+        sell_price=5.0,
+        sell_pnl_usd=0.0,
+    )
+    assert "PnL $0" in flat[0]["blurb"]
+
+    bare = build_swap_completed_cubes(
+        from_symbol="X",
+        to_symbol="Y",
+        sold_usd=100,
+        bought_usd=100,
+        buy_price=0,
+        cash=0,
+    )
+    assert bare[0]["blurb"] == "מה יצא מהתיק."
+    assert bare[1]["blurb"] == "מה נכנס לתיק."
+    assert bare[0]["value"] == "ערך $100.00"
+    assert bare[1]["value"] == "ערך $100.00"
+
+
+def test_card_swap_falls_back_to_legacy_rows_when_cubes_fail(monkeypatch):
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.swap_completed_cubes_card",
+        lambda **_k: None,
+    )
+    captured: list[dict] = []
+
+    def fake_render(title, *, accent="cyan", rows=None, **_k):
+        captured.append({"title": title, "accent": accent, "rows": rows})
+        return b"\x89PNG\r\n\x1a\nlegacy"
+
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.render_reply_card",
+        fake_render,
+    )
+    out = card_swap(
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        sold_usd=200,
+        bought_usd=180,
+        entry_price=36.0,
+        cash=20,
+        sell_price=6.5,
+        sell_pnl_usd=-5.0,
+    )
+    assert out.startswith(b"\x89PNG")
+    assert captured[0]["title"] == "החלפה הושלמה"
+    rows = {k: v for k, v in captured[0]["rows"]}
+    assert "ערך $200.00" in rows["מכרת"]
+    assert "ערך $180.00" in rows["קנית"]
+    assert "מחיר $36.00" in rows["קנית"]
 
 
 @pytest.mark.parametrize(

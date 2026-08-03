@@ -892,13 +892,28 @@ def format_swap_completed(
     bought_usd: float,
     cash: float,
     holdings: list[dict[str, Any]] | None = None,
+    sell_price: float | None = None,
+    sell_pnl_usd: float | None = None,
 ) -> str:
+    """Text/inbox fallback — prefer cubes PNG via execute_swap_command."""
+    from_s = escape_html(from_symbol)
+    to_s = escape_html(to_symbol)
+    sell_bits = [f"ערך <b>${sold_usd:.2f}</b>"]
+    if sell_price and sell_price > 0:
+        sell_bits.append(f"מחיר <b>${sell_price:.2f}</b>")
+    if sell_pnl_usd is not None:
+        if sell_pnl_usd > 0:
+            sell_bits.append(f"רווח <b>+${sell_pnl_usd:.2f}</b>")
+        elif sell_pnl_usd < 0:
+            sell_bits.append(f"הפסד <b>-${abs(sell_pnl_usd):.2f}</b>")
+    buy_bits = [f"ערך <b>${bought_usd:.2f}</b>", f"מחיר <b>${entry_price:.2f}</b>"]
+    if entry_price > 0 and bought_usd > 0:
+        buy_bits.append(f"≈ <b>{bought_usd / entry_price:.4g}</b> מניות")
     lines = [
         "🔄 <b>החלפה הושלמה</b>",
-        f"מכרת <b>{escape_html(from_symbol)}</b> — <b>${sold_usd:.0f}</b>",
-        f"קנית <b>{escape_html(to_symbol)}</b> — <b>${bought_usd:.0f}</b> "
-        f"@ ${entry_price:.2f}",
-        f"מזומן פנוי: <b>${cash:.0f}</b>",
+        f"<b>מכרת {from_s}</b> — {' · '.join(sell_bits)}",
+        f"<b>קנית {to_s}</b> — {' · '.join(buy_bits)}",
+        f"מזומן פנוי: <b>${cash:.2f}</b>",
     ]
     lines.extend(format_cash_deploy_advice(cash, holdings or [], new_buy_symbols=set()))
     return finalize("\n".join(lines))

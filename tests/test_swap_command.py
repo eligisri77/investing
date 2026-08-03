@@ -87,7 +87,12 @@ def test_swap_buys_intraday_target_not_in_plan(tmp_path, monkeypatch):
     def _fake_sell(_cfg, st, sym, frac, **kw):
         st["open_positions"] = [p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()]
         st["equity"] = round(float(st.get("equity", 0)) - 12.0, 2)
-        return {"symbol": sym, "pnl_usd": -12.0, "capital_usd": 333.0}
+        return {
+            "symbol": sym,
+            "pnl_usd": -12.0,
+            "capital_usd": 333.0,
+            "exit_price": 6.5,
+        }
 
     monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell)
     monkeypatch.setattr(
@@ -104,12 +109,34 @@ def test_swap_buys_intraday_target_not_in_plan(tmp_path, monkeypatch):
         "_sync_plan_after_manual_action",
         lambda _cfg, _state, action: sync_actions.append(action),
     )
+    sent_cards: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_card",
+        lambda *_a, **_k: sent_cards.append((_a, _k)) or True,
+    )
+    card_kwargs: list[dict] = []
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_swap",
+        lambda **kw: card_kwargs.append(kw) or b"\x89PNG\r\n\x1a\nswap",
+    )
 
     reply = agent.execute_swap_command(Cfg(), "LABD", "BEAM")
 
-    assert "החלפה הושלמה" in reply
-    assert "BEAM" in reply
-    assert "לא בתוכנית" not in reply
+    # Cubes PNG goes to Telegram; command reply is empty (same as sell).
+    assert reply == ""
+    assert sent_cards
+    _args, _kwargs = sent_cards[0]
+    assert _args[1] == b"\x89PNG\r\n\x1a\nswap"
+    assert _args[2] == "החלפה LABD → BEAM"
+    assert _args[3] == "reply:swap"
+    assert len(card_kwargs) == 1
+    assert card_kwargs[0]["from_symbol"] == "LABD"
+    assert card_kwargs[0]["to_symbol"] == "BEAM"
+    assert card_kwargs[0]["sold_usd"] == 333.0
+    assert card_kwargs[0]["sell_price"] == 6.5
+    assert card_kwargs[0]["sell_pnl_usd"] == -12.0
+    assert card_kwargs[0]["entry_price"] == 36.5
 
     saved_state = __import__("json").loads(state_path.read_text())
     held = {p["symbol"] for p in saved_state.get("open_positions", [])}
@@ -205,6 +232,109 @@ def test_swap_rejects_same_symbol():
     assert reply.startswith("❌")
 
 
+def test_deliver_swap_completed_sends_card_and_returns_empty(monkeypatch):
+    sent: list[tuple] = []
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_card",
+        lambda *_a, **_k: sent.append((_a, _k)) or True,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_swap",
+        lambda **kw: b"\x89PNG\r\n\x1a\ncubes",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.app_notify.uses_app_notifications",
+        lambda _cfg: False,
+    )
+
+    out = agent._deliver_swap_completed(
+        Cfg(),
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        sold_usd=333.0,
+        bought_usd=320.0,
+        buy_price=36.5,
+        cash=13.0,
+        holdings=[{"symbol": "BEAM", "capital_usd": 320}],
+        sell_price=6.5,
+        sell_pnl_usd=-12.0,
+    )
+    assert out == ""
+    assert len(sent) == 1
+    assert sent[0][0][1] == b"\x89PNG\r\n\x1a\ncubes"
+    assert sent[0][0][2] == "החלפה LABD → BEAM"
+    assert sent[0][0][3] == "reply:swap"
+
+
+def test_deliver_swap_completed_falls_back_to_html_on_card_error(monkeypatch):
+    monkeypatch.setattr(
+        agent,
+        "send_telegram_card",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("telegram down")),
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_swap",
+        lambda **kw: b"\x89PNG\r\n\x1a\ncubes",
+    )
+
+    out = agent._deliver_swap_completed(
+        Cfg(),
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        sold_usd=200.0,
+        bought_usd=180.0,
+        buy_price=36.0,
+        cash=20.0,
+        holdings=[],
+        sell_price=6.5,
+        sell_pnl_usd=-5.0,
+    )
+    assert "החלפה הושלמה" in out
+    assert "מכרת LABD" in out
+    assert "קנית BEAM" in out
+    assert "ערך <b>$200.00</b>" in out
+    assert "הפסד <b>-$5.00</b>" in out
+
+
+def test_deliver_swap_completed_notifies_app_inbox(monkeypatch):
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "trading_pulse.telegram.reply_cards.card_swap",
+        lambda **kw: b"\x89PNG\r\n\x1a\ncubes",
+    )
+    monkeypatch.setattr(
+        "trading_pulse.telegram.app_notify.uses_app_notifications",
+        lambda _cfg: True,
+    )
+    inbox: list[tuple] = []
+    monkeypatch.setattr(
+        "trading_pulse.telegram.app_notify.notify_user",
+        lambda cfg, html, kind, **kw: inbox.append((html, kind, kw)),
+    )
+
+    out = agent._deliver_swap_completed(
+        Cfg(),
+        from_symbol="PBF",
+        to_symbol="CDNA",
+        sold_usd=200.0,
+        bought_usd=47.65,
+        buy_price=209.0,
+        cash=0.0,
+        holdings=[],
+        sell_price=12.5,
+        sell_pnl_usd=3.0,
+    )
+    assert out == ""
+    assert len(inbox) == 1
+    html, kind, kw = inbox[0]
+    assert kind == "reply:swap"
+    assert kw.get("parse_mode") == "HTML"
+    assert kw.get("telegram_sender") is False
+    assert "החלפה הושלמה" in html
+    assert "רווח <b>+$3.00</b>" in html
+
+
 def test_swap_clears_price_watch_for_sold_symbol(tmp_path, monkeypatch):
     """Full swap sell removes Method2 / hourly watch on the sold symbol."""
     from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
@@ -277,6 +407,7 @@ def test_swap_clears_price_watch_for_sold_symbol(tmp_path, monkeypatch):
         lambda _cfg, _day: False,
     )
     monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_a, **_k: True)
 
     agent.execute_swap_command(Cfg(), "LABD", "BEAM")
 

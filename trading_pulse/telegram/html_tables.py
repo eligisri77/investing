@@ -1320,6 +1320,39 @@ def html_portfolio_review_cubes(
     )
 
 
+def html_watches_cleared_cubes(
+    *,
+    cubes: list[dict[str, str]],
+    cleared_n: int,
+) -> str:
+    """EOD hourly-watch clear notice as labeled cubes."""
+    parts = [_cubes_html(cubes)]
+    parts.append(
+        f'<p class="foot">נוקו {_esc(str(cleared_n))} מעקב(ים) · לא דוח רווח/הפסד</p>'
+    )
+    return wrap_card_html(
+        "סיום מעקב שעתי",
+        "".join(parts),
+        subtitle="סוף יום מסחר",
+    )
+
+
+def html_swap_completed_cubes(
+    *,
+    from_symbol: str,
+    to_symbol: str,
+    cubes: list[dict[str, str]],
+) -> str:
+    """Manual swap result as labeled cubes (sold vs bought)."""
+    parts = [_cubes_html(cubes)]
+    parts.append('<p class="foot">החלפה ידנית · שלח תיק למספרים מעודכנים</p>')
+    return wrap_card_html(
+        "החלפה הושלמה",
+        "".join(parts),
+        subtitle=f"{from_symbol} → {to_symbol}",
+    )
+
+
 def card_png_from_html(
     html_doc: str,
     *,

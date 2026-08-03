@@ -466,6 +466,62 @@ def test_html_portfolio_review_cubes_structure_and_footer():
     assert 'dir="rtl"' in doc
 
 
+def test_html_watches_cleared_cubes_structure():
+    from trading_pulse.telegram.html_tables import html_watches_cleared_cubes
+
+    cubes = [
+        {"title": "סיכום", "blurb": "סוף יום", "value": "נוקו 1 מעקב(ים)", "wide": "1"},
+        {"title": "DOCU", "blurb": "מחיר", "value": "$55.09 · היום -2.41%", "wide": "1"},
+        {"title": "מחר", "blurb": "הפעלה", "value": "ציון שעתי SYMBOL", "wide": "1"},
+    ]
+    doc = html_watches_cleared_cubes(cubes=cubes, cleared_n=1)
+    assert "סיום מעקב שעתי" in doc
+    assert "DOCU" in doc
+    assert "ציון שעתי SYMBOL" in doc
+    assert 'class="cube' in doc
+
+
+def test_html_swap_completed_cubes_structure_and_labels():
+    from trading_pulse.telegram.html_tables import html_swap_completed_cubes
+
+    cubes = [
+        {
+            "title": "מכרת · LABD",
+            "blurb": "מחיר למניה $6.50 · הפסד -$12.00",
+            "value": "ערך $333.00",
+            "wide": "1",
+        },
+        {
+            "title": "קנית · BEAM",
+            "blurb": "מחיר למניה $36.50 · ≈ 9.123 מניות",
+            "value": "ערך $333.00",
+            "wide": "1",
+        },
+        {
+            "title": "מזומן פנוי",
+            "blurb": "אחרי ההחלפה.",
+            "value": "$0.00",
+            "wide": "1",
+        },
+    ]
+    doc = html_swap_completed_cubes(
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        cubes=cubes,
+    )
+    assert "החלפה הושלמה" in doc
+    assert "LABD → BEAM" in doc
+    assert "מכרת · LABD" in doc
+    assert "קנית · BEAM" in doc
+    assert "ערך $333.00" in doc
+    assert "מחיר למניה $6.50" in doc
+    assert "הפסד -$12.00" in doc
+    assert "מזומן פנוי" in doc
+    assert "החלפה ידנית" in doc
+    assert 'class="cube' in doc
+    assert 'dir="rtl"' in doc
+
+
 def test_html_weekly_watchlist_labels_and_hebrew_strategies():
     doc = html_weekly_watchlist(
         {

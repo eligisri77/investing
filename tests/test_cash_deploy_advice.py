@@ -231,15 +231,44 @@ def test_swap_completed_includes_cash_deploy_when_cash_ge_20():
         bought_usd=280,
         cash=45,
         holdings=holdings,
+        sell_price=12.5,
+        sell_pnl_usd=8.0,
     )
     assert "החלפה הושלמה" in text
+    assert "מכרת RIVN" in text
+    assert "קנית BEAM" in text
+    assert "ערך <b>$300.00</b>" in text
+    assert "מחיר <b>$12.50</b>" in text
+    assert "רווח <b>+$8.00</b>" in text
+    assert "ערך <b>$280.00</b>" in text
+    assert "מחיר <b>$40.00</b>" in text
+    assert "מניות" in text
     assert "יש מזומן פנוי" in text
     assert "תקנה" in text
-
 
     # Buys execute immediately — do not push הכל as the primary deploy path
     assert "אם אישרת קניות חדשות" not in text
     assert "ולשלוח <code>הכל</code>" not in text
+
+
+def test_swap_completed_formats_loss_without_optional_sell_price():
+    text = format_swap_completed(
+        from_symbol="LABD",
+        to_symbol="BEAM",
+        sold_usd=200,
+        entry_price=36.5,
+        bought_usd=180,
+        cash=10,
+        holdings=[],
+        sell_pnl_usd=-12.5,
+    )
+    assert "החלפה הושלמה" in text
+    assert "ערך <b>$200.00</b>" in text
+    assert "הפסד <b>-$12.50</b>" in text
+    assert "מחיר <b>$36.50</b>" in text
+    # No sell_price → sell line has value + pnl only (buy still has מחיר)
+    sell_line = next(line for line in text.split("\n") if "מכרת LABD" in line)
+    assert "מחיר" not in sell_line
 
 
 def test_portfolio_review_digest_no_holdings():

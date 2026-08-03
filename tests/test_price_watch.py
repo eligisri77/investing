@@ -60,10 +60,18 @@ def test_clear_all_price_watches():
             "low": 99.0,
         },
     ):
+        from trading_pulse.agent.price_watch import build_watches_cleared_cubes
+
         msg = format_watches_cleared(cleared)
+        cubes = build_watches_cleared_cubes(cleared)
     assert "AAPL" in msg and "NVDA" in msg
     assert "$100.00" in msg and "$200.00" in msg
     assert "סיום מעקב" in msg
+    titles = [c["title"] for c in cubes]
+    assert titles[0] == "סיכום"
+    assert "AAPL" in titles and "NVDA" in titles
+    assert titles[-1] == "מחר"
+    assert any("$100.00" in c["value"] for c in cubes)
 
 
 def test_format_watch_added_uses_interval():

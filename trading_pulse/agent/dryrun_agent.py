@@ -2354,6 +2354,59 @@ def execute_buys_for_plan(
     return entries
 
 
+def _deliver_swap_completed(
+    cfg: AgentConfig,
+    *,
+    from_symbol: str,
+    to_symbol: str,
+    sold_usd: float,
+    bought_usd: float,
+    buy_price: float,
+    cash: float,
+    holdings: list[dict[str, Any]],
+    sell_price: float | None = None,
+    sell_pnl_usd: float | None = None,
+) -> str:
+    """Send swap cubes PNG; HTML only as inbox/fallback."""
+    from trading_pulse.telegram.reply_cards import card_swap
+    from trading_pulse.telegram.telegram_format import format_swap_completed
+
+    html = format_swap_completed(
+        from_symbol=from_symbol,
+        to_symbol=to_symbol,
+        sold_usd=sold_usd,
+        entry_price=buy_price,
+        bought_usd=bought_usd,
+        cash=cash,
+        holdings=holdings,
+        sell_price=sell_price,
+        sell_pnl_usd=sell_pnl_usd,
+    )
+    try:
+        send_telegram_card(
+            cfg,
+            card_swap(
+                from_symbol=from_symbol,
+                to_symbol=to_symbol,
+                sold_usd=sold_usd,
+                bought_usd=bought_usd,
+                entry_price=buy_price,
+                cash=cash,
+                sell_price=sell_price,
+                sell_pnl_usd=sell_pnl_usd,
+            ),
+            f"החלפה {from_symbol} → {to_symbol}",
+            "reply:swap",
+        )
+        from trading_pulse.telegram.app_notify import notify_user, uses_app_notifications
+
+        if uses_app_notifications(cfg):
+            notify_user(cfg, html, "reply:swap", parse_mode="HTML", telegram_sender=False)
+        return ""
+    except Exception:
+        return html
+
+
 def execute_swap_command(
     cfg: AgentConfig,
     from_symbol: str,
@@ -2365,7 +2418,6 @@ def execute_swap_command(
 ) -> str:
     from trading_pulse.agent.positions import free_cash, holdings_snapshot, partial_sell_position, partial_sell_usd
     from trading_pulse.agent.trading_flow import before_market_entry
-    from trading_pulse.telegram.telegram_format import format_swap_completed
 
     from_symbol = from_symbol.upper()
     to_symbol = to_symbol.upper()
@@ -2385,6 +2437,8 @@ def execute_swap_command(
     if trade is None:
         return f"❌ <b>אין פוזיציה ב-{from_symbol}</b>"
     sold_usd = float(trade.get("capital_usd", 0))
+    sell_price = float(trade.get("exit_price") or 0) or None
+    sell_pnl_usd = float(trade.get("pnl_usd") or 0)
     save_json(STATE_FILE, state)
     if sell_fraction >= 0.999 or not any(
         str(p.get("symbol", "")).upper() == from_symbol
@@ -2411,8 +2465,9 @@ def execute_swap_command(
 
     if purchase_usd < 1:
         return (
-            f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
-            f"❌ אין מספיק מזומן לקנות {to_symbol} (${cash:.0f})"
+            f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f}"
+            + (f" @ ${sell_price:.2f}" if sell_price else "")
+            + f"\n❌ אין מספיק מזומן לקנות {to_symbol} (${cash:.2f})"
         )
 
     if not path.exists():
@@ -2420,7 +2475,7 @@ def execute_swap_command(
             pos = _buy_symbol_usd(cfg, state, to_symbol, purchase_usd, td)
             if pos is None:
                 return (
-                    f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+                    f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f}\n"
                     f"❌ לא הצלחתי לקנות {to_symbol}"
                 )
             save_json(STATE_FILE, state)
@@ -2429,17 +2484,20 @@ def execute_swap_command(
                 state,
                 f"החלפה ידנית של {from_symbol} ב־{to_symbol}",
             )
-            return format_swap_completed(
+            return _deliver_swap_completed(
+                cfg,
                 from_symbol=from_symbol,
                 to_symbol=to_symbol,
                 sold_usd=sold_usd,
-                entry_price=float(pos.get("entry_price", 0)),
                 bought_usd=purchase_usd,
+                buy_price=float(pos.get("entry_price", 0)),
                 cash=free_cash(state, cfg),
                 holdings=holdings_snapshot(state),
+                sell_price=sell_price,
+                sell_pnl_usd=sell_pnl_usd,
             )
         return (
-            f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+            f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f}\n"
             f"❌ אין תוכנית ל-{trading_day} — לא ניתן לקנות {to_symbol}"
         )
 
@@ -2463,7 +2521,7 @@ def execute_swap_command(
             save_json(STATE_FILE, state)
             save_json(path, plan)
             return (
-                f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f}\n"
+                f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f}\n"
                 f"❌ לא הצלחתי לקנות {to_symbol} — נסה שוב"
             )
         save_json(STATE_FILE, state)
@@ -2473,14 +2531,17 @@ def execute_swap_command(
             state,
             f"החלפה ידנית של {from_symbol} ב־{to_symbol}",
         )
-        return format_swap_completed(
+        return _deliver_swap_completed(
+            cfg,
             from_symbol=from_symbol,
             to_symbol=to_symbol,
             sold_usd=sold_usd,
-            entry_price=float(pos.get("entry_price", 0)),
             bought_usd=purchase_usd,
+            buy_price=float(pos.get("entry_price", 0)),
             cash=free_cash(state, cfg),
             holdings=holdings_snapshot(state),
+            sell_price=sell_price,
+            sell_pnl_usd=sell_pnl_usd,
         )
 
     indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol]
@@ -2491,7 +2552,8 @@ def execute_swap_command(
     save_json(path, plan)
     approve_reply = set_plan_status(trading_day, "APPROVE", indices, cfg=cfg)
     return (
-        f"✅ <b>מכרת {from_symbol}</b> — ${sold_usd:.0f} · קניית <b>{to_symbol}</b> ${purchase_usd:.0f}\n\n"
+        f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f} · "
+        f"קניית <b>{to_symbol}</b> ערך ${purchase_usd:.2f}\n\n"
         f"{approve_reply}"
     )
 
@@ -5339,7 +5401,10 @@ def run_scheduler_loop(service: bool = True) -> None:
 
     def _clear_price_watches_eod() -> None:
         """Drop hourly watches at end of the trading-day job."""
-        from trading_pulse.agent.price_watch import clear_all_price_watches, format_watches_cleared
+        from trading_pulse.agent.price_watch import (
+            clear_all_price_watches,
+            send_watches_cleared_notice,
+        )
 
         try:
             state = load_state(cfg)
@@ -5347,9 +5412,7 @@ def run_scheduler_loop(service: bool = True) -> None:
             if not cleared:
                 return
             save_json(STATE_FILE, state)
-            msg = format_watches_cleared(cleared)
-            if msg:
-                send_user_notification(cfg, msg, context="price_watch:eod_clear", parse_mode="HTML")
+            send_watches_cleared_notice(cfg, cleared)
             logging.info("Cleared %d price watch(es) at EOD: %s", len(cleared), ", ".join(cleared))
         except Exception as ex:
             logging.warning("EOD price-watch clear failed: %s", ex)

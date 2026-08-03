@@ -288,6 +288,62 @@ def card_buy(
     )
 
 
+def build_swap_completed_cubes(
+    *,
+    from_symbol: str,
+    to_symbol: str,
+    sold_usd: float,
+    bought_usd: float,
+    buy_price: float,
+    cash: float,
+    sell_price: float | None = None,
+    sell_pnl_usd: float | None = None,
+) -> list[dict[str, str]]:
+    """Cubes for a completed swap — sold vs bought; hero = total $, blurb = price."""
+    sell_blurb_bits: list[str] = []
+    if sell_price and sell_price > 0:
+        sell_blurb_bits.append(f"מחיר למניה ${sell_price:.2f}")
+    if sell_pnl_usd is not None:
+        if sell_pnl_usd > 0:
+            sell_blurb_bits.append(f"רווח +${sell_pnl_usd:.2f}")
+        elif sell_pnl_usd < 0:
+            sell_blurb_bits.append(f"הפסד -${abs(sell_pnl_usd):.2f}")
+        else:
+            sell_blurb_bits.append("PnL $0")
+    if not sell_blurb_bits:
+        sell_blurb_bits.append("מה יצא מהתיק.")
+
+    buy_blurb_bits: list[str] = []
+    if buy_price > 0:
+        buy_blurb_bits.append(f"מחיר למניה ${buy_price:.2f}")
+        shares = bought_usd / buy_price
+        if shares > 0:
+            buy_blurb_bits.append(f"≈ {shares:.4g} מניות")
+    if not buy_blurb_bits:
+        buy_blurb_bits.append("מה נכנס לתיק.")
+
+    return [
+        {
+            "title": f"מכרת · {from_symbol}",
+            "blurb": " · ".join(sell_blurb_bits),
+            "value": f"ערך ${sold_usd:.2f}",
+            "wide": "1",
+        },
+        {
+            "title": f"קנית · {to_symbol}",
+            "blurb": " · ".join(buy_blurb_bits),
+            "value": f"ערך ${bought_usd:.2f}",
+            "wide": "1",
+        },
+        {
+            "title": "מזומן פנוי",
+            "blurb": "אחרי ההחלפה.",
+            "value": f"${cash:.2f}",
+            "wide": "1",
+        },
+    ]
+
+
 def card_swap(
     *,
     from_symbol: str,
@@ -296,16 +352,66 @@ def card_swap(
     bought_usd: float,
     entry_price: float,
     cash: float,
+    sell_price: float | None = None,
+    sell_pnl_usd: float | None = None,
 ) -> bytes:
+    """Swap result PNG — cubes preferred; legacy rows as last resort."""
+    png = swap_completed_cubes_card(
+        from_symbol=from_symbol,
+        to_symbol=to_symbol,
+        sold_usd=sold_usd,
+        bought_usd=bought_usd,
+        buy_price=entry_price,
+        cash=cash,
+        sell_price=sell_price,
+        sell_pnl_usd=sell_pnl_usd,
+    )
+    if png:
+        return png
     return render_reply_card(
         "החלפה הושלמה",
         accent="pink",
         rows=[
-            ("מכרת", f"{from_symbol} · ${sold_usd:.0f}"),
-            ("קנית", f"{to_symbol} · ${bought_usd:.0f} @ ${entry_price:.2f}"),
-            ("מזומן פנוי", f"${cash:.0f}"),
+            ("מכרת", f"{from_symbol} · ערך ${sold_usd:.2f}"),
+            ("קנית", f"{to_symbol} · ערך ${bought_usd:.2f} · מחיר ${entry_price:.2f}"),
+            ("מזומן פנוי", f"${cash:.2f}"),
         ],
     )
+
+
+def swap_completed_cubes_card(
+    *,
+    from_symbol: str,
+    to_symbol: str,
+    sold_usd: float,
+    bought_usd: float,
+    buy_price: float,
+    cash: float,
+    sell_price: float | None = None,
+    sell_pnl_usd: float | None = None,
+) -> bytes | None:
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_swap_completed_cubes
+
+    try:
+        cubes = build_swap_completed_cubes(
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
+            sold_usd=sold_usd,
+            bought_usd=bought_usd,
+            buy_price=buy_price,
+            cash=cash,
+            sell_price=sell_price,
+            sell_pnl_usd=sell_pnl_usd,
+        )
+        doc = html_swap_completed_cubes(
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
+            cubes=cubes,
+        )
+        return card_png_from_html(doc, width=920, height=1400)
+    except Exception:
+        logging.exception("swap_completed_cubes_card failed")
+        return None
 
 
 def card_approval(
@@ -820,5 +926,21 @@ def portfolio_review_cubes_card(plan: dict[str, Any]) -> bytes | None:
         return card_png_from_html(doc, width=920, height=2000)
     except Exception:
         logging.exception("portfolio_review_cubes_card failed")
+        return None
+
+
+def watches_cleared_cubes_card(cleared: list[str]) -> bytes | None:
+    """PNG card: EOD hourly-watch clear as labeled cubes."""
+    from trading_pulse.agent.price_watch import build_watches_cleared_cubes
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_watches_cleared_cubes
+
+    if not cleared:
+        return None
+    try:
+        cubes = build_watches_cleared_cubes(cleared)
+        doc = html_watches_cleared_cubes(cubes=cubes, cleared_n=len(cleared))
+        return card_png_from_html(doc, width=920, height=1600)
+    except Exception:
+        logging.exception("watches_cleared_cubes_card failed")
         return None
 

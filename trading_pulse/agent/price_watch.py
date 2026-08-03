@@ -76,12 +76,44 @@ def _ensure_watches_dict(state: dict[str, Any]) -> dict[str, Any]:
     return watches
 
 
-def add_price_watch(state: dict[str, Any], symbol: str) -> dict[str, Any]:
+def watch_reason_label(meta: dict[str, Any] | None) -> str:
+    """Hebrew one-liner: why this symbol is on the hourly watch list."""
+    meta = meta if isinstance(meta, dict) else {}
+    stored = str(meta.get("reason") or "").strip()
+    if stored:
+        return stored
+    label = str(meta.get("label") or "")
+    if meta.get("entry_ref") or label in {"שיטה 2", "נרות סיניים 2"}:
+        side = str(meta.get("side") or "LONG").upper()
+        trig = str(meta.get("trigger") or "").strip()
+        if side == "SHORT":
+            base = "נרות סיניים 2 שורט — ממתין לפריצה"
+        else:
+            base = "נרות סיניים 2 — ממתין לפריצה"
+        if trig:
+            base += f" · טריגר {trig}"
+        return base
+    return "בקשתך — מעקב שעתי"
+
+
+def add_price_watch(
+    state: dict[str, Any],
+    symbol: str,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
     symbol = normalize_symbol(symbol)
     watches = _ensure_watches_dict(state)
     if symbol in watches:
+        if reason and isinstance(watches[symbol], dict) and not watches[symbol].get("reason"):
+            watches[symbol]["reason"] = reason
         return {"symbol": symbol, "added": False, "watches": list_price_watches(state)}
-    watches[symbol] = {"added_at": datetime.now(timezone.utc).isoformat()}
+    entry: dict[str, Any] = {"added_at": datetime.now(timezone.utc).isoformat()}
+    if reason:
+        entry["reason"] = str(reason).strip()
+    else:
+        entry["reason"] = "בקשתך — מעקב שעתי"
+    watches[symbol] = entry
     return {"symbol": symbol, "added": True, "watches": list_price_watches(state)}
 
 
@@ -168,8 +200,12 @@ def format_price_watch_update(
     sign = "+" if day_chg >= 0 else ""
     high = float(quote.get("high", last))
     low = float(quote.get("low", last))
+    from trading_pulse.telegram.telegram_format import escape_html
+
+    reason = escape_html(watch_reason_label(watch_meta))
     lines = [
         f"<b>⏱ מעקב · {symbol}</b>",
+        f"סיבת המעקב: <b>{reason}</b>",
         f"מחיר <b>${last:.2f}</b> · היום <b>{sign}{day_chg:.2f}%</b>",
         f"טווח היום ${low:.2f}–${high:.2f}",
     ]
@@ -296,7 +332,12 @@ def format_watches_list(cfg: Any, state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def send_price_watch_snapshot(cfg: Any, symbol: str) -> bool:
+def send_price_watch_snapshot(
+    cfg: Any,
+    symbol: str,
+    *,
+    state: dict[str, Any] | None = None,
+) -> bool:
     """Start-of-watch: full metrics card + price chart (once)."""
     from trading_pulse.agent.dryrun_agent import send_telegram_message, send_telegram_photo
     from trading_pulse.agent.stock_detail import analyze_symbol
@@ -305,11 +346,17 @@ def send_price_watch_snapshot(cfg: Any, symbol: str) -> bool:
 
     symbol = normalize_symbol(symbol)
     interval = int(getattr(cfg, "intraday_check_interval_minutes", 60))
+    watches = (state or {}).get("price_watches") or {}
+    meta = watches.get(symbol) if isinstance(watches, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
     try:
         detail = analyze_symbol(cfg, symbol)
     except Exception as ex:
         logging.warning("Price watch analyze failed for %s: %s", symbol, ex)
-        text = format_price_watch_update(cfg, symbol, include_score=False)
+        text = format_price_watch_update(
+            cfg, symbol, include_score=False, watch_meta=meta
+        )
         if text:
             from trading_pulse.agent.dryrun_agent import send_user_notification
 
@@ -330,6 +377,7 @@ def send_price_watch_snapshot(cfg: Any, symbol: str) -> bool:
         detail["live_quote"] = quote
     detail["watch_mode"] = True
     detail["watch_interval_min"] = interval
+    detail["watch_reason"] = watch_reason_label(meta)
 
     rec = detail.get("rec") or {}
     day = str(detail.get("trading_day") or datetime.now(timezone.utc).date().isoformat())
@@ -397,6 +445,7 @@ def send_price_only_tick(cfg: Any, symbol: str, state: dict[str, Any] | None = N
     day_label = f"{sign}{abs(day_chg):.2f}%" if abs(day_chg) >= 0.005 else "0.00%"
 
     rows = [
+        ("סיבת המעקב", watch_reason_label(meta)),
         ("מחיר", f"${last:.2f}"),
         ("שינוי היום", day_label),
         ("טווח היום", f"${low:.2f} – ${high:.2f}"),

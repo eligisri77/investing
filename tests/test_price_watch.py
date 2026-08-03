@@ -136,6 +136,21 @@ def test_method2_distance_line_shows_distance():
     assert "רחוק" in short_line
 
 
+def test_watch_reason_label_method2_and_manual():
+    from trading_pulse.agent.price_watch import add_price_watch, watch_reason_label
+
+    assert watch_reason_label(
+        {"entry_ref": 59.14, "side": "LONG", "trigger": "2-2-2"}
+    ) == "נרות סיניים 2 — ממתין לפריצה · טריגר 2-2-2"
+    assert "שורט" in watch_reason_label({"entry_ref": 10.0, "side": "SHORT"})
+    assert watch_reason_label({"reason": "מותאם"}) == "מותאם"
+    assert watch_reason_label({}) == "בקשתך — מעקב שעתי"
+
+    state: dict = {}
+    add_price_watch(state, "AAPL", reason="בקשתך — מעקב שעתי")
+    assert state["price_watches"]["AAPL"]["reason"] == "בקשתך — מעקב שעתי"
+
+
 def test_format_price_watch_handles_zero_day_change():
     from trading_pulse.agent.price_watch import format_price_watch_update
 

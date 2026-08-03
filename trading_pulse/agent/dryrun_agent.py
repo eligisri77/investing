@@ -3721,11 +3721,15 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
 
                 state = load_state(cfg)
                 try:
-                    result = add_price_watch(state, str(parsed.get("symbol", "")))
+                    result = add_price_watch(
+                        state,
+                        str(parsed.get("symbol", "")),
+                        reason="בקשתך — מעקב שעתי",
+                    )
                     save_json(STATE_FILE, state)
                     if result.get("added"):
                         # One start payload (metrics + chart). Hourly ticks wait a full interval.
-                        send_price_watch_snapshot(cfg, result["symbol"])
+                        send_price_watch_snapshot(cfg, result["symbol"], state=state)
                         mark_price_watch_sent(state, result["symbol"])
                         save_json(STATE_FILE, state)
                     else:
@@ -5199,11 +5203,23 @@ def run_scheduler_loop(service: bool = True) -> None:
                 return
 
             if not empty:
+                from trading_pulse.telegram.reply_cards import portfolio_review_cubes_card
                 from trading_pulse.telegram.telegram_format import format_portfolio_review_digest
 
+                cubes_png = portfolio_review_cubes_card(plan)
+                if cubes_png:
+                    send_telegram_photo(
+                        cfg,
+                        cubes_png,
+                        "סקירת תיק לפני הפתיחה",
+                        context="portfolio_review",
+                        parse_mode="HTML",
+                    )
                 digest = format_portfolio_review_digest(plan)
                 if digest:
-                    send_user_notification(cfg, digest, context="portfolio_review", parse_mode="HTML")
+                    send_user_notification(
+                        cfg, digest, context="portfolio_review:actions", parse_mode="HTML"
+                    )
             elif plan.get("recommendations"):
                 send_user_notification(
                     cfg,

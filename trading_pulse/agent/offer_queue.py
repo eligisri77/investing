@@ -237,6 +237,75 @@ def build_offer_metric_cubes(rec: dict[str, Any], *, rank: int | None = None) ->
     return cubes
 
 
+def build_offer_action_cubes(
+    rec: dict[str, Any],
+    *,
+    cash_free: float,
+    suggested_usd: float,
+    swap: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Cash / swap / how-to cubes — merged into the metrics PNG (no second message)."""
+    sym = str(rec.get("symbol") or "")
+    score = float(rec.get("score") or rec.get("score_technical") or 0)
+    cubes: list[dict[str, str]] = []
+
+    if cash_free >= 1 and suggested_usd >= 1:
+        cubes.append(
+            {
+                "title": "מזומן וקנייה",
+                "blurb": "אפשר לקנות ממזומן בלי למכור מניה קיימת.",
+                "value": (
+                    f"${cash_free:.0f} פנוי · מומלץ ${suggested_usd:.0f} · "
+                    "כן / קנה / או סכום אחר"
+                ),
+                "wide": "1",
+            }
+        )
+    else:
+        cubes.append(
+            {
+                "title": "מזומן וקנייה",
+                "blurb": "בלי מזומן אי אפשר לאשר קנייה ישירה מההצעה.",
+                "value": "$0 פנוי — לא מומלץ כן/קנה ממזומן",
+                "wide": "1",
+            }
+        )
+
+    if swap:
+        from_sym = str(swap.get("from_symbol") or "")
+        from_score = float(swap.get("from_score") or 0)
+        cubes.append(
+            {
+                "title": "החלפה מומלצת",
+                "blurb": "ההצעה חזקה יותר בציונים ממניה שכבר בתיק.",
+                "value": (
+                    f"החלף {from_sym} {sym} · "
+                    f"ציון {from_score:.1f} → {score:.1f}"
+                ),
+                "wide": "1",
+            }
+        )
+
+    steps: list[str] = []
+    if cash_free >= 1 and suggested_usd >= 1:
+        steps.append(f"כן / קנה — ממזומן (${suggested_usd:.0f})")
+        steps.append("סכום אחר (150 או קנה 150)")
+    if swap:
+        steps.append(f"החלף {swap['from_symbol']} {sym}")
+    if cash_free < 1 and not swap:
+        steps.append("מכור SYMBOL ואז קנה")
+    steps.append("דלג — להצעה הבאה")
+    cubes.append(
+        {
+            "title": "איך לבצע",
+            "blurb": "שלח בטלגרם אחת מהאפשרויות למטה.",
+            "value": " · ".join(steps),
+            "wide": "1",
+        }
+    )
+    return cubes
+
+
 def format_offer_prompt(
     rec: dict[str, Any],
     *,
@@ -244,12 +313,14 @@ def format_offer_prompt(
     suggested_usd: float,
     position_no: int,
     total: int,
+    swap: dict[str, Any] | None = None,
 ) -> str:
-    """Short HTML reply strip — metric details live on the cubes PNG card."""
+    """Text fallback when the cubes PNG cannot be sent."""
     from trading_pulse.agent.strategy_labels import strategy_label
     from trading_pulse.telegram.telegram_format import escape_html
 
-    sym = escape_html(str(rec.get("symbol")))
+    sym_raw = str(rec.get("symbol") or "")
+    sym = escape_html(sym_raw)
     score = float(rec.get("score") or rec.get("score_technical") or 0)
     method = strategy_label(rec) or str(rec.get("strategy_id") or rec.get("strategy") or "").strip()
     lines = [
@@ -257,19 +328,43 @@ def format_offer_prompt(
     ]
     if method:
         lines.append(f"שיטת כניסה: <b>{escape_html(method)}</b>")
-    lines += [
-        f"מזומן פנוי: <b>${cash_free:.0f}</b> · מומלץ: <b>${suggested_usd:.0f}</b>",
-        "",
-        "✅ איך לבצע:",
-        f"<code>כן</code> / <code>קנה</code> — בסכום המוצע (${suggested_usd:.0f})",
-        "סכום (למשל <code>150</code> או <code>קנה 150</code>) — סכום אחר",
-        "<code>דלג</code> — להצעה הבאה",
-    ]
+
+    if cash_free >= 1:
+        lines.append(
+            f"מזומן פנוי: <b>${cash_free:.0f}</b> · מומלץ ממזומן: <b>${suggested_usd:.0f}</b>"
+        )
+    else:
+        lines.append("מזומן פנוי: <b>$0</b> — אי אפשר לקנות בלי למכור/להחליף")
+
+    if swap:
+        from_sym = escape_html(str(swap["from_symbol"]))
+        from_score = float(swap.get("from_score") or 0)
+        lines.append(
+            f"🔁 מומלץ להחליף: <b>{from_sym}</b> (ציון {from_score:.1f}) → "
+            f"<b>{sym}</b> ({score:.1f})"
+        )
+
+    lines.append("")
+    lines.append("✅ איך לבצע:")
+    if cash_free >= 1 and suggested_usd >= 1:
+        lines.append(
+            f"<code>כן</code> / <code>קנה</code> — ממזומן (${suggested_usd:.0f})"
+        )
+        lines.append("סכום (למשל <code>150</code> או <code>קנה 150</code>) — סכום אחר")
+    if swap:
+        from_raw = str(swap["from_symbol"])
+        lines.append(
+            f"<code>החלף {escape_html(from_raw)} {sym}</code> — "
+            f"מוכר {escape_html(from_raw)} וקונה {sym}"
+        )
+    if cash_free < 1 and not swap:
+        lines.append("אין מימון מתאים מהתיק — <code>מכור SYMBOL</code> ואז קנה, או דלג")
+    lines.append("<code>דלג</code> — להצעה הבאה")
     return "\n".join(lines)
 
 
 def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
-    """Send the current offer's chart + cubes card + short prompt. False = queue empty."""
+    """Send chart + one cubes card (metrics + actions). Text only if cubes fail."""
     from trading_pulse.agent.dryrun_agent import (
         format_rec_signal_block,
         send_telegram_photo,
@@ -290,14 +385,17 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
     position_no = int(po["index"]) + 1
     cash = cash_remaining(plan, po)
     suggested = suggested_amount(plan, po)
+    from trading_pulse.agent.holdings_review import swap_funding_for_offer
+
+    swap = swap_funding_for_offer(plan, str(symbol))
+    from trading_pulse.telegram.reply_cards import (
+        chart_with_recommendation_details,
+        offer_cubes_card,
+    )
+
     try:
         speculative = plan.get("risk_profile") == "speculative"
         signal_lines = format_rec_signal_block(rec, speculative).splitlines()
-        from trading_pulse.telegram.reply_cards import (
-            chart_with_recommendation_details,
-            offer_cubes_card,
-        )
-
         img = chart_with_recommendation_details(
             rec,
             position_no,
@@ -309,6 +407,11 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             send_telegram_photo(
                 cfg, img, f"#{position_no} {symbol}", context=f"offer:{symbol}", parse_mode="HTML"
             )
+    except Exception as ex:
+        logging.warning("Offer chart for %s failed: %s", symbol, ex)
+
+    cubes_sent = False
+    try:
         cubes_img = offer_cubes_card(
             rec,
             position_no=position_no,
@@ -316,8 +419,10 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             cash_free=cash,
             suggested_usd=suggested,
             rank=position_no,
+            swap=swap,
         )
         if cubes_img:
+            # Caption stays tiny — actions live inside the PNG cubes.
             send_telegram_photo(
                 cfg,
                 cubes_img,
@@ -325,17 +430,21 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
                 context=f"offer:cubes:{symbol}",
                 parse_mode="HTML",
             )
+            cubes_sent = True
     except Exception as ex:
-        logging.warning("Offer chart/cubes for %s failed: %s", symbol, ex)
+        logging.warning("Offer cubes for %s failed: %s", symbol, ex)
 
-    text = format_offer_prompt(
-        rec,
-        cash_free=cash,
-        suggested_usd=suggested,
-        position_no=position_no,
-        total=total,
-    )
-    send_user_notification(cfg, text, context="offer", parse_mode="HTML")
+    if not cubes_sent:
+        text = format_offer_prompt(
+            rec,
+            cash_free=cash,
+            suggested_usd=suggested,
+            position_no=position_no,
+            total=total,
+            swap=swap,
+        )
+        send_user_notification(cfg, text, context="offer", parse_mode="HTML")
+
     po["offered_at"] = datetime.now(timezone.utc).isoformat()
     po["nudged_at"] = None
     return True
@@ -531,6 +640,31 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
 
     if decision == "buy":
         amount = max(0.0, min(float(amount), cash_remaining(plan, po)))
+        if amount < 1:
+            from trading_pulse.agent.holdings_review import swap_funding_for_offer
+            from trading_pulse.telegram.telegram_format import escape_html
+
+            sym_e = escape_html(str(symbol))
+            swap = swap_funding_for_offer(plan, str(symbol))
+            if swap:
+                from_raw = str(swap["from_symbol"])
+                send_user_notification(
+                    cfg,
+                    f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
+                    f"מומלץ: <code>החלף {escape_html(from_raw)} {sym_e}</code>\n"
+                    "או שלח <code>דלג</code> להצעה הבאה.",
+                    context="offer:needs_swap",
+                    parse_mode="HTML",
+                )
+            else:
+                send_user_notification(
+                    cfg,
+                    f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
+                    "מכור מניה קודם (<code>מכור SYMBOL</code>) או שלח <code>דלג</code>.",
+                    context="offer:no_cash",
+                    parse_mode="HTML",
+                )
+            return True
         apply_partial_confirm_manual(plan, symbol, amount)
         po.setdefault("decided", {})[symbol] = amount
         reply = f"✅ נקנה <b>{symbol}</b> ב-${amount:.0f} (נכנס בפתיחה)"

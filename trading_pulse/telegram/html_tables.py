@@ -53,7 +53,7 @@ h1.pink { border-right-color: #ff2d95; }
 }
 h2 {
   color: #00f0ff;
-  font-size: 22px;
+  font-size: 26px;
   margin: 20px 0 10px;
   font-weight: 700;
 }
@@ -105,17 +105,17 @@ table.kv {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0 8px;
-  font-size: 20px;
+  font-size: 22px;
 }
 table.kv td {
   background: #0c0c1a;
   border: 1px solid #282846;
-  padding: 14px 12px;
+  padding: 16px 14px;
 }
 table.kv td.k {
   width: 48%;
   color: #8c91a5;
-  font-size: 17px;
+  font-size: 20px;
   border-radius: 0 10px 10px 0;
   border-left: none;
 }
@@ -126,7 +126,7 @@ table.kv td.v {
   direction: ltr;
   unicode-bidi: isolate;
   text-align: left;
-  font-size: 22px;
+  font-size: 26px;
 }
 .chips { margin-top: 14px; }
 .chip {
@@ -143,16 +143,16 @@ table.kv td.v {
 }
 .foot {
   color: #8c91a5;
-  font-size: 18px;
+  font-size: 20px;
   margin-top: 14px;
   line-height: 1.45;
 }
 .detail {
   color: #e6ebf5;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
   margin-top: 8px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 .alert {
   background: #0c0c1a;
@@ -181,22 +181,22 @@ table.kv td.v {
 .cube.wide { grid-column: 1 / -1; }
 .cube-title {
   color: #00f0ff;
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
   margin-bottom: 4px;
   line-height: 1.25;
 }
 .cube-blurb {
   color: #8c91a5;
-  font-size: 14px;
+  font-size: 17px;
   margin-bottom: 8px;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 .cube-value {
   color: #e6ebf5;
-  font-size: 17px;
+  font-size: 20px;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 """
 
@@ -1240,19 +1240,7 @@ def html_recommendation(
     return wrap_card_html(f"#{idx} {sym}", "".join(parts))
 
 
-def html_offer_cubes(
-    rec: dict[str, Any],
-    *,
-    position_no: int,
-    total: int,
-    cash_free: float,
-    suggested_usd: float,
-    cubes: list[dict[str, str]],
-) -> str:
-    """Sequential-offer metrics as labeled cubes (PNG card — not a Telegram caption)."""
-    sym = str(rec.get("symbol") or "?")
-    score = rec.get("score")
-    subtitle = f"ציון {float(score):.1f}" if score is not None else ""
+def _cubes_html(cubes: list[dict[str, str]]) -> str:
     parts: list[str] = ['<div class="cubes">']
     for cube in cubes:
         wide = " wide" if cube.get("wide") else ""
@@ -1264,17 +1252,71 @@ def html_offer_cubes(
             f"</div>"
         )
     parts.append("</div>")
-    parts.append(
-        '<p class="foot">'
-        f"מזומן פנוי {fmt_money_plain(cash_free, whole=True)} · "
-        f"מומלץ {fmt_money_plain(suggested_usd, whole=True)}"
-        "</p>"
-    )
+    return "".join(parts)
+
+
+def html_offer_cubes(
+    rec: dict[str, Any],
+    *,
+    position_no: int,
+    total: int,
+    cash_free: float,
+    suggested_usd: float,
+    cubes: list[dict[str, str]],
+    swap_from: str | None = None,
+    swap_from_score: float | None = None,
+    include_action_footer: bool = True,
+) -> str:
+    """Sequential-offer metrics (+ optional actions) as labeled cubes PNG."""
+    sym = str(rec.get("symbol") or "?")
+    score = rec.get("score")
+    subtitle = f"ציון {float(score):.1f}" if score is not None else ""
+    parts: list[str] = [_cubes_html(cubes)]
+    if include_action_footer:
+        # Legacy footer when action cubes are not embedded in `cubes`.
+        if cash_free >= 1:
+            foot = (
+                f"מזומן פנוי {fmt_money_plain(cash_free, whole=True)} · "
+                f"מומלץ ממזומן {fmt_money_plain(suggested_usd, whole=True)}"
+            )
+        else:
+            foot = "מזומן פנוי $0 — אי אפשר לקנות בלי למכור/להחליף"
+        if swap_from:
+            gap = ""
+            if swap_from_score is not None and score is not None:
+                gap = f" (ציון {float(swap_from_score):.1f} → {float(score):.1f})"
+            foot += f" · מומלץ להחליף {swap_from} → {sym}{gap}"
+        parts.append(f'<p class="foot">{_esc(foot)}</p>')
     parts.append('<p class="foot">הצעה בלבד — לא ביצוע אוטומטי</p>')
     return wrap_card_html(
         f"הצעה {position_no}/{total}: {sym}",
         "".join(parts),
         subtitle=subtitle,
+    )
+
+
+def html_portfolio_review_cubes(
+    *,
+    cubes: list[dict[str, str]],
+    cash_free: float,
+    offers_n: int,
+) -> str:
+    """Pre-market holdings digest as labeled cubes."""
+    parts = [_cubes_html(cubes)]
+    if offers_n:
+        word = "הצעה אחת" if offers_n == 1 else f"{offers_n} הצעות"
+        parts.append(
+            f'<p class="foot">יש {_esc(word)} בהמשך — בכל אחת נבדוק מזומן והחלפה</p>'
+        )
+    else:
+        parts.append(
+            f'<p class="foot">מזומן פנוי {fmt_money_plain(cash_free, whole=True)} · אין הצעות קנייה חדשות</p>'
+        )
+    parts.append('<p class="foot">«הכל» קונה ממזומן בלבד — החלפה ידנית עם החלף X Y</p>')
+    return wrap_card_html(
+        "סקירת תיק לפני הפתיחה",
+        "".join(parts),
+        subtitle="המלצות על התיק הקיים",
     )
 
 

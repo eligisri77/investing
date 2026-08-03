@@ -72,17 +72,18 @@ def user_guide_full() -> str:
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. לפני הפתיחה — סקירת תיק (או סריקת שוק מלאה בתיק ריק), ואז הצעות קנייה אחת-אחת "
-            "(גרף → קוביות מדדים → הודעת פעולה קצרה) · "
-            "<code>כן</code> / <code>קנה</code> / סכום / <code>דלג</code> לכל אחת",
+            "1. לפני הפתיחה — סקירת תיק בקוביות (או סריקה מלאה בתיק ריק), ואז הצעות אחת-אחת "
+            "(גרף → כרטיס קוביות אחד עם מדדים + איך לבצע) · ממזומן: <code>כן</code> / סכום · "
+            "או <code>החלף X Y</code> אם הציון חזק יותר · <code>דלג</code>",
             "2. בפתיחה — תמונת כניסה; נרות סיניים 2 ממתינה לפריצה ולא נקנית אוטומטית",
             "3. אין מקום לפוזיציה חדשה אבל יש מזומן פנוי? מעקב שעתי יציע לחזק החזקה קיימת — <code>תקנה SYMBOL</code>",
             "4. בערב אחרי סגירה — כרטיס PNG «דוח יומי» על הרווח/הפסד",
             "",
             "לא ענית להצעה? תזכורת עדינה אחרי ~10 דק׳; בפתיחת השוק — לא נענה יורד "
             "(עדיין אפשר <code>קנה SYMBOL</code> בנפרד), מה שכן נקבע נכנס",
-            "אין מזומן? <code>מכור 1 $100</code> (רק חלק) · <code>מכור 1</code> (הכל)",
-            "יש מזומן פנוי? הבוט מציע מה לעשות בסקירה ובמעקב השעתי · חיזוק: <code>תקנה 1</code> (כל המזומן) · <code>קנה BEAM $50</code>",
+            "אין מזומן? אם יש מניה חלשה יותר בציונים — <code>החלף PBF SOXL</code> · "
+            "אחרת <code>מכור 1 $100</code> / <code>מכור 1</code>",
+            "יש מזומן פנוי? אפשר לקנות ממנו או להחליף מניה חלשה · חיזוק: <code>תקנה 1</code> · <code>קנה BEAM $50</code>",
             "החלפה חלקית: <code>מכור 1 תקנה 2 $100</code>",
             "שני סכומים: <code>מכור 1 200$ קנה 2 100$</code>",
             "ניתוח מניה: <code>מניה NVDA</code> · <code>ציון AAPL</code>",
@@ -680,16 +681,37 @@ def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
     """Day 2+ pre-market digest: buy-more/sell/swap on holdings + idle-cash advice.
 
     New-buy candidates are not listed here — they go out one at a time via the
-    sequential offer queue right after this digest.
+    sequential offer queue right after this digest. Prefer the cubes PNG card;
+    this HTML is the short companion / text fallback.
     """
     holdings = plan.get("holdings") or []
     actions = plan.get("holding_actions") or []
     cash = float(plan.get("available_capital_usd", 0) or 0)
-    lines = ["<b>📋 סקירת תיק לפני הפתיחה</b>", SEP]
+    lines = ["<b>📋 סקירת תיק לפני הפתיחה</b>"]
     if not holdings:
         lines.append("אין החזקות פתוחות כרגע.")
     else:
-        lines.extend(format_holding_actions(actions, holdings))
+        lines.append(f"מזומן פנוי: <b>${cash:.0f}</b>")
+        manual = [
+            a for a in actions if str(a.get("verdict")) in {"swap", "sell", "take_profit"}
+        ]
+        if manual:
+            lines.append("")
+            lines.append("<b>פעולות מומלצות על התיק:</b>")
+            for a in manual:
+                sym = str(a.get("symbol") or "")
+                if str(a.get("verdict")) == "swap" and a.get("swap_to"):
+                    to_raw = str(a["swap_to"])
+                    lines.append(
+                        f"🔄 <b>{escape_html(sym)}</b> → <b>{escape_html(to_raw)}</b>: "
+                        f"<code>החלף {escape_html(sym)} {escape_html(to_raw)}</code>"
+                    )
+                elif str(a.get("verdict")) in {"sell", "take_profit"}:
+                    lines.append(
+                        f"🔴 <b>{escape_html(sym)}</b>: <code>מכור {escape_html(sym)}</code>"
+                    )
+        else:
+            lines.append("<i>כל ההחזקות במגמה תקינה — ממשיכים להחזיק</i>")
 
     held_syms = {str(h.get("symbol")) for h in holdings}
     new_recs = [
@@ -701,10 +723,10 @@ def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
         and str(r.get("symbol")) not in held_syms
     ]
     if new_recs:
-        lines.append("")
         n = len(new_recs)
         word = "הצעת קנייה חדשה אחת" if n == 1 else f"{n} הצעות קנייה חדשות"
-        lines.append(f"<i>יש {word} — נשלח אחת-אחת בהודעות הבאות</i>")
+        lines.append("")
+        lines.append(f"<i>יש {word} — נשלח אחת-אחת (עם בדיקת החלפה מול התיק)</i>")
     elif cash >= 20:
         lines.extend(
             format_cash_deploy_advice(cash, holdings, actions=actions, new_buy_symbols=set())

@@ -16,7 +16,8 @@ SWAP_SCORE_GAP = 2.0
 TAKE_PROFIT_WARN_PCT = 20.0
 # "Near the protective floor" when within this percent above it.
 NEAR_FLOOR_PCT = 3.0
-# Don't rotate out of a clear winner even if a higher-scored pick exists.
+# Legacy name kept for imports/tests — score gap (not PnL) drives swap suggestions.
+# Take-profit / near-floor / max-days still win over swap when they apply.
 STRONG_WINNER_PCT = 10.0
 
 Verdict = str  # "hold" | "take_profit" | "sell" | "swap"
@@ -132,16 +133,21 @@ def review_holding(
             last_price=last,
         )
 
-    if pnl_pct < STRONG_WINNER_PCT:
-        replacement = _best_replacement(symbol, my_score, recommendations)
-        if replacement is not None:
-            to_sym, to_score = replacement
-            return HoldingReview(
-                symbol, "swap", pnl_pct, days_held, my_score,
-                reason=f"מחר יש מניה חזקה יותר ({to_sym} ציון {to_score:.1f} מול {my_score:.1f})",
-                capital_usd=capital_usd,
-                swap_to=to_sym, swap_to_score=to_score, last_price=last,
-            )
+    # Score-first: if a new pick clearly beats this holding, suggest swap even
+    # when the position is modestly green. Take-profit / floor / max-days above
+    # already short-circuit before we get here.
+    replacement = _best_replacement(symbol, my_score, recommendations)
+    if replacement is not None:
+        to_sym, to_score = replacement
+        return HoldingReview(
+            symbol, "swap", pnl_pct, days_held, my_score,
+            reason=(
+                f"יש מניה חזקה יותר בציונים ({to_sym} {to_score:.1f} "
+                f"מול {my_score:.1f}) · שקול להחליף"
+            ),
+            capital_usd=capital_usd,
+            swap_to=to_sym, swap_to_score=to_score, last_price=last,
+        )
 
     return HoldingReview(
         symbol, "hold", pnl_pct, days_held, my_score,
@@ -268,3 +274,130 @@ def _dedupe_swap_targets(
                 )
             )
     return out
+
+
+_VERDICT_CUBE = {
+    "hold": ("החזק", "אין פעולה — ממשיכים להחזיק"),
+    "sell": ("מכור", "שקול למכור למזומן"),
+    "swap": ("החלף", "יש מניה חזקה יותר בציונים"),
+    "take_profit": ("ממש רווח", "שקול לממש חלק או הכל"),
+}
+
+
+def build_portfolio_review_cubes(plan: dict[str, Any]) -> list[dict[str, str]]:
+    """Labeled cubes for the pre-market holdings digest PNG."""
+    from trading_pulse.agent.strategy_labels import strategy_label
+
+    holdings = plan.get("holdings") or []
+    actions = plan.get("holding_actions") or []
+    by_sym = {str(a.get("symbol")): a for a in actions}
+    cash = float(plan.get("available_capital_usd") or 0)
+    held_syms = {str(h.get("symbol")) for h in holdings}
+    new_n = sum(
+        1
+        for r in (plan.get("recommendations") or [])
+        if not r.get("below_bar")
+        and not r.get("approved")
+        and not r.get("offer_skipped")
+        and str(r.get("symbol")) not in held_syms
+    )
+
+    cubes: list[dict[str, str]] = [
+        {
+            "title": "מזומן פנוי",
+            "blurb": "כמה אפשר לקנות בלי למכור מניה קיימת.",
+            "value": f"${cash:.0f}" + (" · בלי מזומן — רק החלפה אם מומלץ" if cash < 1 else ""),
+            "wide": "1",
+        }
+    ]
+
+    for h in holdings:
+        sym = str(h.get("symbol") or "")
+        if not sym:
+            continue
+        a = by_sym.get(sym) or {}
+        verdict = str(a.get("verdict") or "hold")
+        label, default_blurb = _VERDICT_CUBE.get(verdict, ("החזק", "ממשיכים להחזיק"))
+        pnl = float(a.get("pnl_pct") if a.get("pnl_pct") is not None else h.get("unrealized_pnl_pct") or 0)
+        score = float(a.get("score") or 0)
+        cap = float(a.get("capital_usd") or h.get("capital_usd") or 0)
+        method = strategy_label(h) or strategy_label(a) or ""
+        reason = str(a.get("reason") or default_blurb)
+        value_bits = [f"${cap:.0f} מושקע", f"{pnl:+.1f}%", f"ציון {score:.1f}", label]
+        if method:
+            value_bits.insert(0, method)
+        if verdict == "swap" and a.get("swap_to"):
+            to_score = a.get("swap_to_score")
+            to_bit = f"→ {a['swap_to']}"
+            if to_score is not None:
+                to_bit += f" (ציון {float(to_score):.1f})"
+            value_bits.append(to_bit)
+        cubes.append(
+            {
+                "title": sym,
+                "blurb": reason,
+                "value": " · ".join(value_bits),
+                "wide": "1",
+            }
+        )
+
+    if new_n:
+        word = "הצעת קנייה אחת" if new_n == 1 else f"{new_n} הצעות קנייה"
+        cubes.append(
+            {
+                "title": "המשך",
+                "blurb": "הצעות חדשות נשלחות אחת-אחת אחרי הסקירה.",
+                "value": f"יש {word} — בכל הצעה נבדוק גם החלפה מול התיק",
+                "wide": "1",
+            }
+        )
+    elif cash >= 20:
+        cubes.append(
+            {
+                "title": "מזומן בלי הצעות חדשות",
+                "blurb": "אפשר לחזק החזקה קיימת או להשאיר במזומן.",
+                "value": f"תקנה SYMBOL ${min(int(cash), 100)} · או להשאיר",
+                "wide": "1",
+            }
+        )
+    return cubes
+
+
+def swap_funding_for_offer(plan: dict[str, Any], offer_symbol: str) -> dict[str, Any] | None:
+    """Best held name to sell/swap into this offer when scores clearly favor it."""
+    offer_symbol = str(offer_symbol)
+    offer_score = 0.0
+    for rec in plan.get("recommendations") or []:
+        if str(rec.get("symbol")) == offer_symbol:
+            offer_score = float(rec.get("score") or rec.get("score_technical") or 0)
+            break
+    if offer_score <= 0:
+        return None
+
+    actions = list(plan.get("holding_actions") or [])
+    preferred = [
+        a
+        for a in actions
+        if str(a.get("verdict")) == "swap" and str(a.get("swap_to") or "") == offer_symbol
+    ]
+    pool = preferred or [
+        a
+        for a in actions
+        if str(a.get("symbol") or "") != offer_symbol
+        and str(a.get("verdict") or "hold") not in {"sell", "take_profit"}
+        and offer_score - float(a.get("score") or 0) >= SWAP_SCORE_GAP
+    ]
+    if not pool:
+        return None
+    best = min(pool, key=lambda a: (float(a.get("score") or 0), float(a.get("pnl_pct") or 0)))
+    from_sym = str(best.get("symbol") or "")
+    if not from_sym:
+        return None
+    return {
+        "from_symbol": from_sym,
+        "to_symbol": offer_symbol,
+        "from_score": float(best.get("score") or 0),
+        "to_score": offer_score,
+        "capital_usd": float(best.get("capital_usd") or 0),
+        "pnl_pct": float(best.get("pnl_pct") or 0),
+    }

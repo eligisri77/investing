@@ -304,12 +304,21 @@ def _auto_watch_method2(plan: dict[str, Any], state: dict[str, Any], cfg: Any) -
         sym = str(rec.get("symbol") or "").upper()
         if not sym:
             continue
-        result = add_price_watch(state, sym)
+        side = str(rec.get("side") or "LONG").upper()
+        trig = str(rec.get("trigger") or "").strip()
+        if side == "SHORT":
+            reason = "נרות סיניים 2 שורט — ממתין לפריצה"
+        else:
+            reason = "נרות סיניים 2 — ממתין לפריצה"
+        if trig:
+            reason += f" · טריגר {trig}"
+        result = add_price_watch(state, sym, reason=reason)
         meta = (state.get("price_watches") or {}).get(sym)
         if isinstance(meta, dict):
             meta["label"] = "נרות סיניים 2"
+            meta["reason"] = reason
             meta["trigger"] = rec.get("trigger")
-            meta["side"] = str(rec.get("side") or "LONG").upper()
+            meta["side"] = side
             meta["entry_ref"] = float(
                 rec.get("method2_entry_ref") or rec.get("entry_ref_price") or 0
             )

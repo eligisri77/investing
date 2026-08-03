@@ -8,6 +8,7 @@ import pytest
 
 from trading_pulse.agent import offer_queue
 from trading_pulse.agent.offer_queue import (
+    build_offer_action_cubes,
     build_offer_metric_cubes,
     cash_remaining,
     current_offer_symbol,
@@ -249,6 +250,82 @@ def test_format_offer_prompt_is_short_action_strip():
     assert "WALL OF TEXT" not in text
 
 
+def test_build_offer_action_cubes_merges_cash_swap_and_howto():
+    cubes = build_offer_action_cubes(
+        {"symbol": "SOXL", "score": 11.4},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        swap={"from_symbol": "PBF", "from_score": 5.9},
+    )
+    titles = [c["title"] for c in cubes]
+    assert titles == ["מזומן וקנייה", "החלפה מומלצת", "איך לבצע"]
+    assert "$0" in cubes[0]["value"]
+    assert "החלף PBF SOXL" in cubes[1]["value"]
+    assert "דלג" in cubes[2]["value"]
+    assert "כן / קנה" not in cubes[2]["value"]
+
+
+def test_format_offer_prompt_zero_cash_with_swap_recommends_swap_command():
+    swap = {
+        "from_symbol": "AMD",
+        "to_symbol": "NVDA",
+        "from_score": 6.0,
+        "to_score": 14.0,
+        "capital_usd": 200.0,
+        "pnl_pct": 2.0,
+    }
+    text = format_offer_prompt(
+        {"symbol": "NVDA", "score": 14.0, "strategy_id": "score_momentum"},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        position_no=1,
+        total=2,
+        swap=swap,
+    )
+    assert "מזומן פנוי: <b>$0</b>" in text
+    assert "מומלץ להחליף" in text
+    assert "<code>החלף AMD NVDA</code>" in text
+    assert "ממזומן" not in text  # no cash-buy path
+    assert "אין מימון מתאים" not in text
+    assert "דלג" in text
+
+
+def test_format_offer_prompt_with_cash_and_swap_shows_both_paths():
+    swap = {
+        "from_symbol": "AMD",
+        "to_symbol": "NVDA",
+        "from_score": 6.0,
+        "to_score": 14.0,
+        "capital_usd": 200.0,
+        "pnl_pct": 2.0,
+    }
+    text = format_offer_prompt(
+        {"symbol": "NVDA", "score": 14.0},
+        cash_free=300.0,
+        suggested_usd=150.0,
+        position_no=1,
+        total=2,
+        swap=swap,
+    )
+    assert "ממזומן ($150)" in text
+    assert "<code>החלף AMD NVDA</code>" in text
+    assert "מומלץ להחליף" in text
+
+
+def test_format_offer_prompt_zero_cash_without_swap_hints_sell():
+    text = format_offer_prompt(
+        {"symbol": "NVDA", "score": 14.0},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        position_no=1,
+        total=1,
+        swap=None,
+    )
+    assert "אין מימון מתאים מהתיק" in text
+    assert "מכור SYMBOL" in text
+    assert "החלף" not in text
+
+
 # --------------------------------------------------------------------------
 # send_offer
 # --------------------------------------------------------------------------
@@ -284,7 +361,7 @@ def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None, cub
     return photo_calls, notify_calls
 
 
-def test_send_offer_sends_photo_and_prompt(monkeypatch):
+def test_send_offer_sends_chart_and_cubes_without_second_prompt(monkeypatch):
     photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch)
     state: dict = {}
     plan = _plan()
@@ -295,13 +372,8 @@ def test_send_offer_sends_photo_and_prompt(monkeypatch):
     assert len(photo_calls) == 2
     assert photo_calls[0]["caption"] == "#1 NVDA"
     assert "הצעה 1/2" in photo_calls[1]["caption"]
-    assert len(notify_calls) == 1
-    text = notify_calls[0]["text"]
-    assert "NVDA" in text
-    assert "הצעה 1/2" in text
-    assert "איך לבצע" in text
-    assert "RBLX:" not in text  # no free-form explanation wall
-    assert notify_calls[0]["parse_mode"] == "HTML"
+    # Actions live inside the cubes PNG — no separate HTML action message.
+    assert notify_calls == []
     po = state["pending_offer"]
     assert po["offered_at"] is not None
     assert po["nudged_at"] is None
@@ -320,10 +392,10 @@ def test_send_offer_skips_photo_when_chart_missing(monkeypatch):
 
     assert offer_queue.send_offer(object(), state, plan) is True
     assert len(photo_calls) == 1  # cubes card still sent
-    assert len(notify_calls) == 1
+    assert notify_calls == []
 
 
-def test_send_offer_swallows_chart_exception(monkeypatch):
+def test_send_offer_swallows_chart_exception_still_sends_cubes(monkeypatch):
     photo_calls, notify_calls = _patch_send_offer_deps(
         monkeypatch, chart_exc=RuntimeError("boom")
     )
@@ -332,8 +404,21 @@ def test_send_offer_swallows_chart_exception(monkeypatch):
     start_offer_queue(state, plan)
 
     assert offer_queue.send_offer(object(), state, plan) is True
-    assert photo_calls == []
-    assert len(notify_calls) == 1  # text prompt still sent
+    assert len(photo_calls) == 1  # cubes still sent
+    assert "הצעה" in photo_calls[0]["caption"]
+    assert notify_calls == []
+
+
+def test_send_offer_text_fallback_when_cubes_fail(monkeypatch):
+    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch, cubes=None)
+    state: dict = {}
+    plan = _plan()
+    start_offer_queue(state, plan)
+
+    assert offer_queue.send_offer(object(), state, plan) is True
+    assert len(photo_calls) == 1  # chart only
+    assert len(notify_calls) == 1
+    assert "איך לבצע" in notify_calls[0]["text"]
 
 
 def test_send_offer_skips_forward_when_rec_vanished(monkeypatch):
@@ -347,8 +432,8 @@ def test_send_offer_skips_forward_when_rec_vanished(monkeypatch):
     assert offer_queue.send_offer(object(), state, plan) is True
     # Should have skipped NVDA and sent the AMD offer instead.
     assert state["pending_offer"]["index"] == 1
-    assert len(notify_calls) == 1
-    assert "AMD" in notify_calls[0]["text"]
+    assert notify_calls == []
+    assert any("AMD" in (c.get("caption") or "") for c in photo_calls)
 
 
 def test_send_offer_false_when_all_recs_vanished(monkeypatch):
@@ -419,8 +504,9 @@ def test_start_and_send_first_offer_sends_first(monkeypatch):
     state: dict = {}
     plan = _plan()
     assert start_and_send_first_offer(object(), state, plan) is True
-    assert len(notify_calls) == 1
-    assert "NVDA" in notify_calls[0]["text"]
+    assert notify_calls == []
+    assert any("NVDA" in (c.get("caption") or "") for c in photo_calls)
+    assert state["pending_offer"]["offered_at"] is not None
 
 
 # --------------------------------------------------------------------------
@@ -709,6 +795,72 @@ def test_try_resolve_pending_offer_finishes_queue_when_last_offer_decided(
         plan_file
     )
     assert saved["status"] == "confirmed"
+
+
+def test_try_resolve_yes_with_zero_cash_stays_on_offer_and_hints_swap(
+    monkeypatch, tmp_path
+):
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[{"symbol": "AMD", "capital_usd": 200}],
+        holding_actions=[
+            {
+                "symbol": "AMD",
+                "verdict": "swap",
+                "swap_to": "NVDA",
+                "score": 6.0,
+                "pnl_pct": 2.0,
+                "capital_usd": 200,
+            }
+        ],
+        recommendations=[
+            {"symbol": "NVDA", "score": 14.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    )
+    plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {}
+    start_offer_queue(state, plan)
+    assert current_offer_symbol(state) == "NVDA"
+
+    assert try_resolve_pending_offer(object(), state, "כן") is True
+    assert state["pending_offer"]["index"] == 0  # did not advance
+    assert "NVDA" not in state["pending_offer"]["decided"]
+    assert notify_calls[0]["context"] == "offer:needs_swap"
+    assert "אין מזומן פנוי" in notify_calls[0]["text"]
+    assert "החלף AMD NVDA" in notify_calls[0]["text"]
+    assert send_offer_calls == []
+    assert finish_calls == []
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    nvda = next(r for r in saved["recommendations"] if r["symbol"] == "NVDA")
+    assert not nvda.get("approved")
+
+
+def test_try_resolve_yes_with_zero_cash_no_swap_hints_sell(monkeypatch, tmp_path):
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[{"symbol": "META", "capital_usd": 250}],
+        holding_actions=[
+            {"symbol": "META", "verdict": "hold", "score": 13.0, "pnl_pct": 1.0},
+        ],
+        recommendations=[{"symbol": "NVDA", "score": 14.0}],
+    )
+    plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "כן") is True
+    assert state["pending_offer"]["index"] == 0
+    assert notify_calls[0]["context"] == "offer:no_cash"
+    assert "מכור SYMBOL" in notify_calls[0]["text"]
+    assert send_offer_calls == []
+    assert finish_calls == []
 
 
 def test_try_resolve_pending_offer_pops_state_when_plan_missing(monkeypatch, tmp_path):

@@ -13,6 +13,7 @@ from trading_pulse.telegram.html_tables import (
     html_offer_cubes,
     html_plan,
     html_portfolio,
+    html_portfolio_review_cubes,
     html_recommendation,
     html_weekly_watchlist,
     wrap_card_html,
@@ -435,6 +436,36 @@ def test_html_offer_cubes_contains_titles_blurbs_and_wrap_title():
     assert "הצעה בלבד" in doc
 
 
+def test_html_offer_cubes_footer_includes_swap_from():
+    doc = html_offer_cubes(
+        {"symbol": "NVDA", "score": 14.0},
+        position_no=1,
+        total=2,
+        cash_free=0.0,
+        suggested_usd=0.0,
+        cubes=[{"title": "ציון", "blurb": "x", "value": "14.0"}],
+        swap_from="AMD",
+        swap_from_score=6.0,
+    )
+    assert "מזומן פנוי $0" in doc
+    assert "מומלץ להחליף AMD → NVDA" in doc
+    assert "ציון 6.0 → 14.0" in doc
+
+
+def test_html_portfolio_review_cubes_structure_and_footer():
+    cubes = [
+        {"title": "מזומן פנוי", "blurb": "כמה אפשר לקנות", "value": "$0 · בלי מזומן", "wide": "1"},
+        {"title": "AMD", "blurb": "יש מניה חזקה יותר", "value": "$200 · החלף → NVDA", "wide": "1"},
+    ]
+    doc = html_portfolio_review_cubes(cubes=cubes, cash_free=0.0, offers_n=1)
+    assert "סקירת תיק לפני הפתיחה" in doc
+    assert "מזומן פנוי" in doc
+    assert "AMD" in doc
+    assert "הצעה אחת" in doc
+    assert "החלף X Y" in doc
+    assert 'dir="rtl"' in doc
+
+
 def test_html_weekly_watchlist_labels_and_hebrew_strategies():
     doc = html_weekly_watchlist(
         {
@@ -655,4 +686,4 @@ def test_html_recommendation_leading_minus_and_labels():
     assert "CLF" in doc
     assert "מומנטום חיובי" in doc
     assert 'class="detail"' in doc
-    assert "font-size: 20px" in doc  # .detail readable on phone
+    assert "font-size: 24px" in doc  # .detail readable on phone

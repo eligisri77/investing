@@ -265,8 +265,28 @@ def test_portfolio_review_digest_includes_holding_actions():
     }
     text = format_portfolio_review_digest(plan)
     assert "אין החזקות פתוחות כרגע" not in text
-    assert "META" in text
-    assert "החזק" in text
+    assert "ממשיכים להחזיק" in text
+
+
+def test_portfolio_review_digest_lists_swap_commands():
+    plan = {
+        "holdings": [{"symbol": "PBF", "capital_usd": 200}],
+        "holding_actions": [
+            {
+                "symbol": "PBF",
+                "verdict": "swap",
+                "pnl_pct": 11.0,
+                "score": 5.9,
+                "swap_to": "SOXL",
+                "swap_to_score": 11.4,
+            },
+        ],
+        "recommendations": [{"symbol": "SOXL", "score": 11.4}],
+        "available_capital_usd": 0,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "החלף PBF SOXL" in text
+    assert "הצעת קנייה חדשה אחת" in text
 
 
 def test_portfolio_review_digest_mentions_upcoming_offers_singular():

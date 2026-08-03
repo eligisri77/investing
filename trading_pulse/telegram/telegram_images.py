@@ -513,8 +513,8 @@ def render_japanese_candlestick_chart(rec: dict[str, Any], idx: int, trading_day
         logging.warning("Candlestick skip %s: not enough OHLC", symbol)
         return None
 
-    width, height = 960, 560
-    pad_l, pad_r, pad_t, pad_b = 58, 30, 86, 56
+    width, height = 960, 600
+    pad_l, pad_r, pad_t, pad_b = 58, 30, 96, 60
     chart_l, chart_r = pad_l, width - pad_r
     chart_t, chart_b = pad_t, height - pad_b
 
@@ -528,10 +528,10 @@ def render_japanese_candlestick_chart(rec: dict[str, Any], idx: int, trading_day
         width=2,
     )
 
-    font_title = _load_font(24, bold=True)
-    font_sub = _load_font(14)
-    font_axis = _load_font(12)
-    font_lbl = _load_font(13, bold=True)
+    font_title = _load_font(30, bold=True)
+    font_sub = _load_font(18)
+    font_axis = _load_font(15)
+    font_lbl = _load_font(16, bold=True)
 
     strategy = str(rec.get("strategy") or "")
     price = float(rec.get("entry_ref_price", bars[-1]["close"]))
@@ -555,8 +555,8 @@ def render_japanese_candlestick_chart(rec: dict[str, Any], idx: int, trading_day
         f"{strat_label} · Ref ${price:.2f} · Day {trading_day} · "
         f"SL ${sl_price:.2f} · TP ${tp_price:.2f}"
     )
-    draw.text((pad_l, 22), title, fill=CYAN, font=font_title)
-    draw.text((pad_l, 52), subtitle, fill=MUTED, font=font_sub)
+    draw.text((pad_l, 20), title, fill=CYAN, font=font_title)
+    draw.text((pad_l, 54), subtitle, fill=MUTED, font=font_sub)
 
     lows = [b["low"] for b in bars] + [sl_price]
     highs = [b["high"] for b in bars] + [tp_price, entry_ref]
@@ -643,8 +643,8 @@ def render_recommendation_chart(rec: dict[str, Any], idx: int, trading_day: str)
         logging.warning("Chart skip %s: not enough price data", symbol)
         return None
 
-    width, height = 920, 520
-    pad_l, pad_r, pad_t, pad_b = 56, 28, 78, 52
+    width, height = 920, 560
+    pad_l, pad_r, pad_t, pad_b = 56, 28, 92, 56
     chart_l = pad_l
     chart_r = width - pad_r
     chart_t = pad_t
@@ -654,10 +654,10 @@ def render_recommendation_chart(rec: dict[str, Any], idx: int, trading_day: str)
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle((10, 10, width - 10, height - 10), radius=16, fill=SURFACE, outline=BORDER, width=2)
 
-    font_title = _load_font(24, bold=True)
-    font_sub = _load_font(15)
-    font_axis = _load_font(12)
-    font_lbl = _load_font(13, bold=True)
+    font_title = _load_font(30, bold=True)
+    font_sub = _load_font(18)
+    font_axis = _load_font(15)
+    font_lbl = _load_font(16, bold=True)
 
     price = float(rec.get("entry_ref_price", closes[-1]))
     sl_price = float(rec.get("stop_loss_price", price * 0.88))
@@ -669,8 +669,8 @@ def render_recommendation_chart(rec: dict[str, Any], idx: int, trading_day: str)
         f"Score {score:.1f} · Ref ${price:.2f} · Day {trading_day} · "
         f"SL ${sl_price:.2f} · TP ${tp_price:.2f}"
     )
-    draw.text((pad_l, 24), title, fill=CYAN, font=font_title)
-    draw.text((pad_l, 52), subtitle, fill=MUTED, font=font_sub)
+    draw.text((pad_l, 22), title, fill=CYAN, font=font_title)
+    draw.text((pad_l, 56), subtitle, fill=MUTED, font=font_sub)
 
     y_min = min(min(closes), sl_price) * 0.985
     y_max = max(max(closes), tp_price) * 1.015

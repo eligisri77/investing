@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trading_pulse.agent.holdings_review import review_holding, review_holdings
+from trading_pulse.agent.holdings_review import (
+    SWAP_SCORE_GAP,
+    build_portfolio_review_cubes,
+    review_holding,
+    review_holdings,
+    swap_funding_for_offer,
+)
 
 
 @dataclass
@@ -61,13 +67,24 @@ def test_swap_when_better_pick_tomorrow():
     assert r.swap_to == "NVDA"
 
 
-def test_no_swap_out_of_strong_winner():
+def test_swap_when_better_score_even_if_modest_winner():
+    """Score gap drives swap — modest green PnL no longer blocks rotation."""
     cfg = FakeCfg()
     h = _holding("AMD", 100.0, 88.0, days=1)
-    scores = {"AMD": {"score": 6.0, "close": 115.0}}  # +15% winner
+    scores = {"AMD": {"score": 6.0, "close": 115.0}}  # +15%
     recs = [{"symbol": "NVDA", "score": 9.0}]
     r = review_holding(h, cfg, scores, recs)
-    assert r.verdict == "hold"
+    assert r.verdict == "swap"
+    assert r.swap_to == "NVDA"
+
+
+def test_take_profit_beats_swap_when_up_big():
+    cfg = FakeCfg()
+    h = _holding("AMD", 100.0, 88.0, days=1)
+    scores = {"AMD": {"score": 6.0, "close": 125.0}}  # +25%
+    recs = [{"symbol": "NVDA", "score": 9.0}]
+    r = review_holding(h, cfg, scores, recs)
+    assert r.verdict == "take_profit"
 
 
 def test_hold_when_no_price_data():
@@ -163,3 +180,130 @@ def test_review_holdings_dedupes_many_swaps_to_same_target():
     swaps = [r for r in reviews if r.verdict == "swap"]
     assert len(swaps) <= 2
     assert all(r.swap_to == "VLO" for r in swaps)
+
+
+# --------------------------------------------------------------------------
+# swap_funding_for_offer / build_portfolio_review_cubes
+# --------------------------------------------------------------------------
+
+
+def test_swap_funding_prefers_explicit_swap_to():
+    plan = {
+        "recommendations": [{"symbol": "NVDA", "score": 12.0}],
+        "holding_actions": [
+            {
+                "symbol": "AMD",
+                "verdict": "swap",
+                "swap_to": "NVDA",
+                "score": 6.0,
+                "pnl_pct": 2.0,
+                "capital_usd": 200,
+            },
+            {
+                "symbol": "META",
+                "verdict": "hold",
+                "score": 4.0,  # weaker — would win score-gap fallback
+                "pnl_pct": -1.0,
+                "capital_usd": 250,
+            },
+        ],
+    }
+    out = swap_funding_for_offer(plan, "NVDA")
+    assert out is not None
+    assert out["from_symbol"] == "AMD"
+    assert out["to_symbol"] == "NVDA"
+    assert out["from_score"] == 6.0
+    assert out["to_score"] == 12.0
+    assert out["capital_usd"] == 200.0
+
+
+def test_swap_funding_score_gap_fallback_picks_weakest_hold():
+    """No explicit swap_to → fund from lowest-score hold that loses by ≥ SWAP_SCORE_GAP."""
+    plan = {
+        "recommendations": [{"symbol": "NVDA", "score": 10.0}],
+        "holding_actions": [
+            {"symbol": "META", "verdict": "hold", "score": 8.5, "pnl_pct": 1.0, "capital_usd": 300},
+            {"symbol": "AMD", "verdict": "hold", "score": 6.0, "pnl_pct": 3.0, "capital_usd": 200},
+            {"symbol": "SOXL", "verdict": "sell", "score": 3.0, "pnl_pct": -5.0, "capital_usd": 150},
+        ],
+    }
+    assert 10.0 - 6.0 >= SWAP_SCORE_GAP
+    assert 10.0 - 8.5 < SWAP_SCORE_GAP
+    out = swap_funding_for_offer(plan, "NVDA")
+    assert out is not None
+    assert out["from_symbol"] == "AMD"
+    assert out["from_score"] == 6.0
+    # sell / take_profit excluded from fallback pool
+    assert out["from_symbol"] != "SOXL"
+
+
+def test_swap_funding_none_when_gap_too_small_or_offer_score_missing():
+    plan = {
+        "recommendations": [{"symbol": "NVDA", "score": 8.0}],
+        "holding_actions": [
+            {"symbol": "AMD", "verdict": "hold", "score": 7.0, "pnl_pct": 1.0},
+        ],
+    }
+    assert swap_funding_for_offer(plan, "NVDA") is None
+    assert swap_funding_for_offer({"recommendations": [], "holding_actions": []}, "NVDA") is None
+
+
+def test_build_portfolio_review_cubes_cash_and_per_holding():
+    plan = {
+        "available_capital_usd": 0,
+        "holdings": [
+            {"symbol": "AMD", "capital_usd": 200, "strategy_id": "score_momentum"},
+            {"symbol": "META", "capital_usd": 250},
+        ],
+        "holding_actions": [
+            {
+                "symbol": "AMD",
+                "verdict": "swap",
+                "pnl_pct": 5.0,
+                "score": 6.0,
+                "capital_usd": 200,
+                "swap_to": "NVDA",
+                "swap_to_score": 12.0,
+                "reason": "יש מניה חזקה יותר",
+            },
+            {
+                "symbol": "META",
+                "verdict": "hold",
+                "pnl_pct": 2.0,
+                "score": 9.0,
+                "capital_usd": 250,
+                "reason": "מגמה תקינה",
+            },
+        ],
+        "recommendations": [{"symbol": "NVDA", "score": 12.0}],
+    }
+    cubes = build_portfolio_review_cubes(plan)
+    titles = [c["title"] for c in cubes]
+    assert titles[0] == "מזומן פנוי"
+    assert "$0" in cubes[0]["value"]
+    assert "בלי מזומן" in cubes[0]["value"]
+    assert "AMD" in titles
+    assert "META" in titles
+    amd = next(c for c in cubes if c["title"] == "AMD")
+    assert "החלף" in amd["value"]
+    assert "→ NVDA" in amd["value"]
+    assert "ציון 12.0" in amd["value"]
+    assert cubes[-1]["title"] == "המשך"
+    assert "הצעת קנייה" in cubes[-1]["value"]
+
+
+def test_build_portfolio_review_cubes_cash_topup_when_no_new_offers():
+    plan = {
+        "available_capital_usd": 80,
+        "holdings": [{"symbol": "META", "capital_usd": 250}],
+        "holding_actions": [
+            {"symbol": "META", "verdict": "hold", "pnl_pct": 1.0, "score": 8.0, "capital_usd": 250},
+        ],
+        "recommendations": [],
+    }
+    cubes = build_portfolio_review_cubes(plan)
+    assert cubes[0]["title"] == "מזומן פנוי"
+    assert "$80" in cubes[0]["value"]
+    assert "בלי מזומן" not in cubes[0]["value"]
+    assert any(c["title"] == "מזומן בלי הצעות חדשות" for c in cubes)
+    assert any("תקנה SYMBOL" in c["value"] for c in cubes)

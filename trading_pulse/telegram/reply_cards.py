@@ -682,6 +682,10 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
     else:
         footer = "גרף מחיר נשלח בהודעה הבאה"
 
+    watch_reason = str(detail.get("watch_reason") or "").strip()
+    if detail.get("watch_mode") and watch_reason:
+        rows = [("סיבת המעקב", watch_reason), *rows]
+
     return render_reply_card(
         title,
         accent="green" if would else "pink",
@@ -734,7 +738,7 @@ def chart_with_recommendation_details(
             signal_lines=signal_lines,
             held=held,
         )
-        details = card_png_from_html(doc, width=920, height=1800)
+        details = card_png_from_html(doc, width=920, height=2200)
         return stack_png_vertical(chart, details)
     except Exception:
         return chart
@@ -748,13 +752,32 @@ def offer_cubes_card(
     cash_free: float,
     suggested_usd: float,
     rank: int | None = None,
+    swap: dict[str, Any] | None = None,
+    swap_from: str | None = None,
+    swap_from_score: float | None = None,
 ) -> bytes | None:
-    """PNG card: metric cubes with a short blurb beside each block."""
-    from trading_pulse.agent.offer_queue import build_offer_metric_cubes
+    """PNG card: metric cubes + cash/swap/how-to (single message, no action strip)."""
+    from trading_pulse.agent.offer_queue import (
+        build_offer_action_cubes,
+        build_offer_metric_cubes,
+    )
     from trading_pulse.telegram.html_tables import card_png_from_html, html_offer_cubes
 
     try:
+        if swap is None and swap_from:
+            swap = {
+                "from_symbol": swap_from,
+                "from_score": swap_from_score if swap_from_score is not None else 0.0,
+            }
         cubes = build_offer_metric_cubes(rec, rank=rank if rank is not None else position_no)
+        cubes.extend(
+            build_offer_action_cubes(
+                rec,
+                cash_free=cash_free,
+                suggested_usd=suggested_usd,
+                swap=swap,
+            )
+        )
         doc = html_offer_cubes(
             rec,
             position_no=position_no,
@@ -762,9 +785,40 @@ def offer_cubes_card(
             cash_free=cash_free,
             suggested_usd=suggested_usd,
             cubes=cubes,
+            swap_from=str(swap["from_symbol"]) if swap else None,
+            swap_from_score=float(swap["from_score"]) if swap and swap.get("from_score") is not None else None,
+            include_action_footer=False,
         )
-        return card_png_from_html(doc, width=920, height=1600)
+        return card_png_from_html(doc, width=920, height=2200)
     except Exception:
         logging.exception("offer_cubes_card failed for %s", rec.get("symbol"))
+        return None
+
+
+def portfolio_review_cubes_card(plan: dict[str, Any]) -> bytes | None:
+    """PNG card: pre-market holdings review as labeled cubes."""
+    from trading_pulse.agent.holdings_review import build_portfolio_review_cubes
+    from trading_pulse.telegram.html_tables import card_png_from_html, html_portfolio_review_cubes
+
+    try:
+        holdings = plan.get("holdings") or []
+        held = {str(h.get("symbol")) for h in holdings}
+        offers_n = sum(
+            1
+            for r in (plan.get("recommendations") or [])
+            if not r.get("below_bar")
+            and not r.get("approved")
+            and not r.get("offer_skipped")
+            and str(r.get("symbol")) not in held
+        )
+        cubes = build_portfolio_review_cubes(plan)
+        doc = html_portfolio_review_cubes(
+            cubes=cubes,
+            cash_free=float(plan.get("available_capital_usd") or 0),
+            offers_n=offers_n,
+        )
+        return card_png_from_html(doc, width=920, height=2000)
+    except Exception:
+        logging.exception("portfolio_review_cubes_card failed")
         return None
 

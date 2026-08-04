@@ -203,10 +203,11 @@ def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
         "trading_pulse.agent.trading_flow.before_market_entry",
         lambda _cfg, _day: True,
     )
+    set_status_calls: list = []
     monkeypatch.setattr(
         agent,
         "set_plan_status",
-        lambda *a, **k: "תוכנית מאושרת",
+        lambda *a, **k: set_status_calls.append((a, k)) or "לא אמור",
     )
     sync_actions: list[str] = []
     monkeypatch.setattr(
@@ -218,13 +219,232 @@ def test_swap_partial_usd_does_not_sell_all(tmp_path, monkeypatch):
     reply = agent.execute_swap_command(Cfg(), "LABD", "RIVN", buy_usd=100.0)
     assert sold_amounts == [100.0]
     assert "100" in reply
+    assert "אושרה לקנייה" in reply and "בפתיחה" in reply
+    assert "שלב 2" not in reply
     assert "333" not in reply.split("מכרת")[1].split("\n")[0]
+    assert set_status_calls == []  # no שלב-2 allocation path
     assert sync_actions == ["מכירה ידנית של LABD כחלק מהחלפה"]
     saved_plan = __import__("json").loads(
         (tmp_path / "plans" / "plan_2026-07-08.json").read_text()
     )
     assert saved_plan["last_manual_action"] == "החלפה ידנית של LABD ב־RIVN"
     assert saved_plan["portfolio_snapshot_stale"] is False
+    rivn = next(r for r in saved_plan["recommendations"] if r["symbol"] == "RIVN")
+    assert rivn["approved"] is True
+    assert rivn["capital_usd"] == 100.0
+    assert saved_plan.get("allocation", {}).get("manual_offer_flow") is True
+
+
+def test_premarket_swap_approves_open_without_allocation_step2(tmp_path, monkeypatch):
+    """Pre-market full swap uses apply_partial_confirm_manual — not set_plan_status/שלב 2."""
+    state = {
+        # Equity equals the open position so free_cash after sell == sold proceeds.
+        "equity": 400.0,
+        "open_positions": [
+            {
+                "symbol": "SOXL",
+                "capital_usd": 400.0,
+                "entry_price": 20.0,
+                "entry_day": "2026-07-08",
+                "stop_loss_pct": 0.12,
+                "take_profit_pct": 0.25,
+            }
+        ],
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+    plan = {
+        "for_trading_day": "2026-07-08",
+        "status": "draft",
+        "available_capital_usd": 400.0,
+        "recommendations": [
+            {"symbol": "BE", "score": 12.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    }
+    plan_file = tmp_path / "plans" / "plan_2026-07-08.json"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text(__import__("json").dumps(plan), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: "2026-07-08")
+    monkeypatch.setattr(
+        agent, "load_state", lambda _cfg: __import__("json").loads(state_path.read_text())
+    )
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(__import__("json").dumps(data), encoding="utf-8"),
+    )
+
+    def _fake_sell(_cfg, st, sym, frac, **kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {
+            "symbol": sym,
+            "pnl_usd": 0.0,
+            "capital_usd": 400.0,
+            "exit_price": 20.0,
+        }
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell)
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: True,
+    )
+    set_status_calls: list = []
+    monkeypatch.setattr(
+        agent,
+        "set_plan_status",
+        lambda *a, **k: set_status_calls.append((a, k)) or "שלב 2",
+    )
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    monkeypatch.setattr(
+        "trading_pulse.agent.offer_queue.consume_offer_after_manual_swap",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.offer_queue.pending_offer",
+        lambda _st: None,
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "SOXL", "BE")
+
+    assert "אושרה לקנייה" in reply and "בפתיחה" in reply
+    assert "BE" in reply
+    assert "שלב 2" not in reply
+    assert set_status_calls == []
+    saved = __import__("json").loads(plan_file.read_text())
+    be = next(r for r in saved["recommendations"] if r["symbol"] == "BE")
+    assert be["approved"] is True
+    assert be["capital_usd"] == 400.0
+    assert saved.get("allocation", {}).get("manual_offer_flow") is True
+    assert saved["status"] == "confirmed"  # standalone finalize when no offer queue
+    assert saved["last_manual_action"] == "החלפה ידנית של SOXL ב־BE"
+
+
+def test_premarket_swap_into_pending_offer_advances_queue(tmp_path, monkeypatch):
+    """Pending offer BE + החלף SOXL→BE pre-market → BE approved, queue advances; cutoff keeps BE."""
+    from trading_pulse.agent import offer_queue
+
+    state = {
+        # Equity equals the open position so free_cash after sell == sold proceeds.
+        "equity": 400.0,
+        "open_positions": [
+            {
+                "symbol": "SOXL",
+                "capital_usd": 400.0,
+                "entry_price": 20.0,
+                "entry_day": "2026-07-08",
+                "stop_loss_pct": 0.12,
+                "take_profit_pct": 0.25,
+            }
+        ],
+        "pending_offer": {
+            "trading_day": "2026-07-08",
+            "queue": ["BE", "AMD"],
+            "index": 0,
+            "decided": {},
+            "offered_at": None,
+            "nudged_at": None,
+        },
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+    plan = {
+        "for_trading_day": "2026-07-08",
+        "status": "draft",
+        "available_capital_usd": 400.0,
+        "recommendations": [
+            {"symbol": "BE", "score": 12.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    }
+    plan_file = tmp_path / "plans" / "plan_2026-07-08.json"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text(__import__("json").dumps(plan), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(agent, "plan_path", lambda _day: plan_file)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: "2026-07-08")
+    monkeypatch.setattr(
+        agent, "load_state", lambda _cfg: __import__("json").loads(state_path.read_text())
+    )
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(__import__("json").dumps(data), encoding="utf-8"),
+    )
+
+    def _fake_sell(_cfg, st, sym, frac, **kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {
+            "symbol": sym,
+            "pnl_usd": 0.0,
+            "capital_usd": 400.0,
+            "exit_price": 20.0,
+        }
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell)
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: True,
+    )
+    set_status_calls: list = []
+    monkeypatch.setattr(
+        agent,
+        "set_plan_status",
+        lambda *a, **k: set_status_calls.append((a, k)) or "שלב 2",
+    )
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    send_offer_calls: list = []
+    monkeypatch.setattr(
+        offer_queue,
+        "send_offer",
+        lambda cfg, st, p: send_offer_calls.append(p) or True,
+    )
+    notify_calls: list[dict] = []
+    monkeypatch.setattr(
+        agent,
+        "send_user_notification",
+        lambda cfg, text, **kw: notify_calls.append({"text": text, **kw}) or True,
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "SOXL", "BE")
+
+    assert "אושרה לקנייה" in reply and "בפתיחה" in reply
+    assert set_status_calls == []
+    assert len(send_offer_calls) == 1  # next offer (AMD) sent
+
+    saved_state = __import__("json").loads(state_path.read_text())
+    po = saved_state["pending_offer"]
+    assert po["index"] == 1
+    assert po["decided"]["BE"] == 400.0
+    assert offer_queue.current_offer_symbol(saved_state) == "AMD"
+
+    saved_plan = __import__("json").loads(plan_file.read_text())
+    be = next(r for r in saved_plan["recommendations"] if r["symbol"] == "BE")
+    assert be["approved"] is True
+    assert be["capital_usd"] == 400.0
+
+    # Market open: BE stays approved; only unanswered AMD is listed as dropped.
+    assert offer_queue.cutoff_pending_offer(object(), saved_state) is True
+    assert "pending_offer" not in saved_state
+    after_cutoff = __import__("json").loads(plan_file.read_text())
+    be2 = next(r for r in after_cutoff["recommendations"] if r["symbol"] == "BE")
+    amd = next(r for r in after_cutoff["recommendations"] if r["symbol"] == "AMD")
+    assert be2["approved"] is True
+    assert amd.get("offer_skipped") is True
+    assert amd.get("approved") is not True
+    assert len(notify_calls) == 1
+    assert "לא נענו והושמטו" in notify_calls[0]["text"]
+    assert "AMD" in notify_calls[0]["text"]
+    assert "BE" not in notify_calls[0]["text"].split("לא נענו והושמטו")[1]
 
 
 def test_swap_rejects_same_symbol():

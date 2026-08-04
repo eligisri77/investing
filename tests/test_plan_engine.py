@@ -347,11 +347,19 @@ def test_apply_partial_confirm_manual_does_not_trigger_old_allocation_choice_ui(
 
 
 def test_mark_offer_skipped_sets_flag_and_unapproves():
-    plan = {"recommendations": [{"symbol": "NVDA", "approved": True, "capital_usd": 100}]}
+    plan = {"recommendations": [{"symbol": "NVDA", "approved": False, "capital_usd": 100}]}
     out = mark_offer_skipped(plan, "NVDA")
     nvda = out["recommendations"][0]
     assert nvda["approved"] is False
     assert nvda["offer_skipped"] is True
+
+
+def test_mark_offer_skipped_preserves_prior_approve():
+    plan = {"recommendations": [{"symbol": "NVDA", "approved": True, "capital_usd": 100}]}
+    out = mark_offer_skipped(plan, "NVDA")
+    nvda = out["recommendations"][0]
+    assert nvda["approved"] is True
+    assert nvda.get("offer_skipped") is not True
 
 
 def test_finalize_manual_confirm_stays_draft_when_nothing_approved():

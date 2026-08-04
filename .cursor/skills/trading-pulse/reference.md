@@ -6,9 +6,13 @@
 `הכל`, `1,2,3`, `דחה 4`, `approve`, `reject`
 
 ### הצעת קנייה (אחת-אחת, `offer_queue.py`)
-`כן` (buy at suggested amount), an amount like `150`/`$150` (buy custom amount), `דלג` (skip) —
-only consumed as an offer answer when a pending offer exists (`try_resolve_pending_offer`);
-direct commands (`מכור`, `קנה SYMBOL`, `תיק`, `סטטוס`, ...) still work at any time.
+`כן` (buy at suggested amount), an amount like `150`/`$150` (buy custom amount), `דלג` (skip),
+or `החלף FROM TO` when TO is the current offer (counts as accept + advances) —
+only consumed as an offer answer when a pending offer exists (`try_resolve_pending_offer` /
+`consume_offer_after_manual_swap`); direct commands (`מכור`, `קנה SYMBOL`, `תיק`, `סטטוס`, ...)
+still work at any time. Pre-market `החלף` sells now and approves the buy for open
+(«אושרה לקנייה בפתיחה») — does **not** open שלב 2 / ח1…ח5. At market-open cutoff,
+already-approved symbols (including via `החלף`) stay approved; only unanswered are «לא נענו».
 
 ### שלב 2 — חלוקה
 `ח1`…`ח5`, `חלוקה`

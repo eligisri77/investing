@@ -4,8 +4,10 @@ Instead of dumping the whole plan for a mass `הכל` approve, the pre-market
 review offers new-buy candidates one at a time: score + explanation + chart +
 free cash + a suggested amount. The bot waits for a reply (`כן` / an amount /
 `דלג`) before moving to the next one, nudging after ~10 minutes of silence.
-Direct commands (`מכור`, `קנה SYMBOL`, `תיק`, ...) keep working at any time —
-only a bare yes/no/amount reply is consumed here.
+Direct commands (`מכור`, `קנה SYMBOL`, `תיק`, `החלף`, ...) keep working at
+any time — only a bare yes/no/amount reply is consumed here. A manual
+``החלף … <current offer>`` advances the queue via
+``consume_offer_after_manual_swap`` (called from ``execute_swap_command``).
 """
 
 from __future__ import annotations
@@ -527,6 +529,9 @@ def cutoff_pending_offer(cfg: Any, state: dict[str, Any]) -> bool:
     Auto-finalizes whatever was decided so far and drops the rest — still
     buyable later via a direct `קנה SYMBOL`, or re-offered on the next review
     if still a valid candidate. Returns True if a pending offer was cleared.
+
+    Symbols already approved (e.g. via ``החלף``) are kept and confirmed — only
+    truly unanswered remaining offers are listed as dropped.
     """
     po = state.get("pending_offer")
     if not isinstance(po, dict) or not po.get("queue"):
@@ -553,13 +558,18 @@ def cutoff_pending_offer(cfg: Any, state: dict[str, Any]) -> bool:
 
     plan = read_json(path)
     remaining = list(po["queue"][int(po.get("index", 0)) :])
+    dropped: list[str] = []
     for sym in remaining:
+        rec = _rec_by_symbol(plan, sym)
+        already = bool(rec and rec.get("approved"))
         mark_offer_skipped(plan, sym)
+        if not already:
+            dropped.append(sym)
     finalize_manual_confirm(plan, state, cfg)
     save_json(path, plan)
     state.pop("pending_offer", None)
-    if remaining:
-        names = ", ".join(remaining)
+    if dropped:
+        names = ", ".join(dropped)
         send_user_notification(
             cfg,
             f"⏰ <b>השוק נפתח</b> — סגרנו את סבב ההצעות של היום.\n"
@@ -567,6 +577,49 @@ def cutoff_pending_offer(cfg: Any, state: dict[str, Any]) -> bool:
             context="offer:cutoff",
             parse_mode="HTML",
         )
+    return True
+
+
+def consume_offer_after_manual_swap(
+    cfg: Any,
+    state: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    to_symbol: str,
+    purchase_usd: float,
+) -> bool:
+    """If the current pending offer is ``to_symbol``, treat the swap as a yes.
+
+    Records the decision, advances the queue, and either sends the next offer
+    or finalizes the plan (same as answering ``כן`` with cash). Returns True
+    when the pending offer was consumed.
+    """
+    from trading_pulse.agent.dryrun_agent import STATE_FILE, save_json
+    from trading_pulse.agent.plan_engine import apply_partial_confirm_manual, finalize_manual_confirm
+
+    po = pending_offer(state)
+    if not po:
+        return False
+    current = current_offer_symbol(state)
+    to_symbol = str(to_symbol).upper()
+    if not current or str(current).upper() != to_symbol:
+        return False
+
+    amount = round(max(0.0, float(purchase_usd)), 2)
+    apply_partial_confirm_manual(plan, to_symbol, amount)
+    po.setdefault("decided", {})[to_symbol] = amount
+    # Also key by the queue spelling if it differs only by case.
+    po["decided"][str(current)] = amount
+    _advance(state)
+
+    if pending_offer(state) is not None:
+        save_json(STATE_FILE, state)
+        send_offer(cfg, state, plan)
+    else:
+        finalize_manual_confirm(plan, state, cfg)
+        state.pop("pending_offer", None)
+        save_json(STATE_FILE, state)
+        finish_offers(cfg, plan)
     return True
 
 

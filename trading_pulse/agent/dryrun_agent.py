@@ -2531,6 +2531,18 @@ def execute_swap_command(
             state,
             f"החלפה ידנית של {from_symbol} ב־{to_symbol}",
         )
+        try:
+            from trading_pulse.agent.offer_queue import consume_offer_after_manual_swap
+
+            # Clear a stuck pre-market offer if the user swapped into it late.
+            plan = read_json(path)
+            if consume_offer_after_manual_swap(
+                cfg, state, plan, to_symbol=to_symbol, purchase_usd=purchase_usd
+            ):
+                save_json(path, plan)
+                save_json(STATE_FILE, state)
+        except Exception:
+            logging.exception("offer advance after intraday swap failed")
         return _deliver_swap_completed(
             cfg,
             from_symbol=from_symbol,
@@ -2544,17 +2556,33 @@ def execute_swap_command(
             sell_pnl_usd=sell_pnl_usd,
         )
 
-    indices = [i for i, r in enumerate(recs) if str(r.get("symbol")) == to_symbol]
+    # Pre-market: approve for open via offer-flow (no ח1…ח5 allocation card).
+    from trading_pulse.agent.offer_queue import (
+        consume_offer_after_manual_swap,
+        pending_offer,
+    )
+    from trading_pulse.agent.plan_engine import (
+        apply_partial_confirm_manual,
+        finalize_manual_confirm,
+    )
+
     plan["last_manual_action"] = (
         f"החלפה ידנית של {from_symbol} ב־{to_symbol}"
     )
     plan["portfolio_snapshot_stale"] = False
+    apply_partial_confirm_manual(plan, to_symbol, purchase_usd)
+    consumed = consume_offer_after_manual_swap(
+        cfg, state, plan, to_symbol=to_symbol, purchase_usd=purchase_usd
+    )
+    if not consumed and pending_offer(state) is None:
+        # Standalone pre-market swap (no offer queue) — confirm for morning entry.
+        finalize_manual_confirm(plan, state, cfg)
     save_json(path, plan)
-    approve_reply = set_plan_status(trading_day, "APPROVE", indices, cfg=cfg)
+    save_json(STATE_FILE, state)
+    sell_bit = f" @ ${sell_price:.2f}" if sell_price else ""
     return (
-        f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f} · "
-        f"קניית <b>{to_symbol}</b> ערך ${purchase_usd:.2f}\n\n"
-        f"{approve_reply}"
+        f"✅ <b>מכרת {from_symbol}</b> — ערך ${sold_usd:.2f}{sell_bit}\n"
+        f"✅ <b>{to_symbol}</b> אושרה לקנייה <b>בפתיחה</b> — ערך ${purchase_usd:.2f}"
     )
 
 

@@ -11,6 +11,7 @@ from trading_pulse.agent.offer_queue import (
     build_offer_action_cubes,
     build_offer_metric_cubes,
     cash_remaining,
+    consume_offer_after_manual_swap,
     current_offer_symbol,
     eligible_offer_symbols,
     expire_stale_offer,
@@ -1008,3 +1009,202 @@ def test_cutoff_pending_offer_clears_state_when_trading_day_invalid():
     }
     assert offer_queue.cutoff_pending_offer(object(), state) is True
     assert "pending_offer" not in state
+
+
+def test_cutoff_pending_offer_keeps_already_approved_out_of_dropped_list(
+    monkeypatch, tmp_path
+):
+    """Approved remaining (e.g. via החלף) stay approved; only unanswered are listed."""
+    from trading_pulse.agent import dryrun_agent as agent
+
+    plan = _plan(
+        available_capital_usd=400.0,
+        recommendations=[
+            {"symbol": "BE", "score": 12.0, "approved": True, "capital_usd": 200.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    )
+    plan_file = tmp_path / "plan_2026-07-20.json"
+    agent.save_json(plan_file, plan)
+    monkeypatch.setattr(agent, "plan_path", lambda _day: plan_file)
+
+    notify_calls: list[dict] = []
+    monkeypatch.setattr(
+        agent,
+        "send_user_notification",
+        lambda cfg, text, **kw: notify_calls.append({"text": text, **kw}) or True,
+    )
+
+    state = {
+        "equity": 400.0,
+        "pending_offer": {
+            "trading_day": "2026-07-20",
+            "queue": ["BE", "AMD"],
+            "index": 0,  # BE still in remaining but already approved
+            "decided": {"BE": 200.0},
+            "offered_at": datetime.now(timezone.utc).isoformat(),
+            "nudged_at": None,
+        },
+    }
+    assert offer_queue.cutoff_pending_offer(object(), state) is True
+    assert "pending_offer" not in state
+
+    saved = agent.read_json(plan_file)
+    be = next(r for r in saved["recommendations"] if r["symbol"] == "BE")
+    amd = next(r for r in saved["recommendations"] if r["symbol"] == "AMD")
+    assert be["approved"] is True
+    assert be.get("offer_skipped") is not True
+    assert be["capital_usd"] == 200.0
+    assert amd["offer_skipped"] is True
+    assert amd.get("approved") is not True
+    assert saved["status"] == "confirmed"
+
+    assert len(notify_calls) == 1
+    text = notify_calls[0]["text"]
+    assert "לא נענו והושמטו" in text
+    assert "AMD" in text
+    # BE must not appear in the dropped list (may still appear elsewhere — check suffix).
+    dropped_bit = text.split("לא נענו והושמטו")[1]
+    assert "BE" not in dropped_bit
+    assert "AMD" in dropped_bit
+
+
+# --------------------------------------------------------------------------
+# consume_offer_after_manual_swap
+# --------------------------------------------------------------------------
+
+
+def test_consume_offer_after_manual_swap_false_when_no_pending(monkeypatch, tmp_path):
+    from trading_pulse.agent import dryrun_agent as agent
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    plan = _plan()
+    assert (
+        consume_offer_after_manual_swap(
+            object(), {}, plan, to_symbol="NVDA", purchase_usd=100.0
+        )
+        is False
+    )
+
+
+def test_consume_offer_after_manual_swap_false_when_to_symbol_not_current(
+    monkeypatch, tmp_path
+):
+    from trading_pulse.agent import dryrun_agent as agent
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    plan = _plan()
+    state = {
+        "pending_offer": {
+            "trading_day": "2026-07-20",
+            "queue": ["NVDA", "AMD"],
+            "index": 0,
+            "decided": {},
+            "offered_at": None,
+            "nudged_at": None,
+        }
+    }
+    assert (
+        consume_offer_after_manual_swap(
+            object(), state, plan, to_symbol="AMD", purchase_usd=100.0
+        )
+        is False
+    )
+    assert state["pending_offer"]["index"] == 0
+    assert state["pending_offer"]["decided"] == {}
+
+
+def test_consume_offer_after_manual_swap_advances_and_sends_next(monkeypatch, tmp_path):
+    from trading_pulse.agent import dryrun_agent as agent
+
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(agent, "STATE_FILE", state_file)
+
+    send_offer_calls: list[dict] = []
+    finish_calls: list[dict] = []
+    monkeypatch.setattr(
+        offer_queue,
+        "send_offer",
+        lambda cfg, st, p: send_offer_calls.append(p) or True,
+    )
+    monkeypatch.setattr(
+        offer_queue,
+        "finish_offers",
+        lambda cfg, p: finish_calls.append(p),
+    )
+
+    plan = _plan(available_capital_usd=300.0)
+    state = {
+        "pending_offer": {
+            "trading_day": "2026-07-20",
+            "queue": ["NVDA", "AMD"],
+            "index": 0,
+            "decided": {},
+            "offered_at": None,
+            "nudged_at": None,
+        }
+    }
+    assert (
+        consume_offer_after_manual_swap(
+            object(), state, plan, to_symbol="NVDA", purchase_usd=150.0
+        )
+        is True
+    )
+    nvda = next(r for r in plan["recommendations"] if r["symbol"] == "NVDA")
+    assert nvda["approved"] is True
+    assert nvda["capital_usd"] == 150.0
+    assert state["pending_offer"]["decided"]["NVDA"] == 150.0
+    assert state["pending_offer"]["index"] == 1
+    assert current_offer_symbol(state) == "AMD"
+    assert len(send_offer_calls) == 1
+    assert finish_calls == []
+    assert state_file.exists()
+
+
+def test_consume_offer_after_manual_swap_last_offer_finalizes(monkeypatch, tmp_path):
+    from trading_pulse.agent import dryrun_agent as agent
+
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(agent, "STATE_FILE", state_file)
+
+    send_offer_calls: list[dict] = []
+    finish_calls: list[dict] = []
+    monkeypatch.setattr(
+        offer_queue,
+        "send_offer",
+        lambda cfg, st, p: send_offer_calls.append(p) or True,
+    )
+    monkeypatch.setattr(
+        offer_queue,
+        "finish_offers",
+        lambda cfg, p: finish_calls.append(p),
+    )
+
+    plan = _plan(
+        available_capital_usd=200.0,
+        recommendations=[{"symbol": "BE", "score": 12.0}],
+    )
+    state = {
+        "equity": 200.0,
+        "pending_offer": {
+            "trading_day": "2026-07-20",
+            "queue": ["BE"],
+            "index": 0,
+            "decided": {},
+            "offered_at": None,
+            "nudged_at": None,
+        },
+    }
+    assert (
+        consume_offer_after_manual_swap(
+            object(), state, plan, to_symbol="be", purchase_usd=200.0
+        )
+        is True
+    )
+    be = plan["recommendations"][0]
+    assert be["approved"] is True
+    assert be["capital_usd"] == 200.0
+    assert plan["status"] == "confirmed"
+    assert "pending_offer" not in state
+    assert send_offer_calls == []
+    assert len(finish_calls) == 1

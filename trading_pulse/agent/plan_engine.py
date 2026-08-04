@@ -356,9 +356,15 @@ def apply_partial_confirm_manual(
 
 
 def mark_offer_skipped(plan: dict[str, Any], symbol: str) -> dict[str, Any]:
-    """Record that the user declined an offered symbol for today."""
+    """Record that the user declined an offered symbol for today.
+
+    Does not wipe a prior manual approve (e.g. ``החלף`` into this symbol) —
+    cutoff must only drop truly unanswered offers.
+    """
     for rec in plan.get("recommendations") or []:
         if str(rec.get("symbol")) == str(symbol):
+            if rec.get("approved"):
+                return plan
             rec["approved"] = False
             rec["offer_skipped"] = True
             break

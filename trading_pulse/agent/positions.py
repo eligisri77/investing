@@ -39,6 +39,48 @@ def free_cash(state: dict[str, Any], cfg: Any | None = None) -> float:
     return max(0.0, round(float(state.get("equity", 0)) - deployed_capital(state), 2))
 
 
+def cash_free_among_positions(equity: float, positions: list[dict[str, Any]]) -> float:
+    """Free cash given equity and a candidate open-positions list."""
+    deployed = round(sum(float(p.get("capital_usd") or 0) for p in positions), 2)
+    return max(0.0, round(float(equity) - deployed, 2))
+
+
+def unreserved_free_cash(
+    state: dict[str, Any],
+    plan: dict[str, Any] | None,
+    cfg: Any | None = None,
+    *,
+    exclude_symbol: str | None = None,
+) -> float:
+    """Live free cash minus capital already approved but not yet filled.
+
+    Prevents a second approve/swap from claiming the same dollars twice before open.
+    """
+    cash = free_cash(state, cfg)
+    if not plan:
+        return cash
+    held = held_symbols(state)
+    exclude = str(exclude_symbol or "").upper()
+    reserved = 0.0
+    for rec in plan.get("recommendations") or []:
+        if not rec.get("approved"):
+            continue
+        sym = str(rec.get("symbol") or "").upper()
+        if not sym or sym == exclude or sym in held:
+            continue
+        # Method2 already filled / invalidated / expired should not reserve.
+        status = str(rec.get("method2_status") or "")
+        if status in {"filled", "invalidated", "expired"}:
+            continue
+        reserved += float(rec.get("capital_usd") or 0)
+    return max(0.0, round(cash - reserved, 2))
+
+
+def clamp_buy_capital(wanted_usd: float, cash_left: float) -> float:
+    """Capital we can actually deploy right now (swap/sell funding still OK via cash)."""
+    return round(max(0.0, min(float(wanted_usd or 0), float(cash_left or 0))), 2)
+
+
 def _new_lot(
     capital_usd: float,
     entry_price: float,
@@ -506,6 +548,7 @@ def simulate_swing_day(
     held_symbols_today = {p["symbol"] for p in still_open}
     equity_before = float(state["equity"])
     daily_loss_limit = equity_before * float(cfg.max_daily_loss_pct)
+    cash_left = cash_free_among_positions(equity_before, still_open)
 
     for rec in approved:
         symbol = str(rec["symbol"])
@@ -515,6 +558,17 @@ def simulate_swing_day(
             break
         if pnl_total <= -daily_loss_limit:
             break
+
+        wanted = float(rec.get("capital_usd") or 0)
+        capital = clamp_buy_capital(wanted, cash_left)
+        if capital < 1:
+            logging.info(
+                "Skip entry %s: no free cash (wanted $%.2f, free $%.2f)",
+                symbol,
+                wanted,
+                cash_left,
+            )
+            continue
 
         bar = fetch_day_ohlc(symbol, trading_day)
         if bar is None:
@@ -550,7 +604,9 @@ def simulate_swing_day(
                 continue
             entry_px = float(fill)
 
-        pos = new_position_from_rec(rec, entry_px, day_str)
+        rec_for_pos = dict(rec)
+        rec_for_pos["capital_usd"] = capital
+        pos = new_position_from_rec(rec_for_pos, entry_px, day_str)
         exit_info = evaluate_intraday_exit(pos, bar, cfg)
 
         if exit_info and getattr(cfg, "hold_mode", "swing") == "day":
@@ -564,6 +620,7 @@ def simulate_swing_day(
             fees_total += entry_fee + exit_fee
             executed.append(trade)
             _record_loss_cooldown_if_needed(state, trade, cfg, trading_day)
+            cash_left = round(cash_left - capital, 2)
             continue
 
         if exit_info and exit_info[1] in {"stop_loss", "take_profit", "floor_price"}:
@@ -575,11 +632,13 @@ def simulate_swing_day(
             fees_total += commission * 2
             executed.append(trade)
             _record_loss_cooldown_if_needed(state, trade, cfg, trading_day)
+            cash_left = round(cash_left - capital, 2)
             continue
 
         pos["days_held"] = 0
         still_open.append(pos)
         held_symbols_today.add(symbol)
+        cash_left = round(cash_left - capital, 2)
         if commission > 0:
             pnl_total -= commission
             fees_total += commission

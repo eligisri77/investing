@@ -67,7 +67,12 @@ def try_fill_pending_method2(
     if not bool(getattr(cfg, "method2_intraday_enabled", True)):
         return []
 
-    from trading_pulse.agent.positions import held_symbols, new_position_from_rec
+    from trading_pulse.agent.positions import (
+        clamp_buy_capital,
+        free_cash,
+        held_symbols,
+        new_position_from_rec,
+    )
 
     pending = pending_method2_recs(plan, state)
     if not pending:
@@ -86,6 +91,17 @@ def try_fill_pending_method2(
             rec["method2_status"] = "filled"
             continue
 
+        cash_left = free_cash(state, cfg)
+        capital = clamp_buy_capital(float(rec.get("capital_usd") or 0), cash_left)
+        if capital < 1:
+            logging.info(
+                "Method2 skip %s: no free cash (wanted $%.2f, free $%.2f)",
+                sym,
+                float(rec.get("capital_usd") or 0),
+                cash_left,
+            )
+            continue
+
         result = evaluate_method2_intraday_entry(rec, intervals=intervals)
         if result is None:
             continue
@@ -99,7 +115,9 @@ def try_fill_pending_method2(
         if fill_px is None:
             continue
 
-        pos = new_position_from_rec(rec, float(fill_px), trading_day.isoformat())
+        rec_for_pos = dict(rec)
+        rec_for_pos["capital_usd"] = capital
+        pos = new_position_from_rec(rec_for_pos, float(fill_px), trading_day.isoformat())
         pos["entry_at"] = datetime.now(timezone.utc).isoformat()
         pos["method2_fill_reason"] = reason
         pos["method2_fill_interval"] = result.get("interval")
@@ -114,6 +132,8 @@ def try_fill_pending_method2(
         rec["method2_fill_source"] = reason
         rec["method2_filled_at"] = pos["entry_at"]
         rec["method2_fill_price"] = float(fill_px)
+        # Keep book capital in sync with what we could actually fund.
+        rec["capital_usd"] = capital
         filled.append(pos)
         logging.info(
             "Method2 intraday fill %s @ $%.2f (%s %s)",

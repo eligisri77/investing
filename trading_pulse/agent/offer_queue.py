@@ -4,10 +4,12 @@ Instead of dumping the whole plan for a mass `הכל` approve, the pre-market
 review offers new-buy candidates one at a time: score + explanation + chart +
 free cash + a suggested amount. The bot waits for a reply (`כן` / an amount /
 `דלג`) before moving to the next one, nudging after ~10 minutes of silence.
-Direct commands (`מכור`, `קנה SYMBOL`, `תיק`, `החלף`, ...) keep working at
+Direct commands (`מכור`, `קנה`, `תיק`, `החלף`, ...) keep working at
 any time — only a bare yes/no/amount reply is consumed here. A manual
 ``החלף … <current offer>`` advances the queue via
 ``consume_offer_after_manual_swap`` (called from ``execute_swap_command``).
+Offer action copy always names **cash** or **real tickers from the book** —
+never the placeholder word ``SYMBOL``.
 """
 
 from __future__ import annotations
@@ -245,8 +247,13 @@ def build_offer_action_cubes(
     cash_free: float,
     suggested_usd: float,
     swap: dict[str, Any] | None = None,
+    holdings: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
-    """Cash / swap / how-to cubes — merged into the metrics PNG (no second message)."""
+    """Cash / swap / how-to cubes — merged into the metrics PNG (no second message).
+
+    Action commands always name real cash amounts or real tickers from ``holdings`` /
+    ``swap`` — never the placeholder word SYMBOL.
+    """
     sym = str(rec.get("symbol") or "")
     score = float(rec.get("score") or rec.get("score_technical") or 0)
     cubes: list[dict[str, str]] = []
@@ -268,7 +275,7 @@ def build_offer_action_cubes(
             {
                 "title": "מזומן וקנייה",
                 "blurb": "בלי מזומן אי אפשר לאשר קנייה ישירה מההצעה.",
-                "value": "$0 פנוי — לא מומלץ כן/קנה ממזומן",
+                "value": "$0 פנוי — רק מכירה/החלפה ממניות שבתיק",
                 "wide": "1",
             }
         )
@@ -287,6 +294,19 @@ def build_offer_action_cubes(
                 "wide": "1",
             }
         )
+    elif cash_free < 1:
+        sellable = _sellable_symbols(holdings, exclude=sym)
+        if sellable:
+            bits = [f"החלף {s} {sym}" for s in sellable[:2]]
+            bits.extend(f"מכור {s}" for s in sellable[:2])
+            cubes.append(
+                {
+                    "title": "מימון מהתיק",
+                    "blurb": "בלי מזומן — מוכרים מניה שכבר אצלך, לא שם כללי.",
+                    "value": " · ".join(bits),
+                    "wide": "1",
+                }
+            )
 
     steps: list[str] = []
     if cash_free >= 1 and suggested_usd >= 1:
@@ -294,18 +314,41 @@ def build_offer_action_cubes(
         steps.append("סכום אחר (150 או קנה 150)")
     if swap:
         steps.append(f"החלף {swap['from_symbol']} {sym}")
-    if cash_free < 1 and not swap:
-        steps.append("מכור SYMBOL ואז קנה")
+    elif cash_free < 1:
+        sellable = _sellable_symbols(holdings, exclude=sym)
+        if sellable:
+            for s in sellable[:2]:
+                steps.append(f"החלף {s} {sym}")
+            steps.append(f"מכור {sellable[0]}")
+        else:
+            steps.append("אין מניות בתיק למכירה")
     steps.append("דלג — להצעה הבאה")
     cubes.append(
         {
             "title": "איך לבצע",
-            "blurb": "שלח בטלגרם אחת מהאפשרויות למטה.",
+            "blurb": "שלח בטלגרם אחת מהאפשרויות למטה (סימבולים אמיתיים בלבד).",
             "value": " · ".join(steps),
             "wide": "1",
         }
     )
     return cubes
+
+
+def _sellable_symbols(
+    holdings: list[dict[str, Any]] | None,
+    *,
+    exclude: str,
+) -> list[str]:
+    exclude_u = str(exclude or "").upper()
+    out: list[str] = []
+    seen: set[str] = set()
+    for h in holdings or []:
+        sym = str(h.get("symbol") or "").upper()
+        if not sym or sym == exclude_u or sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+    return out
 
 
 def format_offer_prompt(
@@ -316,6 +359,7 @@ def format_offer_prompt(
     position_no: int,
     total: int,
     swap: dict[str, Any] | None = None,
+    holdings: list[dict[str, Any]] | None = None,
 ) -> str:
     """Text fallback when the cubes PNG cannot be sent."""
     from trading_pulse.agent.strategy_labels import strategy_label
@@ -336,7 +380,7 @@ def format_offer_prompt(
             f"מזומן פנוי: <b>${cash_free:.0f}</b> · מומלץ ממזומן: <b>${suggested_usd:.0f}</b>"
         )
     else:
-        lines.append("מזומן פנוי: <b>$0</b> — אי אפשר לקנות בלי למכור/להחליף")
+        lines.append("מזומן פנוי: <b>$0</b> — אי אפשר לקנות בלי למכור/להחליף מהתיק")
 
     if swap:
         from_sym = escape_html(str(swap["from_symbol"]))
@@ -345,6 +389,11 @@ def format_offer_prompt(
             f"🔁 מומלץ להחליף: <b>{from_sym}</b> (ציון {from_score:.1f}) → "
             f"<b>{sym}</b> ({score:.1f})"
         )
+    elif cash_free < 1:
+        sellable = _sellable_symbols(holdings, exclude=sym_raw)
+        if sellable:
+            names = ", ".join(escape_html(s) for s in sellable[:3])
+            lines.append(f"בתיק שלך אפשר לממן מ: <b>{names}</b>")
 
     lines.append("")
     lines.append("✅ איך לבצע:")
@@ -359,8 +408,18 @@ def format_offer_prompt(
             f"<code>החלף {escape_html(from_raw)} {sym}</code> — "
             f"מוכר {escape_html(from_raw)} וקונה {sym}"
         )
-    if cash_free < 1 and not swap:
-        lines.append("אין מימון מתאים מהתיק — <code>מכור SYMBOL</code> ואז קנה, או דלג")
+    elif cash_free < 1:
+        sellable = _sellable_symbols(holdings, exclude=sym_raw)
+        if sellable:
+            for s in sellable[:2]:
+                lines.append(
+                    f"<code>החלף {escape_html(s)} {sym}</code> — מוכר {escape_html(s)} מהתיק"
+                )
+            lines.append(
+                f"<code>מכור {escape_html(sellable[0])}</code> — ואז אפשר לאשר קנייה"
+            )
+        else:
+            lines.append("אין מניות בתיק למכירה — רק <code>דלג</code>")
     lines.append("<code>דלג</code> — להצעה הבאה")
     return "\n".join(lines)
 
@@ -387,9 +446,20 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
     position_no = int(po["index"]) + 1
     cash = cash_remaining(plan, po)
     suggested = suggested_amount(plan, po)
-    from trading_pulse.agent.holdings_review import swap_funding_for_offer
+    from trading_pulse.agent.holdings_review import (
+        held_funding_candidates,
+        swap_funding_for_offer,
+    )
 
     swap = swap_funding_for_offer(plan, str(symbol))
+    # Concrete tickers from *this* book (weakest first) for $0-cash funding copy.
+    holdings_for_funding = held_funding_candidates(plan, str(symbol), limit=3)
+    if not holdings_for_funding:
+        holdings_for_funding = [
+            h
+            for h in (plan.get("holdings") or [])
+            if str(h.get("symbol") or "").upper() != str(symbol or "").upper()
+        ]
     from trading_pulse.telegram.reply_cards import (
         chart_with_recommendation_details,
         offer_cubes_card,
@@ -422,6 +492,7 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             suggested_usd=suggested,
             rank=position_no,
             swap=swap,
+            holdings=holdings_for_funding,
         )
         if cubes_img:
             # Caption stays tiny — actions live inside the PNG cubes.
@@ -444,6 +515,7 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             position_no=position_no,
             total=total,
             swap=swap,
+            holdings=holdings_for_funding,
         )
         send_user_notification(cfg, text, context="offer", parse_mode="HTML")
 
@@ -692,13 +764,28 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
                 return False  # not an offer reply — let normal command parsing try
 
     if decision == "buy":
-        amount = max(0.0, min(float(amount), cash_remaining(plan, po)))
+        from trading_pulse.agent.positions import deployed_capital, unreserved_free_cash
+
+        plan_budget = cash_remaining(plan, po)
+        equity = float(state.get("equity") or 0)
+        # Empty/test states often omit equity — then trust the plan budget only.
+        if equity <= 0 and deployed_capital(state) <= 0:
+            live_budget = plan_budget
+        else:
+            live_budget = unreserved_free_cash(
+                state, plan, cfg, exclude_symbol=str(symbol)
+            )
+        amount = max(0.0, min(float(amount), plan_budget, live_budget))
         if amount < 1:
-            from trading_pulse.agent.holdings_review import swap_funding_for_offer
+            from trading_pulse.agent.holdings_review import (
+                held_funding_candidates,
+                swap_funding_for_offer,
+            )
             from trading_pulse.telegram.telegram_format import escape_html
 
             sym_e = escape_html(str(symbol))
             swap = swap_funding_for_offer(plan, str(symbol))
+            fund = held_funding_candidates(plan, str(symbol), limit=3)
             if swap:
                 from_raw = str(swap["from_symbol"])
                 send_user_notification(
@@ -709,11 +796,25 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
                     context="offer:needs_swap",
                     parse_mode="HTML",
                 )
-            else:
+            elif fund:
+                cmds = "\n".join(
+                    f"<code>החלף {escape_html(str(h['symbol']))} {sym_e}</code>"
+                    f" · או <code>מכור {escape_html(str(h['symbol']))}</code>"
+                    for h in fund[:2]
+                )
                 send_user_notification(
                     cfg,
                     f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
-                    "מכור מניה קודם (<code>מכור SYMBOL</code>) או שלח <code>דלג</code>.",
+                    f"מהתיק שלך:\n{cmds}\n"
+                    "או שלח <code>דלג</code>.",
+                    context="offer:no_cash",
+                    parse_mode="HTML",
+                )
+            else:
+                send_user_notification(
+                    cfg,
+                    f"אין מזומן פנוי לקניית <b>{sym_e}</b> ואין מניות בתיק למכירה.\n"
+                    "שלח <code>דלג</code> להצעה הבאה.",
                     context="offer:no_cash",
                     parse_mode="HTML",
                 )

@@ -249,6 +249,10 @@ def test_format_offer_prompt_is_short_action_strip():
     assert "איך לבצע" in text
     assert "דלג" in text
     assert "WALL OF TEXT" not in text
+    assert "<code>כן</code>" in text
+    assert "<code>קנה</code>" in text
+    assert "מכור SYMBOL" not in text
+    assert "מכור " not in text  # cash path: no sell commands
 
 
 def test_build_offer_action_cubes_merges_cash_swap_and_howto():
@@ -264,6 +268,22 @@ def test_build_offer_action_cubes_merges_cash_swap_and_howto():
     assert "החלף PBF SOXL" in cubes[1]["value"]
     assert "דלג" in cubes[2]["value"]
     assert "כן / קנה" not in cubes[2]["value"]
+    assert "מכור SYMBOL" not in cubes[2]["value"]
+
+
+def test_build_offer_action_cubes_with_cash_suggests_yes_buy_amount():
+    cubes = build_offer_action_cubes(
+        {"symbol": "NVDA", "score": 14.0},
+        cash_free=400.0,
+        suggested_usd=150.0,
+        swap=None,
+        holdings=[{"symbol": "AMZN"}],
+    )
+    joined = " | ".join(c["value"] for c in cubes)
+    assert "כן / קנה" in joined
+    assert "מכור SYMBOL" not in joined
+    assert "מכור AMZN" not in joined  # cash available → no sell path
+    assert not any(c["title"] == "מימון מהתיק" for c in cubes)
 
 
 def test_format_offer_prompt_zero_cash_with_swap_recommends_swap_command():
@@ -288,6 +308,7 @@ def test_format_offer_prompt_zero_cash_with_swap_recommends_swap_command():
     assert "<code>החלף AMD NVDA</code>" in text
     assert "ממזומן" not in text  # no cash-buy path
     assert "אין מימון מתאים" not in text
+    assert "מכור SYMBOL" not in text
     assert "דלג" in text
 
 
@@ -309,11 +330,13 @@ def test_format_offer_prompt_with_cash_and_swap_shows_both_paths():
         swap=swap,
     )
     assert "ממזומן ($150)" in text
+    assert "<code>כן</code>" in text or "<code>קנה</code>" in text
     assert "<code>החלף AMD NVDA</code>" in text
     assert "מומלץ להחליף" in text
+    assert "מכור SYMBOL" not in text
 
 
-def test_format_offer_prompt_zero_cash_without_swap_hints_sell():
+def test_format_offer_prompt_zero_cash_without_swap_names_real_holdings():
     text = format_offer_prompt(
         {"symbol": "NVDA", "score": 14.0},
         cash_free=0.0,
@@ -321,10 +344,59 @@ def test_format_offer_prompt_zero_cash_without_swap_hints_sell():
         position_no=1,
         total=1,
         swap=None,
+        holdings=[{"symbol": "META", "capital_usd": 250}],
     )
-    assert "אין מימון מתאים מהתיק" in text
-    assert "מכור SYMBOL" in text
-    assert "החלף" not in text
+    assert "מכור SYMBOL" not in text
+    assert "<code>החלף META NVDA</code>" in text
+    assert "<code>מכור META</code>" in text
+    assert "דלג" in text
+
+
+def test_format_offer_prompt_zero_cash_empty_book_no_placeholder_sell():
+    text = format_offer_prompt(
+        {"symbol": "NVDA", "score": 14.0},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        position_no=1,
+        total=1,
+        swap=None,
+        holdings=[],
+    )
+    assert "מכור SYMBOL" not in text
+    assert "אין מניות בתיק למכירה" in text
+    assert "<code>דלג</code>" in text
+
+
+def test_build_offer_action_cubes_zero_cash_lists_portfolio_tickers():
+    cubes = build_offer_action_cubes(
+        {"symbol": "U", "score": 9.0},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        swap=None,
+        holdings=[{"symbol": "AMZN"}, {"symbol": "CDNA"}],
+    )
+    joined = " | ".join(c["value"] for c in cubes)
+    assert "מכור SYMBOL" not in joined
+    assert "החלף AMZN U" in joined
+    assert "החלף CDNA U" in joined
+    assert "מכור AMZN" in joined
+    assert any(c["title"] == "מימון מהתיק" for c in cubes)
+
+
+def test_build_offer_action_cubes_excludes_offer_symbol_from_funding():
+    cubes = build_offer_action_cubes(
+        {"symbol": "AMZN", "score": 11.0},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        swap=None,
+        holdings=[{"symbol": "AMZN"}, {"symbol": "META"}],
+    )
+    joined = " | ".join(c["value"] for c in cubes)
+    assert "החלף META AMZN" in joined
+    assert "מכור META" in joined
+    assert "החלף AMZN AMZN" not in joined
+    assert "מכור AMZN" not in joined
+    assert "מכור SYMBOL" not in joined
 
 
 # --------------------------------------------------------------------------
@@ -338,6 +410,7 @@ def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None, cub
 
     photo_calls: list[dict] = []
     notify_calls: list[dict] = []
+    cubes_kwargs: list[dict] = []
 
     def fake_photo(cfg, img, caption, **kwargs):
         photo_calls.append({"img": img, "caption": caption, **kwargs})
@@ -353,17 +426,18 @@ def _patch_send_offer_deps(monkeypatch, *, chart=b"\x89PNG", chart_exc=None, cub
         return chart
 
     def fake_cubes(*args, **kwargs):
+        cubes_kwargs.append(kwargs)
         return cubes
 
     monkeypatch.setattr(agent, "send_telegram_photo", fake_photo)
     monkeypatch.setattr(agent, "send_user_notification", fake_notify)
     monkeypatch.setattr(reply_cards, "chart_with_recommendation_details", fake_chart)
     monkeypatch.setattr(reply_cards, "offer_cubes_card", fake_cubes)
-    return photo_calls, notify_calls
+    return photo_calls, notify_calls, cubes_kwargs
 
 
 def test_send_offer_sends_chart_and_cubes_without_second_prompt(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch)
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch)
     state: dict = {}
     plan = _plan()
     start_offer_queue(state, plan)
@@ -386,7 +460,7 @@ def test_send_offer_false_when_no_pending_offer(monkeypatch):
 
 
 def test_send_offer_skips_photo_when_chart_missing(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch, chart=None)
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch, chart=None)
     state: dict = {}
     plan = _plan()
     start_offer_queue(state, plan)
@@ -397,7 +471,7 @@ def test_send_offer_skips_photo_when_chart_missing(monkeypatch):
 
 
 def test_send_offer_swallows_chart_exception_still_sends_cubes(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(
         monkeypatch, chart_exc=RuntimeError("boom")
     )
     state: dict = {}
@@ -411,7 +485,7 @@ def test_send_offer_swallows_chart_exception_still_sends_cubes(monkeypatch):
 
 
 def test_send_offer_text_fallback_when_cubes_fail(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch, cubes=None)
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch, cubes=None)
     state: dict = {}
     plan = _plan()
     start_offer_queue(state, plan)
@@ -420,10 +494,55 @@ def test_send_offer_text_fallback_when_cubes_fail(monkeypatch):
     assert len(photo_calls) == 1  # chart only
     assert len(notify_calls) == 1
     assert "איך לבצע" in notify_calls[0]["text"]
+    assert "מכור SYMBOL" not in notify_calls[0]["text"]
+
+
+def test_send_offer_passes_held_funding_candidates_to_cubes(monkeypatch):
+    photo_calls, notify_calls, cubes_kwargs = _patch_send_offer_deps(monkeypatch)
+    state: dict = {}
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[
+            {"symbol": "META", "capital_usd": 300, "score": 9.0},
+            {"symbol": "AMZN", "capital_usd": 200, "score": 4.0},
+        ],
+        holding_actions=[
+            {"symbol": "AMZN", "verdict": "hold", "score": 4.0, "pnl_pct": -1.0, "capital_usd": 200},
+            {"symbol": "META", "verdict": "hold", "score": 9.0, "pnl_pct": 2.0, "capital_usd": 300},
+        ],
+        recommendations=[{"symbol": "NVDA", "score": 14.0}],
+    )
+    start_offer_queue(state, plan)
+    assert offer_queue.send_offer(object(), state, plan) is True
+    assert notify_calls == []
+    assert cubes_kwargs
+    holdings = cubes_kwargs[0].get("holdings") or []
+    assert [h["symbol"] for h in holdings] == ["AMZN", "META"]  # weakest first
+    assert cubes_kwargs[0].get("cash_free") == 0.0
+
+
+def test_send_offer_text_fallback_zero_cash_names_real_tickers(monkeypatch):
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch, cubes=None)
+    state: dict = {}
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[{"symbol": "AMZN", "capital_usd": 200}],
+        holding_actions=[
+            # Score gap vs offer too small for swap_funding — still name real ticker.
+            {"symbol": "AMZN", "verdict": "hold", "score": 11.5, "pnl_pct": 0.0, "capital_usd": 200},
+        ],
+        recommendations=[{"symbol": "U", "score": 12.0}],
+    )
+    start_offer_queue(state, plan)
+    assert offer_queue.send_offer(object(), state, plan) is True
+    text = notify_calls[0]["text"]
+    assert "מכור SYMBOL" not in text
+    assert "<code>החלף AMZN U</code>" in text
+    assert "<code>מכור AMZN</code>" in text
 
 
 def test_send_offer_skips_forward_when_rec_vanished(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch)
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch)
     state: dict = {}
     plan = _plan()
     start_offer_queue(state, plan)
@@ -501,7 +620,7 @@ def test_start_and_send_first_offer_false_when_nothing_to_offer(monkeypatch):
 
 
 def test_start_and_send_first_offer_sends_first(monkeypatch):
-    photo_calls, notify_calls = _patch_send_offer_deps(monkeypatch)
+    photo_calls, notify_calls, _ = _patch_send_offer_deps(monkeypatch)
     state: dict = {}
     plan = _plan()
     assert start_and_send_first_offer(object(), state, plan) is True
@@ -763,6 +882,89 @@ def test_try_resolve_pending_offer_amount_clamped_to_cash_remaining(monkeypatch,
     assert nvda["capital_usd"] == 100.0
 
 
+def test_try_resolve_buy_clamped_to_live_unreserved_when_equity_book_exists(
+    monkeypatch, tmp_path
+):
+    """With a live book, כן/amount uses min(plan budget, unreserved free cash)."""
+    plan = _plan(
+        available_capital_usd=500.0,
+        recommendations=[
+            {"symbol": "TSLL", "approved": True, "capital_usd": 250.0},
+            {"symbol": "NVDA", "score": 14.0},
+        ],
+    )
+    plan_file, *_ = _setup_try_resolve(monkeypatch, tmp_path, plan)
+    # Free cash = 400; TSLL already reserved 250 → unreserved for NVDA = 150
+    state: dict = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "META",
+                "capital_usd": 600.0,
+                "entry_price": 100.0,
+                "entry_day": "2026-08-01",
+                "lots": [
+                    {
+                        "id": "m",
+                        "capital_usd": 600.0,
+                        "entry_price": 100.0,
+                        "entry_day": "2026-08-01",
+                    }
+                ],
+            }
+        ],
+    }
+    start_offer_queue(state, plan)
+    assert current_offer_symbol(state) == "NVDA"
+
+    assert try_resolve_pending_offer(object(), state, "9999") is True
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    nvda = next(r for r in saved["recommendations"] if r["symbol"] == "NVDA")
+    assert nvda["approved"] is True
+    assert nvda["capital_usd"] == 150.0
+
+
+def test_try_resolve_second_approve_cannot_claim_reserved_cash(monkeypatch, tmp_path):
+    """Approving A then B cannot double-book the same free dollars."""
+    plan = _plan(
+        available_capital_usd=400.0,
+        recommendations=[
+            {"symbol": "NVDA", "score": 14.0},
+            {"symbol": "AMD", "score": 10.0},
+        ],
+    )
+    plan_file, notify_calls, *_ = _setup_try_resolve(monkeypatch, tmp_path, plan)
+    state: dict = {"equity": 400.0, "open_positions": []}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "300") is True
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    assert next(r for r in saved["recommendations"] if r["symbol"] == "NVDA")[
+        "capital_usd"
+    ] == 300.0
+
+    # Reload plan into the path for the second resolve (save already wrote it).
+    assert current_offer_symbol(state) == "AMD"
+    assert try_resolve_pending_offer(object(), state, "כן") is True
+    saved2 = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    amd = next(r for r in saved2["recommendations"] if r["symbol"] == "AMD")
+    # Unreserved after NVDA = 100; כן suggests plan remaining but live clamps to 100
+    assert amd["approved"] is True
+    assert amd["capital_usd"] == 100.0
+    assert sum(
+        float(r["capital_usd"])
+        for r in saved2["recommendations"]
+        if r.get("approved")
+    ) == 400.0
+    assert notify_calls  # decisions acknowledged
+
+
 @pytest.mark.parametrize("text", ["0", "-10", "not a number", ""])
 def test_try_resolve_pending_offer_rejects_invalid_amount(monkeypatch, tmp_path, text):
     plan = _plan()
@@ -859,7 +1061,34 @@ def test_try_resolve_yes_with_zero_cash_no_swap_hints_sell(monkeypatch, tmp_path
     assert try_resolve_pending_offer(object(), state, "כן") is True
     assert state["pending_offer"]["index"] == 0
     assert notify_calls[0]["context"] == "offer:no_cash"
-    assert "מכור SYMBOL" in notify_calls[0]["text"]
+    text = notify_calls[0]["text"]
+    assert "מכור SYMBOL" not in text
+    assert "החלף META NVDA" in text
+    assert "מכור META" in text
+    assert send_offer_calls == []
+    assert finish_calls == []
+
+
+def test_try_resolve_yes_with_zero_cash_empty_book_no_placeholder(monkeypatch, tmp_path):
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[],
+        holding_actions=[],
+        recommendations=[{"symbol": "NVDA", "score": 14.0}],
+    )
+    _plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "כן") is True
+    assert state["pending_offer"]["index"] == 0
+    assert notify_calls[0]["context"] == "offer:no_cash"
+    text = notify_calls[0]["text"]
+    assert "מכור SYMBOL" not in text
+    assert "אין מניות בתיק למכירה" in text
+    assert "דלג" in text
     assert send_offer_calls == []
     assert finish_calls == []
 

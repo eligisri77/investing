@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from trading_pulse.agent.holdings_review import (
     SWAP_SCORE_GAP,
     build_portfolio_review_cubes,
+    held_funding_candidates,
     review_holding,
     review_holdings,
     swap_funding_for_offer,
@@ -183,8 +184,43 @@ def test_review_holdings_dedupes_many_swaps_to_same_target():
 
 
 # --------------------------------------------------------------------------
-# swap_funding_for_offer / build_portfolio_review_cubes
+# held_funding_candidates / swap_funding_for_offer / build_portfolio_review_cubes
 # --------------------------------------------------------------------------
+
+
+def test_held_funding_candidates_orders_weakest_first_and_excludes_offer():
+    plan = {
+        "holdings": [
+            {"symbol": "META", "capital_usd": 300, "score": 9.0, "unrealized_pnl_pct": 5.0},
+            {"symbol": "AMZN", "capital_usd": 200, "score": 4.0, "unrealized_pnl_pct": -2.0},
+            {"symbol": "NVDA", "capital_usd": 150, "score": 14.0},  # offer itself
+            {"symbol": "CDNA", "capital_usd": 100, "score": 4.0, "unrealized_pnl_pct": 1.0},
+        ],
+        "holding_actions": [
+            {"symbol": "AMZN", "score": 4.0, "pnl_pct": -2.0, "capital_usd": 200},
+            {"symbol": "CDNA", "score": 4.0, "pnl_pct": 1.0, "capital_usd": 100},
+            {"symbol": "META", "score": 9.0, "pnl_pct": 5.0, "capital_usd": 300},
+        ],
+    }
+    rows = held_funding_candidates(plan, "NVDA", limit=3)
+    assert [r["symbol"] for r in rows] == ["AMZN", "CDNA", "META"]
+    assert "NVDA" not in {r["symbol"] for r in rows}
+    assert rows[0]["capital_usd"] == 200.0
+    assert rows[0]["pnl_pct"] == -2.0
+
+
+def test_held_funding_candidates_includes_actions_only_and_respects_limit():
+    plan = {
+        "holdings": [{"symbol": "U", "capital_usd": 50}],
+        "holding_actions": [
+            {"symbol": "PATH", "score": 3.0, "pnl_pct": -8.0, "capital_usd": 180},
+            {"symbol": "U", "score": 7.0, "pnl_pct": 2.0, "capital_usd": 50},
+            {"symbol": "BEAM", "score": 5.0, "pnl_pct": 0.0, "capital_usd": 90},
+        ],
+    }
+    rows = held_funding_candidates(plan, "NVDA", limit=2)
+    assert [r["symbol"] for r in rows] == ["PATH", "BEAM"]
+    assert held_funding_candidates({"holdings": [], "holding_actions": []}, "NVDA") == []
 
 
 def test_swap_funding_prefers_explicit_swap_to():
@@ -306,4 +342,7 @@ def test_build_portfolio_review_cubes_cash_topup_when_no_new_offers():
     assert "$80" in cubes[0]["value"]
     assert "בלי מזומן" not in cubes[0]["value"]
     assert any(c["title"] == "מזומן בלי הצעות חדשות" for c in cubes)
-    assert any("תקנה SYMBOL" in c["value"] for c in cubes)
+    tip = next(c for c in cubes if c["title"] == "מזומן בלי הצעות חדשות")
+    assert "תקנה META" in tip["value"]
+    assert "תקנה SYMBOL" not in tip["value"]
+    assert "$80" in tip["value"]

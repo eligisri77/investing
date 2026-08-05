@@ -352,15 +352,80 @@ def build_portfolio_review_cubes(plan: dict[str, Any]) -> list[dict[str, str]]:
             }
         )
     elif cash >= 20:
+        held_syms = [
+            str(h.get("symbol") or "").upper()
+            for h in holdings
+            if str(h.get("symbol") or "").strip()
+        ]
+        tip = (
+            f"תקנה {held_syms[0]} ${min(int(cash), 100)} · או להשאיר"
+            if held_syms
+            else f"מזומן ${min(int(cash), 100)} · אין החזקה לחזק"
+        )
         cubes.append(
             {
                 "title": "מזומן בלי הצעות חדשות",
                 "blurb": "אפשר לחזק החזקה קיימת או להשאיר במזומן.",
-                "value": f"תקנה SYMBOL ${min(int(cash), 100)} · או להשאיר",
+                "value": tip,
                 "wide": "1",
             }
         )
     return cubes
+
+
+def held_funding_candidates(
+    plan: dict[str, Any],
+    offer_symbol: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Real holdings the user can sell/swap to fund ``offer_symbol`` (never placeholders).
+
+    Ordered weakest-first (low score, then low PnL) so the first suggestion is the
+    most sensible funding source from *their* book.
+    """
+    offer_symbol = str(offer_symbol or "").upper()
+    by_action: dict[str, dict[str, Any]] = {}
+    for a in plan.get("holding_actions") or []:
+        sym = str(a.get("symbol") or "").upper()
+        if sym:
+            by_action[sym] = a
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for h in plan.get("holdings") or []:
+        sym = str(h.get("symbol") or "").upper()
+        if not sym or sym == offer_symbol or sym in seen:
+            continue
+        seen.add(sym)
+        a = by_action.get(sym) or {}
+        rows.append(
+            {
+                "symbol": sym,
+                "capital_usd": float(a.get("capital_usd") or h.get("capital_usd") or 0),
+                "score": float(a.get("score") or h.get("score") or 0),
+                "pnl_pct": float(
+                    a.get("pnl_pct")
+                    if a.get("pnl_pct") is not None
+                    else h.get("unrealized_pnl_pct") or 0
+                ),
+            }
+        )
+    # Holdings listed only in actions (edge cases).
+    for sym, a in by_action.items():
+        if not sym or sym == offer_symbol or sym in seen:
+            continue
+        seen.add(sym)
+        rows.append(
+            {
+                "symbol": sym,
+                "capital_usd": float(a.get("capital_usd") or 0),
+                "score": float(a.get("score") or 0),
+                "pnl_pct": float(a.get("pnl_pct") or 0),
+            }
+        )
+    rows.sort(key=lambda r: (float(r["score"]), float(r["pnl_pct"]), str(r["symbol"])))
+    return rows[: max(0, int(limit))]
 
 
 def swap_funding_for_offer(plan: dict[str, Any], offer_symbol: str) -> dict[str, Any] | None:

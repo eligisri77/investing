@@ -295,6 +295,9 @@ def test_portfolio_review_digest_includes_holding_actions():
     text = format_portfolio_review_digest(plan)
     assert "אין החזקות פתוחות כרגע" not in text
     assert "ממשיכים להחזיק" in text
+    assert "ציוני ההחזקות" in text
+    assert "ציון <b>9.0</b>" in text
+    assert "META" in text
 
 
 def test_portfolio_review_digest_lists_swap_commands():
@@ -315,6 +318,7 @@ def test_portfolio_review_digest_lists_swap_commands():
     }
     text = format_portfolio_review_digest(plan)
     assert "החלף PBF SOXL" in text
+    assert "ציון <b>5.9</b> → <b>11.4</b>" in text
     assert "הצעת קנייה חדשה אחת" in text
 
 

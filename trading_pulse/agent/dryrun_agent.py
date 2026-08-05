@@ -2460,8 +2460,16 @@ def execute_swap_command(
     trading_day = resolve_trading_day(None)
     td = date.fromisoformat(trading_day)
     path = plan_path(td)
+    plan_preview = read_json(path) if path.exists() else None
+    from trading_pulse.agent.positions import unreserved_free_cash
+
     cash = free_cash(state, cfg)
-    purchase_usd = round(min(buy_usd if buy_usd is not None else cash, cash), 2)
+    spendable = unreserved_free_cash(
+        state, plan_preview, cfg, exclude_symbol=to_symbol
+    )
+    # Prefer live unreserved cash (after this sell, minus other approved buys).
+    budget = spendable if spendable > 0 else cash
+    purchase_usd = round(min(buy_usd if buy_usd is not None else budget, budget), 2)
 
     if purchase_usd < 1:
         return (

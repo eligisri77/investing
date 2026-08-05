@@ -325,6 +325,85 @@ def test_premarket_swap_approves_open_without_allocation_step2(tmp_path, monkeyp
     assert saved["last_manual_action"] == "החלפה ידנית של SOXL ב־BE"
 
 
+def test_premarket_swap_purchase_clamped_to_unreserved_cash(tmp_path, monkeypatch):
+    """Sell frees cash, but another approved pick already reserved dollars — clamp buy."""
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "SOXL",
+                "capital_usd": 400.0,
+                "entry_price": 20.0,
+                "entry_day": "2026-07-08",
+                "stop_loss_pct": 0.12,
+                "take_profit_pct": 0.25,
+            }
+        ],
+    }
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+    plan = {
+        "for_trading_day": "2026-07-08",
+        "status": "draft",
+        "available_capital_usd": 1000.0,
+        "recommendations": [
+            {"symbol": "TSLL", "approved": True, "capital_usd": 700.0},
+            {"symbol": "BE", "score": 12.0},
+        ],
+    }
+    plan_file = tmp_path / "plans" / "plan_2026-07-08.json"
+    plan_file.parent.mkdir(parents=True, exist_ok=True)
+    plan_file.write_text(__import__("json").dumps(plan), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", tmp_path / "plans")
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: "2026-07-08")
+    monkeypatch.setattr(
+        agent, "load_state", lambda _cfg: __import__("json").loads(state_path.read_text())
+    )
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(__import__("json").dumps(data), encoding="utf-8"),
+    )
+
+    def _fake_sell(_cfg, st, sym, frac, **kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {
+            "symbol": sym,
+            "pnl_usd": 0.0,
+            "capital_usd": 400.0,
+            "exit_price": 20.0,
+        }
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_position", _fake_sell)
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: True,
+    )
+    monkeypatch.setattr(agent, "set_plan_status", lambda *a, **k: "שלב 2")
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+    monkeypatch.setattr(
+        "trading_pulse.agent.offer_queue.consume_offer_after_manual_swap",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.offer_queue.pending_offer",
+        lambda _st: None,
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "SOXL", "BE")
+
+    assert "אושרה לקנייה" in reply and "בפתיחה" in reply
+    saved = __import__("json").loads(plan_file.read_text())
+    be = next(r for r in saved["recommendations"] if r["symbol"] == "BE")
+    # After sell: free=1000; TSLL reserves 700 → unreserved for BE = 300 (not full 400 sold)
+    assert be["approved"] is True
+    assert be["capital_usd"] == 300.0
+
+
 def test_premarket_swap_into_pending_offer_advances_queue(tmp_path, monkeypatch):
     """Pending offer BE + החלף SOXL→BE pre-market → BE approved, queue advances; cutoff keeps BE."""
     from trading_pulse.agent import offer_queue

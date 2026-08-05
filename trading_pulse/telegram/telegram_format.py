@@ -702,18 +702,39 @@ def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
             lines.append("<b>פעולות מומלצות על התיק:</b>")
             for a in manual:
                 sym = str(a.get("symbol") or "")
+                my_score = float(a.get("score") or 0)
                 if str(a.get("verdict")) == "swap" and a.get("swap_to"):
                     to_raw = str(a["swap_to"])
+                    to_score = a.get("swap_to_score")
+                    score_bit = f"ציון <b>{my_score:.1f}</b>"
+                    if to_score is not None:
+                        score_bit += f" → <b>{float(to_score):.1f}</b>"
                     lines.append(
-                        f"🔄 <b>{escape_html(sym)}</b> → <b>{escape_html(to_raw)}</b>: "
-                        f"<code>החלף {escape_html(sym)} {escape_html(to_raw)}</code>"
+                        f"🔄 <b>{escape_html(sym)}</b> → <b>{escape_html(to_raw)}</b> · {score_bit}"
+                    )
+                    lines.append(
+                        f"   <code>החלף {escape_html(sym)} {escape_html(to_raw)}</code>"
                     )
                 elif str(a.get("verdict")) in {"sell", "take_profit"}:
                     lines.append(
-                        f"🔴 <b>{escape_html(sym)}</b>: <code>מכור {escape_html(sym)}</code>"
+                        f"🔴 <b>{escape_html(sym)}</b> · ציון <b>{my_score:.1f}</b>: "
+                        f"<code>מכור {escape_html(sym)}</code>"
                     )
         else:
-            lines.append("<i>כל ההחזקות במגמה תקינה — ממשיכים להחזיק</i>")
+            # Still show scored holdings so the review is visibly about the book.
+            scored = [a for a in actions if str(a.get("symbol") or "")]
+            if scored:
+                lines.append("")
+                lines.append("<b>ציוני ההחזקות:</b>")
+                for a in scored:
+                    sym = escape_html(str(a.get("symbol") or ""))
+                    my_score = float(a.get("score") or 0)
+                    pnl = float(a.get("pnl_pct") or 0)
+                    lines.append(
+                        f"🟢 <b>{sym}</b> · ציון <b>{my_score:.1f}</b> · {pnl:+.1f}% — ממשיכים להחזיק"
+                    )
+            else:
+                lines.append("<i>כל ההחזקות במגמה תקינה — ממשיכים להחזיק</i>")
 
     held_syms = {str(h.get("symbol")) for h in holdings}
     new_recs = [

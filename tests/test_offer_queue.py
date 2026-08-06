@@ -367,6 +367,50 @@ def test_format_offer_prompt_zero_cash_empty_book_no_placeholder_sell():
     assert "<code>דלג</code>" in text
 
 
+def test_build_offer_action_cubes_pending_approve_suggests_slice():
+    cubes = build_offer_action_cubes(
+        {"symbol": "U", "score": 10.2},
+        cash_free=0.0,
+        suggested_usd=190.0,
+        swap=None,
+        holdings=[
+            {
+                "symbol": "ELF",
+                "capital_usd": 950.0,
+                "score": 10.4,
+                "source": "approved_pending",
+            }
+        ],
+    )
+    joined = " | ".join(c["value"] for c in cubes)
+    assert any(c["title"] == "מימון מסכום שאושר" for c in cubes)
+    assert "החלף ELF U 190" in joined
+    assert "מכור ELF" not in joined
+    assert "אין מניות בתיק למכירה" not in joined
+
+
+def test_format_offer_prompt_pending_approve_offers_slice():
+    text = format_offer_prompt(
+        {"symbol": "U", "score": 10.2},
+        cash_free=0.0,
+        suggested_usd=190.0,
+        position_no=2,
+        total=5,
+        swap=None,
+        holdings=[
+            {
+                "symbol": "ELF",
+                "capital_usd": 950.0,
+                "source": "approved_pending",
+            }
+        ],
+    )
+    assert "חלק מ־" in text
+    assert "<code>החלף ELF U 190</code>" in text
+    assert "מכור ELF" not in text
+    assert "אין מניות בתיק למכירה" not in text
+
+
 def test_build_offer_action_cubes_zero_cash_lists_portfolio_tickers():
     cubes = build_offer_action_cubes(
         {"symbol": "U", "score": 9.0},
@@ -1041,6 +1085,56 @@ def test_try_resolve_yes_with_zero_cash_stays_on_offer_and_hints_swap(
     )
     nvda = next(r for r in saved["recommendations"] if r["symbol"] == "NVDA")
     assert not nvda.get("approved")
+
+
+def test_try_resolve_yes_reallocates_from_approved_pending(monkeypatch, tmp_path):
+    """After pre-market swap into ELF, «כן» on U takes a slice of ELF's reserved capital."""
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[],
+        holding_actions=[],
+        recommendations=[
+            {
+                "symbol": "ELF",
+                "approved": True,
+                "capital_usd": 950.0,
+                "score": 10.4,
+            },
+            {"symbol": "U", "approved": False, "score": 10.2, "capital_usd": 0},
+            {"symbol": "A", "approved": False, "score": 9.0, "capital_usd": 0},
+            {"symbol": "B", "approved": False, "score": 8.0, "capital_usd": 0},
+            {"symbol": "C", "approved": False, "score": 7.0, "capital_usd": 0},
+        ],
+    )
+    # Seed queue as if ELF already decided via swap — remaining offers U,A,B,C.
+    plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {
+        "pending_offer": {
+            "trading_day": plan["for_trading_day"],
+            "queue": ["U", "A", "B", "C"],
+            "index": 0,
+            "decided": {"ELF": 950.0},
+            "offered_at": None,
+            "nudged_at": None,
+        }
+    }
+
+    assert try_resolve_pending_offer(object(), state, "כן") is True
+    assert state["pending_offer"]["index"] == 1
+    assert state["pending_offer"]["decided"]["U"] == 190.0
+    assert "הועבר מ־" in notify_calls[0]["text"]
+    assert len(send_offer_calls) == 1
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    elf = next(r for r in saved["recommendations"] if r["symbol"] == "ELF")
+    u = next(r for r in saved["recommendations"] if r["symbol"] == "U")
+    assert elf["approved"] is True
+    assert elf["capital_usd"] == 760.0
+    assert u["approved"] is True
+    assert u["capital_usd"] == 190.0
 
 
 def test_try_resolve_yes_with_zero_cash_no_swap_hints_sell(monkeypatch, tmp_path):

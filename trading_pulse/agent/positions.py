@@ -81,6 +81,53 @@ def clamp_buy_capital(wanted_usd: float, cash_left: float) -> float:
     return round(max(0.0, min(float(wanted_usd or 0), float(cash_left or 0))), 2)
 
 
+# Allow tiny float/cent drift; anything larger is a real book bug (e.g. double buy).
+BOOK_INVARIANT_EPS_USD = 0.05
+
+
+def book_deployed_vs_equity(state: dict[str, Any]) -> tuple[float, float, float]:
+    """Return (equity, deployed, overdeploy_usd). overdeploy > 0 means broken book."""
+    ensure_open_positions(state)
+    equity = round(float(state.get("equity") or 0), 2)
+    deployed = deployed_capital(state)
+    over = round(max(0.0, deployed - equity - BOOK_INVARIANT_EPS_USD), 2)
+    return equity, deployed, over
+
+
+def book_invariant_ok(state: dict[str, Any]) -> bool:
+    """True when invested capital does not exceed book equity (within cents)."""
+    _eq, _dep, over = book_deployed_vs_equity(state)
+    return over <= 0
+
+
+def assert_book_invariant(state: dict[str, Any], *, context: str = "") -> None:
+    """Raise if open capital exceeds equity — used by tests and hard guards."""
+    equity, deployed, over = book_deployed_vs_equity(state)
+    if over > 0:
+        where = f" ({context})" if context else ""
+        raise AssertionError(
+            f"book invariant broken{where}: equity=${equity:.2f} "
+            f"deployed=${deployed:.2f} over=${over:.2f}"
+        )
+
+
+def log_book_invariant(state: dict[str, Any], *, context: str = "") -> bool:
+    """Log a critical error if the book is over-deployed. Returns True if OK."""
+    equity, deployed, over = book_deployed_vs_equity(state)
+    if over <= 0:
+        return True
+    where = f" ({context})" if context else ""
+    logging.error(
+        "BOOK INVARIANT BROKEN%s: equity=$%.2f deployed=$%.2f over=$%.2f positions=%s",
+        where,
+        equity,
+        deployed,
+        over,
+        [(p.get("symbol"), p.get("capital_usd")) for p in state.get("open_positions") or []],
+    )
+    return False
+
+
 def _new_lot(
     capital_usd: float,
     entry_price: float,
@@ -644,6 +691,23 @@ def simulate_swing_day(
             fees_total += commission
 
     state["open_positions"] = still_open
+    # Hard stop for regressions like the Aug-2026 double-capital bug.
+    if not log_book_invariant(state, context="simulate_swing_day"):
+        equity = float(state.get("equity") or 0)
+        repaired = list(still_open)
+        while repaired:
+            dep = round(sum(float(p.get("capital_usd") or 0) for p in repaired), 2)
+            if dep <= equity + BOOK_INVARIANT_EPS_USD:
+                break
+            dropped = repaired.pop()
+            logging.error(
+                "Trimmed over-deploy entry %s $%.2f to restore book",
+                dropped.get("symbol"),
+                float(dropped.get("capital_usd") or 0),
+            )
+        state["open_positions"] = repaired
+        still_open = repaired
+        assert_book_invariant(state, context="simulate_swing_day.repaired")
     return executed, still_open, round(pnl_total, 2), round(fees_total, 2)
 
 

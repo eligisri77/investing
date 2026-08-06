@@ -1,0 +1,18 @@
+---
+description: Trading Pulse bookkeeping must never invent capital
+alwaysApply: true
+---
+
+# Book invariants (serious)
+
+Dry-run money must stay consistent:
+
+- Sum of open `capital_usd` must not exceed `equity` (beyond a few cents).
+- Buys (open / Method2 / swap buy leg) spend only **free cash**.
+- Swap/sell first frees cash; that is the correct way to fund a new name with $0 cash.
+- Never leave a state that would show ~2× equity as “open value” from double-booked positions.
+
+Helpers: `book_invariant_ok`, `assert_book_invariant` in `trading_pulse/agent/positions.py`.  
+Regression tests: `tests/test_book_invariants.py`, `tests/test_cash_guardrails.py`.
+
+If you change entry, buy, swap, or Method2 fill paths — add/extend these tests and keep them green.

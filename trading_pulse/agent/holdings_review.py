@@ -409,6 +409,7 @@ def held_funding_candidates(
                     if a.get("pnl_pct") is not None
                     else h.get("unrealized_pnl_pct") or 0
                 ),
+                "source": "held",
             }
         )
     # Holdings listed only in actions (edge cases).
@@ -422,10 +423,92 @@ def held_funding_candidates(
                 "capital_usd": float(a.get("capital_usd") or 0),
                 "score": float(a.get("score") or 0),
                 "pnl_pct": float(a.get("pnl_pct") or 0),
+                "source": "held",
             }
         )
     rows.sort(key=lambda r: (float(r["score"]), float(r["pnl_pct"]), str(r["symbol"])))
     return rows[: max(0, int(limit))]
+
+
+def approved_pending_funding_candidates(
+    plan: dict[str, Any],
+    offer_symbol: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Approved buys not yet held — capital still reallocatable before the open.
+
+    After a pre-market ``החלף TSLL ELF``, the book may be empty while ELF sits as an
+    approved pending buy. Later offers should still be able to take a slice of that
+    reserved capital instead of saying «אין מניות בתיק».
+    """
+    offer_symbol = str(offer_symbol or "").upper()
+    held = {
+        str(h.get("symbol") or "").upper()
+        for h in (plan.get("holdings") or [])
+        if h.get("symbol")
+    }
+    rows: list[dict[str, Any]] = []
+    for rec in plan.get("recommendations") or []:
+        if not rec.get("approved"):
+            continue
+        sym = str(rec.get("symbol") or "").upper()
+        if not sym or sym == offer_symbol or sym in held:
+            continue
+        status = str(rec.get("method2_status") or "")
+        if status in {"filled", "invalidated", "expired"}:
+            continue
+        capital = float(rec.get("capital_usd") or 0)
+        if capital < 1:
+            continue
+        rows.append(
+            {
+                "symbol": sym,
+                "capital_usd": capital,
+                "score": float(rec.get("score") or rec.get("score_technical") or 0),
+                "pnl_pct": 0.0,
+                "source": "approved_pending",
+            }
+        )
+    # Largest pool first — most useful to slice for remaining offers.
+    rows.sort(key=lambda r: (-float(r["capital_usd"]), float(r["score"]), str(r["symbol"])))
+    return rows[: max(0, int(limit))]
+
+
+def funding_candidates_for_offer(
+    plan: dict[str, Any],
+    offer_symbol: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Held names first (weakest), then approved-pending capital if the book is empty."""
+    held = held_funding_candidates(plan, offer_symbol, limit=limit)
+    if held:
+        return held
+    return approved_pending_funding_candidates(plan, offer_symbol, limit=limit)
+
+
+def suggested_reallocate_amount(
+    plan: dict[str, Any],
+    po: dict[str, Any],
+    offer_symbol: str,
+) -> tuple[float, str | None]:
+    """Equal slice of the largest approved-pending pool across donor + remaining offers.
+
+    Example: ELF approved $950, 4 offers left → each share $190 (ELF keeps one share).
+    Returns ``(amount, from_symbol)`` or ``(0, None)``.
+    """
+    donors = approved_pending_funding_candidates(plan, offer_symbol, limit=1)
+    if not donors:
+        return 0.0, None
+    pool = float(donors[0]["capital_usd"])
+    remaining_n = max(1, len(po.get("queue") or []) - int(po.get("index") or 0))
+    # Donor keeps 1 share; each remaining undecided offer (incl. current) gets 1 share.
+    shares = 1 + remaining_n
+    each = round(pool / shares, 2)
+    if each < 1:
+        return 0.0, None
+    return each, str(donors[0]["symbol"])
 
 
 def swap_funding_for_offer(plan: dict[str, Any], offer_symbol: str) -> dict[str, Any] | None:

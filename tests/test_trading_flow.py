@@ -14,6 +14,12 @@ from trading_pulse.agent.trading_flow import initial_deploy_slots, is_empty_port
 def test_parse_sell_and_swap():
     assert parse_telegram_user_command("מכור LABU")["kind"] == "sell"
     assert parse_telegram_user_command("מכור 50% LABU")["fraction"] == 0.5
+    partial = parse_telegram_user_command("מכור ELF 100")
+    assert partial == {"kind": "sell", "symbol": "ELF", "sell_usd": 100.0}
+    assert parse_telegram_user_command("מכור ELF $100")["sell_usd"] == 100.0
+    assert parse_telegram_user_command("מכור 100 ELF")["sell_usd"] == 100.0
+    assert parse_telegram_user_command("מכירה ELF 100")["sell_usd"] == 100.0
+    assert parse_telegram_user_command("מכירה 100 ELF")["symbol"] == "ELF"
     swap = parse_telegram_user_command("החלף LABU HOOD")
     assert swap["kind"] == "swap"
     assert swap["from_symbol"] == "LABU"
@@ -240,6 +246,103 @@ def test_execute_buy_none_with_no_cash_returns_error(monkeypatch):
 
     reply = agent.execute_buy_command(cfg, "ARWR", None)
     assert "אין מזומן פנוי" in reply
+
+
+def test_execute_sell_usd_uses_partial_sell_usd(monkeypatch):
+    """Ticker+$ path calls partial_sell_usd (not fraction sell) and keeps watch."""
+    from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
+    from trading_pulse.telegram import reply_cards
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "ELF",
+                "capital_usd": 400.0,
+                "entry_price": 20.0,
+                "entry_day": "2026-07-08",
+            }
+        ],
+    }
+    add_price_watch(state, "ELF")
+    sold_amounts: list[float] = []
+
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+
+    def _fake_sell_usd(_cfg, st, sym, usd, **_kw):
+        sold_amounts.append(float(usd))
+        for p in st.get("open_positions", []):
+            if p["symbol"] == sym.upper():
+                p["capital_usd"] = round(float(p["capital_usd"]) - float(usd), 2)
+                break
+        return {"symbol": sym, "pnl_usd": 2.0, "capital_usd": float(usd)}
+
+    def _fake_sell_frac(*_a, **_k):
+        raise AssertionError("fraction sell must not run when sell_usd is set")
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_usd", _fake_sell_usd)
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position", _fake_sell_frac
+    )
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_sell", lambda *_a, **_k: b"png")
+
+    assert agent.execute_sell_command(AgentConfig(), "ELF", sell_usd=100.0) == ""
+    assert sold_amounts == [100.0]
+    assert list_price_watches(state) == ["ELF"]
+    assert state["open_positions"][0]["capital_usd"] == 300.0
+
+
+def test_execute_sell_usd_missing_position_returns_hebrew_error(monkeypatch):
+    monkeypatch.setattr(
+        agent, "load_state", lambda _cfg: {"equity": 1000.0, "open_positions": []}
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_usd",
+        lambda *_a, **_k: None,
+    )
+
+    reply = agent.execute_sell_command(AgentConfig(), "ELF", sell_usd=100.0)
+    assert "אין פוזיציה" in reply
+    assert "ELF" in reply
+
+
+def test_execute_sell_usd_full_amount_clears_price_watch(monkeypatch):
+    """Selling the whole book value via sell_usd drops the price watch."""
+    from trading_pulse.agent.price_watch import add_price_watch, list_price_watches
+    from trading_pulse.telegram import reply_cards
+
+    state = {
+        "equity": 1000.0,
+        "open_positions": [
+            {
+                "symbol": "ELF",
+                "capital_usd": 100.0,
+                "entry_price": 20.0,
+                "entry_day": "2026-07-08",
+            }
+        ],
+    }
+    add_price_watch(state, "ELF")
+
+    monkeypatch.setattr(agent, "load_state", lambda _cfg: state)
+    monkeypatch.setattr(agent, "save_json", lambda *_args: None)
+    monkeypatch.setattr(agent, "_sync_plan_after_manual_action", lambda *_a: None)
+
+    def _fake_sell_usd(_cfg, st, sym, usd, **_kw):
+        st["open_positions"] = [
+            p for p in st.get("open_positions", []) if p["symbol"] != sym.upper()
+        ]
+        return {"symbol": sym, "pnl_usd": 1.0, "capital_usd": float(usd)}
+
+    monkeypatch.setattr("trading_pulse.agent.positions.partial_sell_usd", _fake_sell_usd)
+    monkeypatch.setattr(agent, "send_telegram_card", lambda *_args: True)
+    monkeypatch.setattr(reply_cards, "card_sell", lambda *_a, **_k: b"png")
+
+    assert agent.execute_sell_command(AgentConfig(), "ELF", sell_usd=100.0) == ""
+    assert "ELF" not in list_price_watches(state)
 
 
 def test_execute_sell_clears_price_watch(monkeypatch):

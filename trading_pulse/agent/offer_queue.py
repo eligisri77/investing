@@ -280,6 +280,9 @@ def build_offer_action_cubes(
             }
         )
 
+    pending_fund = _pending_funding_rows(holdings, exclude=sym)
+    held_fund = _held_funding_rows(holdings, exclude=sym)
+
     if swap:
         from_sym = str(swap.get("from_symbol") or "")
         from_score = float(swap.get("from_score") or 0)
@@ -294,8 +297,28 @@ def build_offer_action_cubes(
                 "wide": "1",
             }
         )
+    elif cash_free < 1 and pending_fund:
+        donor = pending_fund[0]
+        d_sym = str(donor["symbol"])
+        pool = float(donor.get("capital_usd") or 0)
+        slice_usd = float(suggested_usd) if suggested_usd >= 1 else round(pool / 2, 2)
+        left = max(0.0, pool - slice_usd)
+        cubes.append(
+            {
+                "title": "מימון מסכום שאושר",
+                "blurb": (
+                    f"אין מניות בתיק עדיין — אפשר לקחת חלק מ־{d_sym} "
+                    f"(${pool:.0f} שאושרו לפתיחה) להצעה הזו."
+                ),
+                "value": (
+                    f"החלף {d_sym} {sym} {slice_usd:.0f} · "
+                    f"{d_sym} נשארת ~${left:.0f}"
+                ),
+                "wide": "1",
+            }
+        )
     elif cash_free < 1:
-        sellable = _sellable_symbols(holdings, exclude=sym)
+        sellable = [str(h["symbol"]) for h in held_fund]
         if sellable:
             bits = [f"החלף {s} {sym}" for s in sellable[:2]]
             bits.extend(f"מכור {s}" for s in sellable[:2])
@@ -314,8 +337,15 @@ def build_offer_action_cubes(
         steps.append("סכום אחר (150 או קנה 150)")
     if swap:
         steps.append(f"החלף {swap['from_symbol']} {sym}")
+    elif cash_free < 1 and pending_fund:
+        donor = pending_fund[0]
+        d_sym = str(donor["symbol"])
+        pool = float(donor.get("capital_usd") or 0)
+        slice_usd = float(suggested_usd) if suggested_usd >= 1 else round(pool / 2, 2)
+        steps.append(f"כן — חלק מ־{d_sym} (${slice_usd:.0f})")
+        steps.append(f"החלף {d_sym} {sym} {slice_usd:.0f}")
     elif cash_free < 1:
-        sellable = _sellable_symbols(holdings, exclude=sym)
+        sellable = [str(h["symbol"]) for h in held_fund]
         if sellable:
             for s in sellable[:2]:
                 steps.append(f"החלף {s} {sym}")
@@ -339,15 +369,46 @@ def _sellable_symbols(
     *,
     exclude: str,
 ) -> list[str]:
+    return [str(h["symbol"]) for h in _held_funding_rows(holdings, exclude=exclude)]
+
+
+def _held_funding_rows(
+    holdings: list[dict[str, Any]] | None,
+    *,
+    exclude: str,
+) -> list[dict[str, Any]]:
     exclude_u = str(exclude or "").upper()
-    out: list[str] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for h in holdings or []:
+        if str(h.get("source") or "held") == "approved_pending":
+            continue
         sym = str(h.get("symbol") or "").upper()
         if not sym or sym == exclude_u or sym in seen:
             continue
         seen.add(sym)
-        out.append(sym)
+        out.append(h)
+    return out
+
+
+def _pending_funding_rows(
+    holdings: list[dict[str, Any]] | None,
+    *,
+    exclude: str,
+) -> list[dict[str, Any]]:
+    exclude_u = str(exclude or "").upper()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for h in holdings or []:
+        if str(h.get("source") or "") != "approved_pending":
+            continue
+        sym = str(h.get("symbol") or "").upper()
+        if not sym or sym == exclude_u or sym in seen:
+            continue
+        if float(h.get("capital_usd") or 0) < 1:
+            continue
+        seen.add(sym)
+        out.append(h)
     return out
 
 
@@ -390,10 +451,21 @@ def format_offer_prompt(
             f"<b>{sym}</b> ({score:.1f})"
         )
     elif cash_free < 1:
-        sellable = _sellable_symbols(holdings, exclude=sym_raw)
-        if sellable:
-            names = ", ".join(escape_html(s) for s in sellable[:3])
-            lines.append(f"בתיק שלך אפשר לממן מ: <b>{names}</b>")
+        pending = _pending_funding_rows(holdings, exclude=sym_raw)
+        if pending:
+            d = pending[0]
+            d_sym = escape_html(str(d["symbol"]))
+            pool = float(d.get("capital_usd") or 0)
+            slice_usd = float(suggested_usd) if suggested_usd >= 1 else round(pool / 2, 2)
+            lines.append(
+                f"אפשר לקחת חלק מ־<b>{d_sym}</b> "
+                f"(${pool:.0f} שאושרו לפתיחה) — מומלץ <b>${slice_usd:.0f}</b>"
+            )
+        else:
+            sellable = _sellable_symbols(holdings, exclude=sym_raw)
+            if sellable:
+                names = ", ".join(escape_html(s) for s in sellable[:3])
+                lines.append(f"בתיק שלך אפשר לממן מ: <b>{names}</b>")
 
     lines.append("")
     lines.append("✅ איך לבצע:")
@@ -409,17 +481,31 @@ def format_offer_prompt(
             f"מוכר {escape_html(from_raw)} וקונה {sym}"
         )
     elif cash_free < 1:
-        sellable = _sellable_symbols(holdings, exclude=sym_raw)
-        if sellable:
-            for s in sellable[:2]:
-                lines.append(
-                    f"<code>החלף {escape_html(s)} {sym}</code> — מוכר {escape_html(s)} מהתיק"
-                )
+        pending = _pending_funding_rows(holdings, exclude=sym_raw)
+        if pending:
+            d = pending[0]
+            d_raw = str(d["symbol"])
+            pool = float(d.get("capital_usd") or 0)
+            slice_usd = float(suggested_usd) if suggested_usd >= 1 else round(pool / 2, 2)
             lines.append(
-                f"<code>מכור {escape_html(sellable[0])}</code> — ואז אפשר לאשר קנייה"
+                f"<code>כן</code> — חלק מ־{escape_html(d_raw)} (${slice_usd:.0f})"
+            )
+            lines.append(
+                f"<code>החלף {escape_html(d_raw)} {sym} {slice_usd:.0f}</code> — "
+                f"מעביר ${slice_usd:.0f} מהסכום שאושר ל־{escape_html(d_raw)}"
             )
         else:
-            lines.append("אין מניות בתיק למכירה — רק <code>דלג</code>")
+            sellable = _sellable_symbols(holdings, exclude=sym_raw)
+            if sellable:
+                for s in sellable[:2]:
+                    lines.append(
+                        f"<code>החלף {escape_html(s)} {sym}</code> — מוכר {escape_html(s)} מהתיק"
+                    )
+                lines.append(
+                    f"<code>מכור {escape_html(sellable[0])}</code> — ואז אפשר לאשר קנייה"
+                )
+            else:
+                lines.append("אין מניות בתיק למכירה — רק <code>דלג</code>")
     lines.append("<code>דלג</code> — להצעה הבאה")
     return "\n".join(lines)
 
@@ -447,13 +533,18 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
     cash = cash_remaining(plan, po)
     suggested = suggested_amount(plan, po)
     from trading_pulse.agent.holdings_review import (
-        held_funding_candidates,
+        funding_candidates_for_offer,
+        suggested_reallocate_amount,
         swap_funding_for_offer,
     )
 
     swap = swap_funding_for_offer(plan, str(symbol))
-    # Concrete tickers from *this* book (weakest first) for $0-cash funding copy.
-    holdings_for_funding = held_funding_candidates(plan, str(symbol), limit=3)
+    # Concrete tickers: open holdings, or approved-pending capital after a pre-market swap.
+    holdings_for_funding = funding_candidates_for_offer(plan, str(symbol), limit=3)
+    if cash < 1 and not swap:
+        slice_usd, _donor = suggested_reallocate_amount(plan, po, str(symbol))
+        if slice_usd >= 1:
+            suggested = slice_usd
     if not holdings_for_funding:
         holdings_for_funding = [
             h
@@ -766,6 +857,7 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
     if decision == "buy":
         from trading_pulse.agent.positions import deployed_capital, unreserved_free_cash
 
+        requested = float(amount)
         plan_budget = cash_remaining(plan, po)
         equity = float(state.get("equity") or 0)
         # Empty/test states often omit equity — then trust the plan budget only.
@@ -775,17 +867,52 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
             live_budget = unreserved_free_cash(
                 state, plan, cfg, exclude_symbol=str(symbol)
             )
-        amount = max(0.0, min(float(amount), plan_budget, live_budget))
+        amount = max(0.0, min(requested, plan_budget, live_budget))
         if amount < 1:
             from trading_pulse.agent.holdings_review import (
-                held_funding_candidates,
+                funding_candidates_for_offer,
+                suggested_reallocate_amount,
                 swap_funding_for_offer,
             )
+            from trading_pulse.agent.plan_engine import reallocate_approved_capital
             from trading_pulse.telegram.telegram_format import escape_html
 
             sym_e = escape_html(str(symbol))
+            slice_usd, donor = suggested_reallocate_amount(plan, po, str(symbol))
+            wanted = requested if requested >= 1 else slice_usd
+            # Bare «כן» / amount while cash is reserved on an earlier approve:
+            # move a slice of that pending capital into this offer.
+            if donor and wanted >= 1:
+                moved = reallocate_approved_capital(plan, donor, str(symbol), wanted)
+                if moved:
+                    amount = float(moved["moved_usd"])
+                    apply_partial_confirm_manual(plan, symbol, amount)
+                    po.setdefault("decided", {})[symbol] = amount
+                    left = float(moved["from_left_usd"])
+                    donor_e = escape_html(donor)
+                    reply = (
+                        f"✅ נקנה <b>{sym_e}</b> ב-${amount:.0f} (נכנס בפתיחה)\n"
+                        f"הועבר מ־<b>{donor_e}</b>"
+                        + (f" — נשאר לה ~${left:.0f}" if left >= 1 else " (כל הסכום)")
+                    )
+                    _advance(state)
+                    save_json(path, plan)
+                    send_user_notification(
+                        cfg, reply, context="offer:decision", parse_mode="HTML"
+                    )
+                    if pending_offer(state) is not None:
+                        save_json(STATE_FILE, state)
+                        send_offer(cfg, state, plan)
+                    else:
+                        finalize_manual_confirm(plan, state, cfg)
+                        save_json(path, plan)
+                        state.pop("pending_offer", None)
+                        save_json(STATE_FILE, state)
+                        finish_offers(cfg, plan)
+                    return True
+
             swap = swap_funding_for_offer(plan, str(symbol))
-            fund = held_funding_candidates(plan, str(symbol), limit=3)
+            fund = funding_candidates_for_offer(plan, str(symbol), limit=3)
             if swap:
                 from_raw = str(swap["from_symbol"])
                 send_user_notification(
@@ -797,19 +924,39 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
                     parse_mode="HTML",
                 )
             elif fund:
-                cmds = "\n".join(
-                    f"<code>החלף {escape_html(str(h['symbol']))} {sym_e}</code>"
-                    f" · או <code>מכור {escape_html(str(h['symbol']))}</code>"
-                    for h in fund[:2]
-                )
-                send_user_notification(
-                    cfg,
-                    f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
-                    f"מהתיק שלך:\n{cmds}\n"
-                    "או שלח <code>דלג</code>.",
-                    context="offer:no_cash",
-                    parse_mode="HTML",
-                )
+                pending = [
+                    h for h in fund if str(h.get("source") or "") == "approved_pending"
+                ]
+                if pending:
+                    d = pending[0]
+                    d_raw = str(d["symbol"])
+                    pool = float(d.get("capital_usd") or 0)
+                    hint = slice_usd if slice_usd >= 1 else round(pool / 2, 2)
+                    send_user_notification(
+                        cfg,
+                        f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
+                        f"אפשר חלק מ־<b>{escape_html(d_raw)}</b> "
+                        f"(${pool:.0f} שאושרו):\n"
+                        f"<code>כן</code> או "
+                        f"<code>החלף {escape_html(d_raw)} {sym_e} {hint:.0f}</code>\n"
+                        "או שלח <code>דלג</code>.",
+                        context="offer:reallocate",
+                        parse_mode="HTML",
+                    )
+                else:
+                    cmds = "\n".join(
+                        f"<code>החלף {escape_html(str(h['symbol']))} {sym_e}</code>"
+                        f" · או <code>מכור {escape_html(str(h['symbol']))}</code>"
+                        for h in fund[:2]
+                    )
+                    send_user_notification(
+                        cfg,
+                        f"אין מזומן פנוי לקניית <b>{sym_e}</b>.\n"
+                        f"מהתיק שלך:\n{cmds}\n"
+                        "או שלח <code>דלג</code>.",
+                        context="offer:no_cash",
+                        parse_mode="HTML",
+                    )
             else:
                 send_user_notification(
                     cfg,

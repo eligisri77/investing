@@ -135,6 +135,21 @@ def try_fill_pending_method2(
         # Keep book capital in sync with what we could actually fund.
         rec["capital_usd"] = capital
         filled.append(pos)
+        from trading_pulse.agent.positions import assert_book_invariant, log_book_invariant
+
+        if not log_book_invariant(state, context=f"method2_fill:{sym}"):
+            # Roll back this fill — never leave an over-deployed book.
+            state["open_positions"] = [
+                p for p in state.get("open_positions") or [] if p is not pos
+            ]
+            rec["method2_status"] = "pending_breakout"
+            rec.pop("method2_fill_source", None)
+            rec.pop("method2_filled_at", None)
+            rec.pop("method2_fill_price", None)
+            filled.pop()
+            logging.error("Rolled back Method2 fill %s — would break book invariant", sym)
+            continue
+        assert_book_invariant(state, context=f"method2_fill:{sym}")
         logging.info(
             "Method2 intraday fill %s @ $%.2f (%s %s)",
             sym,

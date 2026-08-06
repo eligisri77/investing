@@ -223,6 +223,91 @@ def test_held_funding_candidates_includes_actions_only_and_respects_limit():
     assert held_funding_candidates({"holdings": [], "holding_actions": []}, "NVDA") == []
 
 
+def test_approved_pending_funding_when_book_empty_after_premarket_swap():
+    from trading_pulse.agent.holdings_review import (
+        approved_pending_funding_candidates,
+        funding_candidates_for_offer,
+        suggested_reallocate_amount,
+    )
+
+    plan = {
+        "holdings": [],  # TSLL sold; ELF not filled yet
+        "holding_actions": [],
+        "recommendations": [
+            {
+                "symbol": "ELF",
+                "approved": True,
+                "capital_usd": 950.0,
+                "score": 10.4,
+            },
+            {"symbol": "U", "approved": False, "score": 10.2, "capital_usd": 0},
+        ],
+    }
+    pending = approved_pending_funding_candidates(plan, "U", limit=3)
+    assert [r["symbol"] for r in pending] == ["ELF"]
+    assert pending[0]["source"] == "approved_pending"
+    assert funding_candidates_for_offer(plan, "U")[0]["symbol"] == "ELF"
+
+    po = {"queue": ["U", "A", "B", "C"], "index": 0, "decided": {"ELF": 950}}
+    # 1 donor share + 4 remaining offers → $190 each
+    amt, donor = suggested_reallocate_amount(plan, po, "U")
+    assert donor == "ELF"
+    assert amt == 190.0
+
+
+def test_funding_candidates_prefers_held_over_approved_pending():
+    """Open book funding wins even when another name is approved-pending."""
+    from trading_pulse.agent.holdings_review import (
+        approved_pending_funding_candidates,
+        funding_candidates_for_offer,
+    )
+
+    plan = {
+        "holdings": [
+            {"symbol": "AMZN", "capital_usd": 200, "score": 4.0, "unrealized_pnl_pct": -1.0},
+        ],
+        "holding_actions": [
+            {"symbol": "AMZN", "score": 4.0, "pnl_pct": -1.0, "capital_usd": 200},
+        ],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 950.0, "score": 10.4},
+            {"symbol": "U", "approved": False, "score": 10.2, "capital_usd": 0},
+        ],
+    }
+    rows = funding_candidates_for_offer(plan, "U", limit=3)
+    assert [r["symbol"] for r in rows] == ["AMZN"]
+    assert rows[0]["source"] == "held"
+    # Pending still exists as a fallback source — just not preferred while held names remain.
+    assert [r["symbol"] for r in approved_pending_funding_candidates(plan, "U")] == ["ELF"]
+
+
+def test_approved_pending_excludes_held_and_terminal_method2():
+    from trading_pulse.agent.holdings_review import approved_pending_funding_candidates
+
+    plan = {
+        "holdings": [{"symbol": "PATH", "capital_usd": 100}],
+        "recommendations": [
+            {"symbol": "PATH", "approved": True, "capital_usd": 100.0},  # already held
+            {
+                "symbol": "BEAM",
+                "approved": True,
+                "capital_usd": 200.0,
+                "method2_status": "filled",
+            },
+            {
+                "symbol": "SOXL",
+                "approved": True,
+                "capital_usd": 0.5,  # below $1
+            },
+            {"symbol": "ELF", "approved": True, "capital_usd": 400.0, "score": 9.0},
+            {"symbol": "U", "approved": False, "capital_usd": 50.0},
+        ],
+    }
+    rows = approved_pending_funding_candidates(plan, "NVDA", limit=5)
+    assert [r["symbol"] for r in rows] == ["ELF"]
+    assert rows[0]["source"] == "approved_pending"
+
+
 def test_swap_funding_prefers_explicit_swap_to():
     plan = {
         "recommendations": [{"symbol": "NVDA", "score": 12.0}],

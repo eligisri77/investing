@@ -29,7 +29,7 @@ You publish **Trading Pulse Windows releases**. You do not invent product featur
 3. Prefer running the script (do not hand-roll gh commands unless script fails):
 
 ```powershell
-# Publish current APP_VERSION (build + release)
+# Publish current APP_VERSION (full pytest gate → build + release)
 .\scripts\release.ps1
 
 # Or bump patch then publish
@@ -38,6 +38,8 @@ You publish **Trading Pulse Windows releases**. You do not invent product featur
 # Preview only
 .\scripts\release.ps1 -DryRun
 ```
+
+`release.ps1` **always runs the full suite** (`pytest tests/`) before build/publish unless `-SkipTests` (emergency only — do not use for normal releases). If any test fails, the script aborts and must not publish.
 
 4. If `TradingPulse.exe` / dist is locked, quit tray apps first; `build.ps1` tries to stop `TradingPulse.exe`.
 5. Never commit `.env`, tokens, or `instance/data/`.
@@ -50,11 +52,14 @@ Start-Process -FilePath ".\dist\TradingPulse\TradingPulse.exe"
 ```
 
 Confirm a `TradingPulse` process is running. If the exe is missing, say so; do not skip this step silently when the file exists.
-7. After success, report:
+7. After success, report (Hebrew-friendly, clear numbers):
    - version + tag (`vX.Y.Z`)
+   - **how many tests passed** (from script output / `installer/output/release-test-summary.txt`, e.g. `Tests: 603 passed`)
    - Release URL
    - that local `dist\TradingPulse\TradingPulse.exe` was started
    - reminder: users open Releases page or use Settings → עדכון גרסה (only newer than installed)
+
+If the test gate failed, report the failure count and **do not** publish a release.
 
 ## Rules
 

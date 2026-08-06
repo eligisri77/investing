@@ -32,6 +32,13 @@ from trading_pulse.agent.dryrun_agent import (
         ("בטל תוכנית", "plan_cancel", {}),
         ("ביטול תוכנית", "plan_cancel", {}),
         ("החלף LABU HOOD", "swap", {"from_symbol": "LABU", "to_symbol": "HOOD"}),
+        (
+            "החלף ELF U 190",
+            "swap",
+            {"from_symbol": "ELF", "to_symbol": "U", "buy_usd": 190.0, "sell_usd": 190.0},
+        ),
+        ("מכור ELF 100", "sell", {"symbol": "ELF", "sell_usd": 100.0}),
+        ("מכירה ELF 100", "sell", {"symbol": "ELF", "sell_usd": 100.0}),
         ("למכור SOXL ולקנות HOOD", "swap", {"from_ref": "SOXL", "to_ref": "HOOD"}),
         ("תוכל לשלוח לי פקודה מלאה?", "help", {}),
         ("1,2,3", "approve", {"indices_raw": "1,2,3"}),
@@ -112,6 +119,24 @@ def test_natural_sell_wording_is_confirmation_not_execution(text: str) -> None:
     parsed = parse_telegram_user_command(text)
     assert parsed == {"kind": "sell_confirmation", "ref": "U"}
     assert parsed["kind"] != "sell"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "מכירה ELF 100",
+        "מכירה ELF $100",
+        "מכירה 100 ELF",
+        "מכיר ELF 100",
+        "למכור ELF 100",
+        "תמכור ELF $100",
+        "למכור 100 ELF",
+    ],
+)
+def test_natural_sell_with_amount_is_execute_not_confirmation(text: str) -> None:
+    """Amount turns natural sell wording into immediate sell (sell_usd), not confirm."""
+    parsed = parse_telegram_user_command(text)
+    assert parsed == {"kind": "sell", "symbol": "ELF", "sell_usd": 100.0}
 
 
 def test_set_pending_sell_confirm_stores_symbol() -> None:

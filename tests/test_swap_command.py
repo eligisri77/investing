@@ -713,3 +713,150 @@ def test_swap_clears_price_watch_for_sold_symbol(tmp_path, monkeypatch):
     saved = __import__("json").loads(state_path.read_text())
     assert "LABD" not in list_price_watches(saved)
     assert "NVDA" in list_price_watches(saved)
+
+
+def test_resolve_approved_pending_source_only_when_not_held():
+    plan = {
+        "holdings": [{"symbol": "PATH", "capital_usd": 100}],
+        "recommendations": [
+            {"symbol": "PATH", "approved": True, "capital_usd": 100.0},
+            {"symbol": "ELF", "approved": True, "capital_usd": 950.0},
+            {"symbol": "U", "approved": False, "capital_usd": 0},
+            {"symbol": "BEAM", "approved": True, "capital_usd": 0.5},
+        ],
+    }
+    assert agent.resolve_approved_pending_source("ELF", plan) == "ELF"
+    assert agent.resolve_approved_pending_source("elf", plan) == "ELF"
+    assert agent.resolve_approved_pending_source("PATH", plan) is None  # held
+    assert agent.resolve_approved_pending_source("U", plan) is None  # not approved
+    assert agent.resolve_approved_pending_source("BEAM", plan) is None  # capital < 1
+    assert agent.resolve_approved_pending_source("1", plan) is None
+    assert agent.resolve_approved_pending_source("ELF", None) is None
+
+
+def test_execute_swap_reallocates_approved_pending_premarket(tmp_path, monkeypatch):
+    """החלף ELF U 190 with empty book moves reserved capital (no sell)."""
+    day = "2026-07-08"
+    plan = {
+        "for_trading_day": day,
+        "status": "draft",
+        "holdings": [],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 950.0, "score": 10.4},
+            {"symbol": "U", "approved": False, "capital_usd": 0, "score": 10.2},
+        ],
+    }
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir(parents=True)
+    plan_file = plans_dir / f"plan_{day}.json"
+    plan_file.write_text(__import__("json").dumps(plan), encoding="utf-8")
+
+    state = {"equity": 1000.0, "open_positions": []}
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", plans_dir)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: day)
+    monkeypatch.setattr(
+        agent,
+        "load_state",
+        lambda _cfg: __import__("json").loads(state_path.read_text()),
+    )
+    monkeypatch.setattr(
+        agent,
+        "save_json",
+        lambda path, data: path.write_text(
+            __import__("json").dumps(data), encoding="utf-8"
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: True,
+    )
+    sell_calls: list[tuple] = []
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position",
+        lambda *a, **k: sell_calls.append((a, k)) or None,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_usd",
+        lambda *a, **k: sell_calls.append((a, k)) or None,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.offer_queue.send_offer",
+        lambda *_a, **_k: None,
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "ELF", "U", buy_usd=190.0)
+
+    assert sell_calls == []
+    assert "הועבר" in reply
+    assert "$190" in reply
+    assert "ELF" in reply and "U" in reply
+    assert "קנייה בפתיחה" in reply
+    assert "נשאר ל־ELF" in reply
+
+    saved = __import__("json").loads(plan_file.read_text())
+    elf = next(r for r in saved["recommendations"] if r["symbol"] == "ELF")
+    u = next(r for r in saved["recommendations"] if r["symbol"] == "U")
+    assert elf["approved"] is True
+    assert elf["capital_usd"] == 760.0
+    assert u["approved"] is True
+    assert u["capital_usd"] == 190.0
+    assert "העברת הון" in (saved.get("last_manual_action") or "")
+
+    saved_state = __import__("json").loads(state_path.read_text())
+    assert saved_state.get("open_positions") == []
+
+
+def test_execute_swap_approved_pending_after_open_does_not_reallocate(
+    tmp_path, monkeypatch
+):
+    """Past entry window: no open position → fail; do not touch approved capital."""
+    day = "2026-07-08"
+    plan = {
+        "for_trading_day": day,
+        "holdings": [],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 950.0},
+            {"symbol": "U", "approved": False, "capital_usd": 0},
+        ],
+    }
+    plans_dir = tmp_path / "plans"
+    plans_dir.mkdir(parents=True)
+    plan_file = plans_dir / f"plan_{day}.json"
+    plan_file.write_text(__import__("json").dumps(plan), encoding="utf-8")
+
+    state = {"equity": 1000.0, "open_positions": []}
+    state_path = tmp_path / "state.json"
+    state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
+
+    monkeypatch.setattr(agent, "STATE_FILE", state_path)
+    monkeypatch.setattr(agent, "PLANS_DIR", plans_dir)
+    monkeypatch.setattr(agent, "resolve_trading_day", lambda _d: day)
+    monkeypatch.setattr(
+        agent,
+        "load_state",
+        lambda _cfg: __import__("json").loads(state_path.read_text()),
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.trading_flow.before_market_entry",
+        lambda _cfg, _day: False,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_position",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "trading_pulse.agent.positions.partial_sell_usd",
+        lambda *_a, **_k: None,
+    )
+
+    reply = agent.execute_swap_command(Cfg(), "ELF", "U", buy_usd=190.0)
+    assert "אין פוזיציה" in reply
+
+    saved = __import__("json").loads(plan_file.read_text())
+    elf = next(r for r in saved["recommendations"] if r["symbol"] == "ELF")
+    assert elf["capital_usd"] == 950.0
+    assert saved["recommendations"][1]["approved"] is False

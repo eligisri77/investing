@@ -355,6 +355,89 @@ def apply_partial_confirm_manual(
     return plan
 
 
+def reallocate_approved_capital(
+    plan: dict[str, Any],
+    from_symbol: str,
+    to_symbol: str,
+    amount_usd: float,
+) -> dict[str, Any] | None:
+    """Move reserved pre-open capital from one approved pick to another.
+
+    Used when the book is empty after a pre-market sell (cash already reserved
+    for ``from_symbol``) but the user wants later offers to share that sleeve.
+    """
+    from_symbol = str(from_symbol or "").upper()
+    to_symbol = str(to_symbol or "").upper()
+    if not from_symbol or not to_symbol or from_symbol == to_symbol:
+        return None
+
+    held = {
+        str(h.get("symbol") or "").upper()
+        for h in (plan.get("holdings") or [])
+        if h.get("symbol")
+    }
+    if from_symbol in held:
+        # Live position — caller should sell, not reallocate paper approvals.
+        return None
+
+    from_rec: dict[str, Any] | None = None
+    to_rec: dict[str, Any] | None = None
+    for rec in plan.get("recommendations") or []:
+        sym = str(rec.get("symbol") or "").upper()
+        if sym == from_symbol:
+            from_rec = rec
+        elif sym == to_symbol:
+            to_rec = rec
+
+    if from_rec is None or not from_rec.get("approved"):
+        return None
+    avail = float(from_rec.get("capital_usd") or 0)
+    move = round(min(float(amount_usd), avail), 2)
+    if move < 1:
+        return None
+
+    left = round(avail - move, 2)
+    from_rec["capital_usd"] = left
+    if left < 1:
+        from_rec["approved"] = False
+        from_rec["capital_usd"] = 0.0
+        from_rec.pop("approved_at", None)
+
+    if to_rec is None:
+        to_rec = {
+            "symbol": to_symbol,
+            "side": "LONG",
+            "score": 0.0,
+            "capital_usd": 0.0,
+        }
+        plan.setdefault("recommendations", []).append(to_rec)
+
+    prior = float(to_rec.get("capital_usd") or 0) if to_rec.get("approved") else 0.0
+    new_to = round(prior + move, 2)
+    to_rec["approved"] = True
+    to_rec["capital_usd"] = new_to
+    to_rec["approved_at"] = datetime.now(timezone.utc).isoformat()
+    to_rec.pop("offer_skipped", None)
+
+    alloc = plan.setdefault("allocation", {})
+    alloc["status"] = "pending"
+    alloc["manual_offer_flow"] = True
+    amounts = alloc.setdefault("amounts", {})
+    if left >= 1:
+        amounts[from_symbol] = left
+    else:
+        amounts.pop(from_symbol, None)
+    amounts[to_symbol] = new_to
+
+    return {
+        "from_symbol": from_symbol,
+        "to_symbol": to_symbol,
+        "moved_usd": move,
+        "from_left_usd": left,
+        "to_capital_usd": new_to,
+    }
+
+
 def mark_offer_skipped(plan: dict[str, Any], symbol: str) -> dict[str, Any]:
     """Record that the user declined an offered symbol for today.
 

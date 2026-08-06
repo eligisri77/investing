@@ -17,6 +17,7 @@ from trading_pulse.agent.plan_engine import (
     normalize_status,
     pending_buy_symbols,
     plan_is_protected,
+    reallocate_approved_capital,
     sync_active_plan_after_manual_action,
     supersede_other_plans,
 )
@@ -408,3 +409,48 @@ def test_finalize_manual_confirm_does_not_equal_split_amounts():
     assert out["allocation"]["amounts"] == {"NVDA": 250.0, "AMD": 75.0}
     assert out["recommendations"][0]["capital_usd"] == 250.0
     assert out["recommendations"][1]["capital_usd"] == 75.0
+
+def test_reallocate_approved_capital_moves_slice_and_keeps_donor():
+    plan = {
+        "holdings": [],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 950.0},
+            {"symbol": "U", "approved": False, "capital_usd": 0},
+        ],
+    }
+    moved = reallocate_approved_capital(plan, "ELF", "U", 190.0)
+    assert moved is not None
+    assert moved["moved_usd"] == 190.0
+    assert moved["from_left_usd"] == 760.0
+    elf = plan["recommendations"][0]
+    u = plan["recommendations"][1]
+    assert elf["capital_usd"] == 760.0 and elf["approved"]
+    assert u["approved"] and u["capital_usd"] == 190.0
+
+
+def test_reallocate_approved_capital_clears_donor_when_fully_moved():
+    plan = {
+        "holdings": [],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 100.0},
+        ],
+    }
+    moved = reallocate_approved_capital(plan, "ELF", "U", 100.0)
+    assert moved["from_left_usd"] == 0.0
+    assert plan["recommendations"][0]["approved"] is False
+    u = next(r for r in plan["recommendations"] if r["symbol"] == "U")
+    assert u["approved"] and u["capital_usd"] == 100.0
+
+
+def test_reallocate_approved_capital_rejects_when_from_is_held():
+    """Live position must be sold — paper reallocation is blocked."""
+    plan = {
+        "holdings": [{"symbol": "ELF", "capital_usd": 400.0}],
+        "recommendations": [
+            {"symbol": "ELF", "approved": True, "capital_usd": 400.0},
+            {"symbol": "U", "approved": False, "capital_usd": 0},
+        ],
+    }
+    assert reallocate_approved_capital(plan, "ELF", "U", 190.0) is None
+    assert plan["recommendations"][0]["capital_usd"] == 400.0
+    assert plan["recommendations"][1]["approved"] is False

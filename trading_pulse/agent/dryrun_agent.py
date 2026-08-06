@@ -2037,12 +2037,28 @@ def _open_position_now(
 ) -> dict[str, Any] | None:
     """Open a position at the current intraday price (after morning entry)."""
     from trading_pulse.agent.intraday_monitor import fetch_intraday_quote
-    from trading_pulse.agent.positions import fetch_day_ohlc, held_symbols, new_position_from_rec
+    from trading_pulse.agent.positions import (
+        assert_book_invariant,
+        clamp_buy_capital,
+        fetch_day_ohlc,
+        free_cash,
+        held_symbols,
+        new_position_from_rec,
+    )
 
     symbol = str(rec["symbol"]).upper()
     if symbol in held_symbols(state):
         return None
     if len(state.get("open_positions", [])) >= int(getattr(cfg, "max_open_positions", 4)):
+        return None
+
+    capital = clamp_buy_capital(float(rec.get("capital_usd") or 0), free_cash(state, cfg))
+    if capital < 1:
+        logging.info(
+            "Skip open %s: no free cash (wanted $%.2f)",
+            symbol,
+            float(rec.get("capital_usd") or 0),
+        )
         return None
 
     bar = fetch_day_ohlc(symbol, trading_day)
@@ -2055,11 +2071,15 @@ def _open_position_now(
     if price <= 0:
         return None
 
-    pos = new_position_from_rec(rec, price, trading_day.isoformat())
+    stub = dict(rec)
+    stub["capital_usd"] = capital
+    stub["symbol"] = symbol
+    pos = new_position_from_rec(stub, price, trading_day.isoformat())
     state.setdefault("open_positions", []).append(pos)
     commission = float(getattr(cfg, "commission_per_side_usd", 0.0))
     if commission > 0:
         state["equity"] = round(float(state["equity"]) - commission, 2)
+    assert_book_invariant(state, context=f"_open_position_now:{symbol}")
     return pos
 
 
@@ -2073,6 +2093,28 @@ def resolve_sell_target(ref: str) -> str | None:
     sym = ref.upper()
     held = {str(h["symbol"]) for h in list_numbered_holdings()}
     return sym if sym in held else None
+
+
+def resolve_approved_pending_source(ref: str, plan: dict[str, Any] | None) -> str | None:
+    """Ticker that is approved for open but not held yet (reallocatable capital)."""
+    if not plan:
+        return None
+    sym = ref.strip().upper()
+    if not sym or sym.isdigit():
+        return None
+    held = {
+        str(h.get("symbol") or "").upper()
+        for h in (plan.get("holdings") or [])
+        if h.get("symbol")
+    }
+    if sym in held:
+        return None
+    for rec in plan.get("recommendations") or []:
+        if str(rec.get("symbol") or "").upper() != sym:
+            continue
+        if rec.get("approved") and float(rec.get("capital_usd") or 0) >= 1:
+            return sym
+    return None
 
 
 def resolve_buy_target(ref: str) -> str:
@@ -2425,6 +2467,81 @@ def execute_swap_command(
         return "❌ <b>אותה מניה</b> — ציין שני סימבולים שונים"
 
     state = load_state(cfg)
+    trading_day = resolve_trading_day(None)
+    td = date.fromisoformat(trading_day)
+    path = plan_path(td)
+    plan_preview = read_json(path) if path.exists() else None
+
+    # Pre-market: FROM may be an approved pending buy (cash already reserved), not held.
+    # Then «החלף ELF U 190» reallocates reserved capital instead of selling a position.
+    held_now = {
+        str(p.get("symbol") or "").upper()
+        for p in state.get("open_positions") or []
+        if p.get("symbol")
+    }
+    if from_symbol not in held_now and plan_preview and before_market_entry(cfg, td):
+        from trading_pulse.agent.holdings_review import suggested_reallocate_amount
+        from trading_pulse.agent.offer_queue import (
+            consume_offer_after_manual_swap,
+            pending_offer,
+        )
+        from trading_pulse.agent.plan_engine import (
+            finalize_manual_confirm,
+            reallocate_approved_capital,
+        )
+
+        amount = buy_usd if buy_usd is not None else sell_usd
+        if amount is None:
+            from trading_pulse.agent.offer_queue import current_offer_symbol
+
+            po = pending_offer(state)
+            cur = current_offer_symbol(state)
+            if po and cur and str(cur).upper() == to_symbol:
+                slice_usd, donor = suggested_reallocate_amount(
+                    plan_preview, po, to_symbol
+                )
+                if donor == from_symbol and slice_usd >= 1:
+                    amount = slice_usd
+            if amount is None:
+                # Default: half of the approved sleeve (keep diversification).
+                for rec in plan_preview.get("recommendations") or []:
+                    if str(rec.get("symbol") or "").upper() == from_symbol and rec.get(
+                        "approved"
+                    ):
+                        amount = round(float(rec.get("capital_usd") or 0) / 2, 2)
+                        break
+        if amount is not None and float(amount) >= 1:
+            plan = plan_preview
+            moved = reallocate_approved_capital(
+                plan, from_symbol, to_symbol, float(amount)
+            )
+            if moved:
+                purchase_usd = float(moved["moved_usd"])
+                plan["last_manual_action"] = (
+                    f"העברת הון מ־{from_symbol} ל־{to_symbol}"
+                )
+                consumed = consume_offer_after_manual_swap(
+                    cfg,
+                    state,
+                    plan,
+                    to_symbol=to_symbol,
+                    purchase_usd=purchase_usd,
+                )
+                if not consumed and pending_offer(state) is None:
+                    finalize_manual_confirm(plan, state, cfg)
+                save_json(path, plan)
+                save_json(STATE_FILE, state)
+                left = float(moved["from_left_usd"])
+                left_bit = (
+                    f" — נשאר ל־{from_symbol} ~${left:.0f}"
+                    if left >= 1
+                    else f" — {from_symbol} בוטלה"
+                )
+                return (
+                    f"✅ הועבר <b>${purchase_usd:.0f}</b> מ־<b>{from_symbol}</b> "
+                    f"ל־<b>{to_symbol}</b> (קנייה בפתיחה){left_bit}"
+                )
+
     # If user named a buy amount but not a sell amount, sell only that much
     # (e.g. "מכור 1 תקנה 2 $100" → sell $100 of #1, not the whole position).
     if sell_usd is None and buy_usd is not None and sell_fraction >= 1.0:
@@ -2457,9 +2574,6 @@ def execute_swap_command(
         f"מכירה ידנית של {from_symbol} כחלק מהחלפה",
     )
 
-    trading_day = resolve_trading_day(None)
-    td = date.fromisoformat(trading_day)
-    path = plan_path(td)
     plan_preview = read_json(path) if path.exists() else None
     from trading_pulse.agent.positions import unreserved_free_cash
 
@@ -3154,6 +3268,32 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "sell_usd": float(sell_usd_slot_rev.group(1)),
         }
 
+    # Partial by ticker + dollars: מכור ELF 100 / מכור ELF $100 / מכור ELF 100$
+    sell_sym_usd = re.fullmatch(
+        rf"(?:מכור|sell)\s+({_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_sym_usd:
+        return {
+            "kind": "sell",
+            "symbol": sell_sym_usd.group(1).upper(),
+            "sell_usd": float(sell_sym_usd.group(2)),
+        }
+
+    # Reverse order: מכור 100 ELF / מכור $100 ELF
+    sell_usd_sym = re.fullmatch(
+        rf"(?:מכור|sell)\s+{_amt}\s+({_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if sell_usd_sym:
+        return {
+            "kind": "sell",
+            "symbol": sell_usd_sym.group(2).upper(),
+            "sell_usd": float(sell_usd_sym.group(1)),
+        }
+
     sell_pct_slot = re.fullmatch(
         r"(?:מכור|sell)\s+(\d+(?:\.\d+)?)%\s+(\d+)\s*$",
         raw.strip(),
@@ -3212,6 +3352,30 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "all_cash": True,
         }
 
+    natural_sell_amt = re.fullmatch(
+        rf"(?:מכירה|מכיר|למכור|תמכור)\s+({_sym})\s+{_amt}\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if natural_sell_amt:
+        return {
+            "kind": "sell",
+            "symbol": natural_sell_amt.group(1).upper(),
+            "sell_usd": float(natural_sell_amt.group(2)),
+        }
+
+    natural_sell_amt_rev = re.fullmatch(
+        rf"(?:מכירה|מכיר|למכור|תמכור)\s+{_amt}\s+({_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if natural_sell_amt_rev:
+        return {
+            "kind": "sell",
+            "symbol": natural_sell_amt_rev.group(2).upper(),
+            "sell_usd": float(natural_sell_amt_rev.group(1)),
+        }
+
     natural_sell = re.fullmatch(
         rf"(?:מכירה|מכיר|למכור|תמכור)\s+(\d+|{_sym})\s*$",
         raw.strip(),
@@ -3234,16 +3398,22 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
         return {"kind": "sell", "symbol": sell_match.group(2).upper(), "fraction": fraction}
 
     swap_match = re.fullmatch(
-        r"(?:החלף|swap)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})",
+        r"(?:החלף|swap)\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})\s+([A-Za-z][A-Za-z0-9.\-^]{0,9})"
+        r"(?:\s+\$?\s*([\d]+(?:[.,]\d+)?))?",
         raw.strip(),
         flags=re.IGNORECASE,
     )
     if swap_match:
-        return {
+        cmd = {
             "kind": "swap",
             "from_symbol": swap_match.group(1).upper(),
             "to_symbol": swap_match.group(2).upper(),
         }
+        if swap_match.group(3):
+            amt = float(swap_match.group(3).replace(",", "."))
+            cmd["buy_usd"] = amt
+            cmd["sell_usd"] = amt
+        return cmd
 
     nl_swap = re.search(
         rf"(?:ל)?מכור\s+(\d+|{_sym})\s+"
@@ -3403,7 +3573,7 @@ def telegram_help_text() -> str:
             "ביטול תוכנית: <code>בטל תוכנית</code>",
             "החלפה: <code>החלף SOXL HOOD</code>",
             "או בשפה חופשית: <code>למכור SOXL ולקנות HOOD</code>",
-            "מכירה: <code>מכור SYMBOL</code>",
+            "מכירה: <code>מכור SYMBOL</code> · חלק: <code>מכור ELF 100</code> / <code>מכור 50% ELF</code>",
             "",
             "<code>תיק</code> · <code>סטטוס</code> · <code>מדריך</code>",
         ]
@@ -3418,7 +3588,7 @@ def telegram_unknown_reply() -> str:
     return "\n".join(
         [
             "❓ <b>לא הבנתי את הפקודה.</b>",
-            "דוגמאות: <code>תיק</code> · <code>תוכנית</code> · <code>מכור U</code>",
+            "דוגמאות: <code>תיק</code> · <code>תוכנית</code> · <code>מכור U</code> · <code>מכור ELF 100</code>",
             "לכל האפשרויות: <code>עזרה</code>",
         ]
     )
@@ -3969,9 +4139,18 @@ def process_telegram_commands(cfg: AgentConfig) -> int:
                 handled += 1
                 continue
             elif kind == "swap":
-                from_sym = resolve_sell_target(str(parsed.get("from_ref") or parsed.get("from_symbol", "")))
+                from_ref = str(parsed.get("from_ref") or parsed.get("from_symbol", ""))
+                from_sym = resolve_sell_target(from_ref)
                 to_ref = str(parsed.get("to_ref") or parsed.get("to_symbol", ""))
                 to_sym = resolve_buy_target(to_ref)
+                if not from_sym:
+                    # Allow reallocating capital from an approved-but-not-held pick.
+                    td_plan = None
+                    try:
+                        td_plan = read_json(plan_path(date.fromisoformat(resolve_trading_day(None))))
+                    except Exception:
+                        td_plan = None
+                    from_sym = resolve_approved_pending_source(from_ref, td_plan)
                 if not from_sym:
                     reply = "❌ <b>מספר/מניה למכירה לא תקינים</b> — שלח <code>תיק</code>"
                 else:

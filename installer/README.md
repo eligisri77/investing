@@ -55,9 +55,11 @@ User then opens **Settings** or **Bot guide** to connect Telegram.
 **Preferred (agent or one command):**
 
 ```powershell
-.\scripts\release.ps1              # build + GitHub Release for current APP_VERSION
+.\scripts\release.ps1              # full pytest → build + GitHub Release
 .\scripts\release.ps1 -BumpPatch   # 0.1.0 → 0.1.1, then publish
 ```
+
+The script runs **all** tests under `tests/` first. On failure it aborts (no Setup upload). Summary is printed and saved to `installer/output/release-test-summary.txt`, and included in the GitHub release notes.
 
 Or ask Cursor: `@trading-pulse-releaser`
 

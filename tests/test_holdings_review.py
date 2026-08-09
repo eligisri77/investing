@@ -400,9 +400,11 @@ def test_build_portfolio_review_cubes_cash_and_per_holding():
     }
     cubes = build_portfolio_review_cubes(plan)
     titles = [c["title"] for c in cubes]
-    assert titles[0] == "מזומן פנוי"
-    assert "$0" in cubes[0]["value"]
-    assert "בלי מזומן" in cubes[0]["value"]
+    assert titles[0] == "מניות בתיק"
+    assert "AMD" in cubes[0]["value"] and "META" in cubes[0]["value"]
+    assert titles[1] == "מזומן פנוי"
+    assert "$0" in cubes[1]["value"]
+    assert "בלי מזומן" in cubes[1]["value"]
     assert "AMD" in titles
     assert "META" in titles
     amd = next(c for c in cubes if c["title"] == "AMD")
@@ -411,6 +413,21 @@ def test_build_portfolio_review_cubes_cash_and_per_holding():
     assert "ציון 12.0" in amd["value"]
     assert cubes[-1]["title"] == "המשך"
     assert "הצעת קנייה" in cubes[-1]["value"]
+
+
+def test_build_portfolio_review_cubes_empty_holdings_inventory():
+    """Empty book still leads with «מניות בתיק» saying there are none."""
+    plan = {
+        "available_capital_usd": 500,
+        "holdings": [],
+        "holding_actions": [],
+        "recommendations": [{"symbol": "NVDA", "score": 12.0}],
+    }
+    cubes = build_portfolio_review_cubes(plan)
+    assert cubes[0]["title"] == "מניות בתיק"
+    assert cubes[0]["value"] == "אין מניות בתיק"
+    assert cubes[1]["title"] == "מזומן פנוי"
+    assert "$500" in cubes[1]["value"]
 
 
 def test_build_portfolio_review_cubes_cash_topup_when_no_new_offers():
@@ -423,9 +440,11 @@ def test_build_portfolio_review_cubes_cash_topup_when_no_new_offers():
         "recommendations": [],
     }
     cubes = build_portfolio_review_cubes(plan)
-    assert cubes[0]["title"] == "מזומן פנוי"
-    assert "$80" in cubes[0]["value"]
-    assert "בלי מזומן" not in cubes[0]["value"]
+    assert cubes[0]["title"] == "מניות בתיק"
+    assert "META" in cubes[0]["value"]
+    assert cubes[1]["title"] == "מזומן פנוי"
+    assert "$80" in cubes[1]["value"]
+    assert "בלי מזומן" not in cubes[1]["value"]
     assert any(c["title"] == "מזומן בלי הצעות חדשות" for c in cubes)
     tip = next(c for c in cubes if c["title"] == "מזומן בלי הצעות חדשות")
     assert "תקנה META" in tip["value"]

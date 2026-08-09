@@ -144,7 +144,10 @@ def test_build_offer_metric_cubes_speculative_has_labeled_blocks():
         "score": 13.0,
         "atr_pct": 5.7,
         "breakout_ok": False,
-        "near_high_pct": -14.7,
+        "momentum_ok": True,
+        "above_ma20_pct": 2.5,
+        "pullback_ok": True,
+        "near_high_pct": -4.0,
         "ret_5d_pct": 2.4,
         "vol_ratio": 3.33,
         "volume_ok": True,
@@ -167,6 +170,58 @@ def test_build_offer_metric_cubes_speculative_has_labeled_blocks():
     method_cube = next(c for c in cubes if c["title"] == "שיטת כניסה")
     assert "מומנטום" in method_cube["value"]
     assert "בפתיחה" in method_cube["value"]
+    mom_cube = next(c for c in cubes if c["title"] == "מומנטום ומחיר")
+    assert "תיקון" in mom_cube["blurb"]
+    assert "לא רדיפה" in mom_cube["blurb"]
+    assert "תיקון קצר" in mom_cube["value"]
+    assert "MA20" in mom_cube["value"]
+    score_cube = next(c for c in cubes if c["title"] == "ציון ותנודתיות")
+    assert "נושא:" not in score_cube["value"]
+
+
+def test_build_offer_metric_cubes_shows_theme_label_when_tags_present():
+    rec = {
+        "symbol": "IONQ",
+        "score": 12.0,
+        "atr_pct": 4.0,
+        "momentum_ok": True,
+        "above_ma20_pct": 1.0,
+        "pullback_ok": True,
+        "ret_5d_pct": 3.0,
+        "vol_ratio": 1.5,
+        "volume_ok": True,
+        "strategy": "score",
+        "strategy_id": "score_momentum",
+        "entry_policy": "market_open",
+        "theme_tags": ["quantum"],
+        "theme_score_bonus": 1.0,
+    }
+    cubes = build_offer_metric_cubes(rec, rank=1)
+    score_cube = next(c for c in cubes if c["title"] == "ציון ותנודתיות")
+    assert "נושא: קוונטים" in score_cube["value"]
+    assert "דירוג #1" in score_cube["value"]
+    assert "ציון 12.0" in score_cube["value"]
+
+
+def test_build_offer_metric_cubes_theme_from_symbol_when_tags_missing():
+    """Fallback: resolve theme from symbol if theme_tags omitted on the rec."""
+    rec = {
+        "symbol": "SMCI",
+        "score": 11.0,
+        "atr_pct": 3.5,
+        "momentum_ok": True,
+        "above_ma20_pct": 0.5,
+        "pullback_ok": False,
+        "near_high_pct": -2.0,
+        "ret_5d_pct": 1.0,
+        "vol_ratio": 1.1,
+        "volume_ok": True,
+        "strategy": "score",
+        "entry_policy": "market_open",
+    }
+    cubes = build_offer_metric_cubes(rec, rank=2)
+    score_cube = next(c for c in cubes if c["title"] == "ציון ותנודתיות")
+    assert "נושא: Data center" in score_cube["value"]
 
 
 def test_build_offer_metric_cubes_method2_variant():
@@ -909,6 +964,78 @@ def test_try_resolve_pending_offer_buy_other_symbol_falls_through(monkeypatch, t
 
     assert try_resolve_pending_offer(object(), state, "קנה AAPL 200") is False
     assert notify_calls == []
+    assert state["pending_offer"]["index"] == 0
+
+
+def test_try_resolve_bare_kana_current_symbol_advances(monkeypatch, tmp_path):
+    """«קנה wdc» on the WDC offer must approve + advance (not stall the queue)."""
+    plan = _plan(
+        available_capital_usd=107.0,
+        recommendations=[
+            {"symbol": "WDC", "score": 8.2},
+            {"symbol": "ANET", "score": 11.5},
+        ],
+    )
+    plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {}
+    start_offer_queue(state, plan)
+    assert current_offer_symbol(state) == "WDC"
+
+    assert try_resolve_pending_offer(object(), state, "קנה wdc") is True
+    assert state["pending_offer"]["index"] == 1
+    assert state["pending_offer"]["decided"]["WDC"] > 0
+    assert len(send_offer_calls) == 1
+    saved = __import__("trading_pulse.agent.dryrun_agent", fromlist=["read_json"]).read_json(
+        plan_file
+    )
+    wdc = next(r for r in saved["recommendations"] if r["symbol"] == "WDC")
+    assert wdc.get("approved") is True
+
+
+@pytest.mark.parametrize("text", ["קנה 100 snow", "קנה $100 snow", "תקנה 100 SNOW"])
+def test_try_resolve_amount_first_kana_on_current_offer(monkeypatch, tmp_path, text):
+    """«קנה 100 snow» / «קנה $100 snow» while SNOW is the offer → buy $100 and advance."""
+    plan = _plan(
+        available_capital_usd=282.0,
+        recommendations=[
+            {"symbol": "SNOW", "score": 9.7},
+            {"symbol": "FSLR", "score": 8.4},
+        ],
+    )
+    plan_file, notify_calls, finish_calls, send_offer_calls = _setup_try_resolve(
+        monkeypatch, tmp_path, plan
+    )
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, text) is True
+    assert state["pending_offer"]["decided"]["SNOW"] == 100.0
+    assert state["pending_offer"]["index"] == 1
+    assert len(send_offer_calls) == 1
+
+
+def test_try_resolve_amount_first_other_symbol_falls_through(monkeypatch, tmp_path):
+    """«קנה 100 AAPL» on an NVDA offer must not stall — leave for normal buy handling."""
+    plan = _plan(available_capital_usd=1000.0)
+    _setup_try_resolve(monkeypatch, tmp_path, plan)
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "קנה 100 AAPL") is False
+    assert state["pending_offer"]["index"] == 0
+    assert "NVDA" not in state["pending_offer"].get("decided", {})
+
+
+def test_try_resolve_bare_kana_other_symbol_falls_through(monkeypatch, tmp_path):
+    """«קנה AAPL» while offering NVDA → fall through (do not approve NVDA)."""
+    plan = _plan(available_capital_usd=1000.0)
+    _setup_try_resolve(monkeypatch, tmp_path, plan)
+    state: dict = {}
+    start_offer_queue(state, plan)
+
+    assert try_resolve_pending_offer(object(), state, "קנה AAPL") is False
     assert state["pending_offer"]["index"] == 0
 
 

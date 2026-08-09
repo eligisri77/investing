@@ -966,20 +966,23 @@ def build_recommendation_explanation(rec: dict[str, Any], rank: int, speculative
 
     if speculative:
         atr_pct = float(rec.get("atr_pct", 0))
-        breakout_ok = bool(rec.get("breakout_ok", False))
         near_high_pct = float(rec.get("near_high_pct", 0))
         parts = [f"דירוג #{rank} (ציון {score:.2f})"]
         parts.append(f"תנודתיות יומית (ATR): {atr_pct:.1f}%")
-        if breakout_ok:
-            parts.append(f"פריצה — במרחק {near_high_pct:.1f}% מהשיא 20 יום")
+        if rec.get("momentum_ok"):
+            parts.append("מגמה חיובית (מעל MA20)")
         else:
-            parts.append(f"לא בפריצה — {near_high_pct:.1f}% מתחת לשיא 20 יום")
+            parts.append("מתחת ל-MA20")
+        if rec.get("pullback_ok"):
+            parts.append("תיקון קצר / נסיגה משיא")
+        else:
+            parts.append(f"מרחק משיא 20 יום: {near_high_pct:+.1f}%")
         if ret5 > 0:
-            parts.append(f"עלייה של {ret5:.1f}% ב-5 ימים")
+            parts.append(f"5 ימים {ret5:+.1f}%")
         elif ret5 < 0:
-            parts.append(f"ירידה של {abs(ret5):.1f}% ב-5 ימים — סיכון גבוה")
+            parts.append(f"5 ימים {ret5:+.1f}%")
         if volume_ok:
-            parts.append(f"volume spike ({vol_ratio:.2f}x מהממוצע)")
+            parts.append(f"נפח גבוה ({vol_ratio:.2f}x מהממוצע)")
         else:
             parts.append(f"נפח רגיל ({vol_ratio:.2f}x)")
         asset_hint = {
@@ -1016,24 +1019,33 @@ def build_recommendation_explanation(rec: dict[str, Any], rank: int, speculative
     vol_ratio = float(rec.get("vol_ratio", 0))
     momentum_ok = bool(rec.get("momentum_ok", False))
     volume_ok = bool(rec.get("volume_ok", False))
+    pullback_ok = bool(rec.get("pullback_ok", False))
+    near_high = float(rec.get("near_high_pct", 0))
+    ret1 = float(rec.get("ret_1d_pct", 0))
 
     parts = [f"דירוג #{rank} (ציון {score:.2f})"]
     if momentum_ok:
-        parts.append(f"מחיר מעל MA20 ב-{above_ma:+.1f}%")
+        parts.append(f"מגמה חיובית — מעל MA20 ב-{above_ma:+.1f}%")
     else:
         parts.append("מחיר מתחת ל-MA20")
+    if pullback_ok:
+        parts.append("תיקון קצר / נסיגה משיא — לא כניסה בשיא")
+    elif near_high > -1:
+        parts.append(f"קרוב לשיא 20 יום ({near_high:+.1f}%) — פחות מועדף")
+    elif ret1 < 0:
+        parts.append(f"יום אחרון {ret1:+.1f}%")
 
     if ret5 > 0:
-        parts.append(f"עלייה של {ret5:.1f}% ב-5 ימים")
+        parts.append(f"5 ימים {ret5:+.1f}%")
     elif ret5 < 0:
-        parts.append(f"ירידה של {abs(ret5):.1f}% ב-5 ימים")
+        parts.append(f"5 ימים {ret5:+.1f}%")
     else:
         parts.append("ללא שינוי משמעותי ב-5 ימים")
 
     if volume_ok:
         parts.append(f"נפח גבוה מהממוצע ({vol_ratio:.2f}x)")
     else:
-        parts.append(f"נפח נמוך ({vol_ratio:.2f}x) — נבחר בעיקר בגלל מומנטום")
+        parts.append(f"נפח נמוך ({vol_ratio:.2f}x)")
 
     asset_hint = {
         "QQQ": "ETF על מדד הנאסד\"ק",
@@ -1099,6 +1111,17 @@ def format_source_scores_line(rec: dict[str, Any]) -> str:
 
 def format_enrichment_lines(rec: dict[str, Any]) -> list[str]:
     lines: list[str] = []
+    from trading_pulse.agent.theme_boost import theme_label_line
+
+    theme_line = theme_label_line(
+        tags=list(rec.get("theme_tags") or []),
+    )
+    if not theme_line and rec.get("symbol"):
+        theme_line = theme_label_line(str(rec.get("symbol")))
+    bonus = float(rec.get("theme_score_bonus") or 0)
+    if theme_line:
+        extra = f" (+{bonus:.1f})" if bonus else ""
+        lines.append(f"{theme_line}{extra}")
     adj = float(rec.get("sentiment_adjustment", 0))
     if adj != 0:
         tone = rec.get("sentiment_tone", "neutral")
@@ -1112,12 +1135,20 @@ def format_enrichment_lines(rec: dict[str, Any]) -> list[str]:
 def format_rec_signal_compact(rec: dict[str, Any], speculative: bool) -> str:
     score = float(rec.get("score", 0))
     parts = [f"ציון {score:.1f}"]
-    if speculative:
-        parts.append(f"ATR {float(rec.get('atr_pct', 0)):.1f}%")
-        parts.append("פריצה" if rec.get("breakout_ok") else "מתחת לשיא")
+    if rec.get("momentum_ok"):
+        parts.append("מגמה+")
     else:
-        parts.append("מעל MA20" if rec.get("momentum_ok") else "מתחת MA20")
+        parts.append("מתחת MA20")
+    if rec.get("pullback_ok"):
+        parts.append("תיקון")
+    elif speculative:
+        parts.append(f"ATR {float(rec.get('atr_pct', 0)):.1f}%")
     parts.append(f"5d {float(rec.get('ret_5d_pct', 0)):+.1f}%")
+    from trading_pulse.agent.theme_boost import theme_label_line
+
+    theme_line = theme_label_line(tags=list(rec.get("theme_tags") or []))
+    if theme_line:
+        parts.append(theme_line)
     line = " · ".join(parts)
     if rec.get("source_disagreement"):
         line += " · ⚠️ פער מקורות"
@@ -1127,25 +1158,28 @@ def format_rec_signal_compact(rec: dict[str, Any], speculative: bool) -> str:
 def format_rec_signal_block(rec: dict[str, Any], speculative: bool) -> str:
     sources_line = format_source_scores_line(rec)
     enrich_lines = format_enrichment_lines(rec)
+    near = float(rec.get("near_high_pct", 0))
     if speculative:
-        breakout = (
-            "פריצה לשיא 20 יום"
-            if rec.get("breakout_ok")
-            else f"מתחת לשיא ({float(rec.get('near_high_pct', 0)):+.1f}%)"
-        )
+        trend = "מגמה מעל MA20" if rec.get("momentum_ok") else "מתחת MA20"
+        pull = "תיקון קצר" if rec.get("pullback_ok") else f"מרחק משיא {near:+.1f}%"
         lines = [
             f"ציון {float(rec.get('score', 0)):.1f} | ATR {float(rec.get('atr_pct', 0)):.1f}%",
+            f"{trend} · {pull}",
             f"5 ימים {float(rec.get('ret_5d_pct', 0)):+.1f}% | נפח {float(rec.get('vol_ratio', 0)):.2f}x",
-            breakout,
         ]
         if sources_line:
             lines.append(sources_line)
         lines.extend(enrich_lines)
         return "\n".join(lines)
-    momentum = "מעל MA20" if rec.get("momentum_ok") else "מתחת MA20"
+    momentum = "מגמה חיובית (מעל MA20)" if rec.get("momentum_ok") else "מתחת MA20"
+    pull = (
+        "תיקון קצר / נסיגה"
+        if rec.get("pullback_ok")
+        else f"מרחק משיא 20י {near:+.1f}%"
+    )
     lines = [
         f"ציון {float(rec.get('score', 0)):.1f} | {momentum}",
-        f"5 ימים {float(rec.get('ret_5d_pct', 0)):+.1f}% | נפח {float(rec.get('vol_ratio', 0)):.2f}x",
+        f"{pull} | 5 ימים {float(rec.get('ret_5d_pct', 0)):+.1f}% | נפח {float(rec.get('vol_ratio', 0)):.2f}x",
     ]
     if sources_line:
         lines.append(sources_line)
@@ -3338,6 +3372,19 @@ def parse_telegram_user_command(text: str) -> dict[str, Any]:
             "buy_usd": float(buy_cmd.group(2)),
         }
 
+    # Amount-first: קנה 100 SNOW / תקנה $75 FSLR
+    buy_cmd_amt_first = re.fullmatch(
+        rf"(?:תקנה|קנה|לקנות|buy)\s+{_amt}\s+(\d+|{_sym})\s*$",
+        raw.strip(),
+        flags=re.IGNORECASE,
+    )
+    if buy_cmd_amt_first:
+        return {
+            "kind": "buy",
+            "to_ref": buy_cmd_amt_first.group(2),
+            "buy_usd": float(buy_cmd_amt_first.group(1)),
+        }
+
     # Bare buy: תקנה ARWR / קנה NVDA → spend all free cash
     buy_bare = re.fullmatch(
         rf"(?:תקנה|קנה|לקנות|buy)\s+(\d+|{_sym})\s*$",
@@ -4565,10 +4612,16 @@ def generate_plan(
             "score": round(float(row["score"]), 4),
             "score_technical": round(float(row.get("score_technical", row["score"])), 4),
             "score_simple_avg": round(float(row.get("score_simple_avg", row["score"])), 4),
+            "theme_tags": list(row.get("theme_tags") or []),
+            "theme_score_bonus": round(float(row.get("theme_score_bonus") or 0), 4),
             "source_score_std": round(float(row.get("source_score_std", 0)), 4),
             "source_score_spread": round(float(row.get("source_score_spread", 0)), 4),
             "source_disagreement": bool(row.get("source_disagreement", False)),
             "ret_5d_pct": round(float(row.get("ret_5d_pct", 0)), 2),
+            "ret_1d_pct": round(float(row.get("ret_1d_pct", 0)), 2),
+            "near_high_pct": round(float(row.get("near_high_pct", 0)), 2),
+            "pullback_ok": bool(row.get("pullback_ok", False)),
+            "zigzag_in_range": bool(row.get("zigzag_in_range", False)),
             "vol_ratio": round(vol_ratio, 2),
             "volume_ok": bool(row.get("volume_ok", False)),
             "source_scores": dict(row.get("source_scores", {})),
@@ -4581,24 +4634,28 @@ def generate_plan(
         if speculative:
             breakout_flag = "yes" if bool(row.get("breakout_ok", False)) else "no"
             atr_pct = round(float(row.get("atr_pct", 0)), 2)
+            pull = "pullback" if rec["pullback_ok"] else "no-pullback"
             rec.update(
                 {
                     "atr_pct": atr_pct,
-                    "near_high_pct": round(float(row.get("near_high_pct", 0)), 2),
                     "breakout_ok": bool(row.get("breakout_ok", False)),
                     "reason": (
-                        f"Speculative: ATR {atr_pct:.1f}%, "
-                        f"breakout={breakout_flag}, vol {vol_ratio:.2f}x"
+                        f"Trend+pullback: ATR {atr_pct:.1f}%, "
+                        f"{pull}, vol {vol_ratio:.2f}x, breakout={breakout_flag}"
                     ),
                 }
             )
         else:
             momentum_flag = "yes" if bool(row.get("momentum_ok", False)) else "no"
+            pull = "yes" if rec["pullback_ok"] else "no"
             rec.update(
                 {
                     "above_ma20_pct": round(float(row.get("above_ma20_pct", 0)), 2),
                     "momentum_ok": bool(row.get("momentum_ok", False)),
-                    "reason": f"Momentum(MA20): {momentum_flag}, Volume ratio: {vol_ratio:.2f}x (signal={volume_flag})",
+                    "reason": (
+                        f"Trend+pullback(MA20): {momentum_flag}, "
+                        f"pullback={pull}, vol {vol_ratio:.2f}x (signal={volume_flag})"
+                    ),
                 }
             )
         recommendations.append(rec)

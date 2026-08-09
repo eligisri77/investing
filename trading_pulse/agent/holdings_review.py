@@ -302,13 +302,26 @@ def build_portfolio_review_cubes(plan: dict[str, Any]) -> list[dict[str, str]]:
         and str(r.get("symbol")) not in held_syms
     )
 
+    held_list = [
+        str(h.get("symbol") or "").upper()
+        for h in holdings
+        if str(h.get("symbol") or "").strip()
+    ]
+    inventory = " · ".join(held_list) if held_list else "אין מניות בתיק"
+
     cubes: list[dict[str, str]] = [
+        {
+            "title": "מניות בתיק",
+            "blurb": "מה שכבר מוחזק עכשיו (לפני הצעות חדשות).",
+            "value": inventory,
+            "wide": "1",
+        },
         {
             "title": "מזומן פנוי",
             "blurb": "כמה אפשר לקנות בלי למכור מניה קיימת.",
             "value": f"${cash:.0f}" + (" · בלי מזומן — רק החלפה אם מומלץ" if cash < 1 else ""),
             "wide": "1",
-        }
+        },
     ]
 
     for h in holdings:

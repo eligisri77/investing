@@ -294,10 +294,30 @@ def test_portfolio_review_digest_includes_holding_actions():
     }
     text = format_portfolio_review_digest(plan)
     assert "אין החזקות פתוחות כרגע" not in text
+    assert "מניות בתיק" in text
     assert "ממשיכים להחזיק" in text
-    assert "ציוני ההחזקות" in text
-    assert "ציון <b>9.0</b>" in text
+    assert "ציון 9.0" in text
     assert "META" in text
+
+
+def test_portfolio_review_digest_lists_holdings_inventory():
+    plan = {
+        "holdings": [
+            {"symbol": "ELF", "capital_usd": 615, "unrealized_pnl_pct": 3.9},
+            {"symbol": "SNOW", "capital_usd": 100},
+        ],
+        "holding_actions": [
+            {"symbol": "ELF", "verdict": "hold", "pnl_pct": 3.9, "score": 8.9, "capital_usd": 615},
+            {"symbol": "SNOW", "verdict": "hold", "pnl_pct": 0.0, "score": 9.7, "capital_usd": 100},
+        ],
+        "recommendations": [],
+        "available_capital_usd": 50,
+    }
+    text = format_portfolio_review_digest(plan)
+    assert "מניות בתיק" in text
+    assert "ELF" in text and "$615" in text
+    assert "SNOW" in text and "$100" in text
+    assert "מזומן פנוי: <b>$50</b>" in text
 
 
 def test_portfolio_review_digest_lists_swap_commands():

@@ -14,6 +14,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from trading_pulse.agent.theme_boost import theme_score_bonus, theme_tags
+
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
 }
@@ -73,6 +75,9 @@ class SourceSignal:
     close: float | None = None
     ret_5d: float | None = None
     ret_5d_pct: float | None = None
+    ret_1d: float | None = None
+    ret_1d_pct: float | None = None
+    ret_2d: float | None = None
     vol_ratio: float | None = None
     atr_pct: float | None = None
     near_high_pct: float | None = None
@@ -80,7 +85,21 @@ class SourceSignal:
     volume_ok: bool = False
     above_ma20_pct: float | None = None
     momentum_ok: bool = False
+    down_days_last_3: int = 0
+    up_days_last_5: int = 0
+    down_days_last_5: int = 0
+    range_5d_pct: float | None = None
+    zigzag_in_range: bool = False
+    pullback_ok: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+# Trend + pullback scoring bands (percent / fractions as noted).
+_PULLBACK_NEAR_HIGH_MIN = -8.0  # % below 20d high — deepest sweet-spot edge
+_PULLBACK_NEAR_HIGH_MAX = -2.0  # % below 20d high — shallowest sweet-spot edge
+_CHASE_NEAR_HIGH = -1.0  # above this (closer to high) → chase penalty
+_RET_5D_CHASE = 0.15  # +15% in 5d → already ran hard
+_RANGE_5D_MAX_PCT = 8.0  # consolidation band for zigzag bonus
 
 
 def _extract_series(df: pd.DataFrame, col: str) -> pd.Series:
@@ -133,6 +152,24 @@ def _ohlcv_metrics(df: pd.DataFrame) -> dict[str, Any] | None:
     ma20 = float(close.rolling(20).mean().iloc[-1])
     high_20 = float(close.rolling(20).max().iloc[-1])
     ret_5d = (last_close / float(close.iloc[-6])) - 1 if len(close) >= 6 else 0.0
+    ret_1d = (last_close / float(close.iloc[-2])) - 1 if len(close) >= 2 else 0.0
+    ret_2d = (last_close / float(close.iloc[-3])) - 1 if len(close) >= 3 else 0.0
+    # Daily direction from close-to-close (last 5 completed moves ending at today).
+    day_rets = close.pct_change().iloc[-5:]
+    down_flags = [bool(float(r) < 0) for r in day_rets.dropna().tolist()]
+    while len(down_flags) < 5:
+        down_flags.insert(0, False)
+    down_days_last_3 = sum(1 for d in down_flags[-3:] if d)
+    down_days_last_5 = sum(1 for d in down_flags if d)
+    up_days_last_5 = sum(1 for d in down_flags if not d)
+    hi_5 = float(high.iloc[-5:].max()) if len(high) >= 5 else float(high.max())
+    lo_5 = float(low.iloc[-5:].min()) if len(low) >= 5 else float(low.min())
+    range_5d_pct = ((hi_5 - lo_5) / last_close * 100) if last_close > 0 else 0.0
+    zigzag_in_range = bool(
+        up_days_last_5 >= 2
+        and down_days_last_5 >= 2
+        and range_5d_pct <= _RANGE_5D_MAX_PCT
+    )
     vol_ratio = float(last_vol / avg_vol20) if avg_vol20 > 0 else 0.0
     tr = pd.concat(
         [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
@@ -142,17 +179,35 @@ def _ohlcv_metrics(df: pd.DataFrame) -> dict[str, Any] | None:
     atr_pct = (atr / last_close * 100) if last_close > 0 else 0.0
     near_high_pct = ((last_close / high_20) - 1) * 100 if high_20 > 0 else 0.0
     above_ma20_pct = ((last_close / ma20) - 1) * 100 if ma20 > 0 else 0.0
+    momentum_ok = bool(last_close > ma20)
+    pullback_day = bool(ret_1d < 0 or down_days_last_3 >= 2)
+    in_pullback_band = bool(
+        _PULLBACK_NEAR_HIGH_MIN <= near_high_pct <= _PULLBACK_NEAR_HIGH_MAX
+    )
+    pullback_ok = bool(
+        momentum_ok
+        and ((pullback_day and in_pullback_band) or zigzag_in_range)
+    )
     return {
         "close": last_close,
         "ret_5d": float(ret_5d),
         "ret_5d_pct": float(ret_5d * 100),
+        "ret_1d": float(ret_1d),
+        "ret_1d_pct": float(ret_1d * 100),
+        "ret_2d": float(ret_2d),
         "vol_ratio": vol_ratio,
         "atr_pct": float(atr_pct),
         "near_high_pct": float(near_high_pct),
         "breakout_ok": bool(last_close >= high_20 * 0.98),
         "volume_ok": bool(vol_ratio >= 1.0),
         "above_ma20_pct": float(above_ma20_pct),
-        "momentum_ok": bool(last_close > ma20),
+        "momentum_ok": momentum_ok,
+        "down_days_last_3": int(down_days_last_3),
+        "up_days_last_5": int(up_days_last_5),
+        "down_days_last_5": int(down_days_last_5),
+        "range_5d_pct": float(range_5d_pct),
+        "zigzag_in_range": zigzag_in_range,
+        "pullback_ok": pullback_ok,
         "avg_vol20": float(avg_vol20),
     }
 
@@ -194,23 +249,61 @@ def _signal_from_ohlcv_df(source: str, df: pd.DataFrame, speculative: bool) -> S
     return _metrics_to_signal(source, metrics, speculative)
 
 
-def score_speculative(metrics: dict[str, Any]) -> float:
-    return float(
-        metrics["atr_pct"] * 0.6
-        + max((metrics["vol_ratio"] - 1.0) * 4.0, 0.0)
-        + max(metrics["near_high_pct"] + 3.0, 0.0) * 0.4
-        + metrics["ret_5d"] * 12.0
-    )
+def _pullback_components(metrics: dict[str, Any]) -> dict[str, float]:
+    """Shared trend + pullback terms used by both score profiles."""
+    momentum_ok = bool(metrics.get("momentum_ok", False))
+    near_high = float(metrics.get("near_high_pct") or 0.0)
+    ret_1d = float(metrics.get("ret_1d") or 0.0)
+    ret_5d = float(metrics.get("ret_5d") or 0.0)
+    down_3 = int(metrics.get("down_days_last_3") or 0)
+    zigzag = bool(metrics.get("zigzag_in_range", False))
+    vol_ratio = float(metrics.get("vol_ratio") or 0.0)
+
+    trend = 4.0 if momentum_ok else -5.0
+
+    pullback = 0.0
+    if ret_1d < 0:
+        pullback += 2.0
+    if down_3 >= 2:
+        pullback += 1.5
+    if zigzag:
+        pullback += 1.0
+    if _PULLBACK_NEAR_HIGH_MIN <= near_high <= _PULLBACK_NEAR_HIGH_MAX:
+        pullback += 2.0
+
+    chase = 0.0
+    if near_high > _CHASE_NEAR_HIGH:
+        chase -= 3.0
+    if ret_5d > _RET_5D_CHASE:
+        chase -= 2.5
+
+    # Mild medium-term drift: prefer slight positive 5d, not a blow-off.
+    medium = max(min(ret_5d, 0.12), -0.08) * 8.0
+    vol = max(min((vol_ratio - 1.0) * 1.5, 1.5), -1.0)
+
+    return {
+        "trend": trend,
+        "pullback": pullback,
+        "chase": chase,
+        "medium": medium,
+        "vol": vol,
+    }
 
 
 def score_momentum(metrics: dict[str, Any]) -> float:
-    momentum_ok = bool(metrics.get("momentum_ok", False))
-    vol_ratio = float(metrics.get("vol_ratio", 0.0))
-    ret_5d = float(metrics.get("ret_5d", 0.0))
+    """Uptrend + short pullback — not chasing fresh highs after a rally."""
+    c = _pullback_components(metrics)
+    return float(c["trend"] + c["pullback"] + c["chase"] + c["medium"] + c["vol"])
+
+
+def score_speculative(metrics: dict[str, Any]) -> float:
+    """Same pullback core; light ATR spice without rewarding being at the high."""
+    c = _pullback_components(metrics)
+    atr_pct = float(metrics.get("atr_pct") or 0.0)
+    # Prefer moderate volatility near a pullback, not max ATR at highs.
+    atr_term = min(max(atr_pct, 0.0), 8.0) * 0.25
     return float(
-        (2.0 if momentum_ok else 0.0)
-        + max(min((vol_ratio - 1.0) * 2.0, 2.5), -1.0)
-        + (ret_5d * 20.0)
+        c["trend"] + c["pullback"] + c["chase"] + c["medium"] + c["vol"] + atr_term
     )
 
 
@@ -222,6 +315,9 @@ def _metrics_to_signal(source: str, metrics: dict[str, Any], speculative: bool) 
         close=metrics.get("close"),
         ret_5d=metrics.get("ret_5d"),
         ret_5d_pct=metrics.get("ret_5d_pct"),
+        ret_1d=metrics.get("ret_1d"),
+        ret_1d_pct=metrics.get("ret_1d_pct"),
+        ret_2d=metrics.get("ret_2d"),
         vol_ratio=metrics.get("vol_ratio"),
         atr_pct=metrics.get("atr_pct"),
         near_high_pct=metrics.get("near_high_pct"),
@@ -229,6 +325,12 @@ def _metrics_to_signal(source: str, metrics: dict[str, Any], speculative: bool) 
         volume_ok=bool(metrics.get("volume_ok", False)),
         above_ma20_pct=metrics.get("above_ma20_pct"),
         momentum_ok=bool(metrics.get("momentum_ok", False)),
+        down_days_last_3=int(metrics.get("down_days_last_3") or 0),
+        up_days_last_5=int(metrics.get("up_days_last_5") or 0),
+        down_days_last_5=int(metrics.get("down_days_last_5") or 0),
+        range_5d_pct=metrics.get("range_5d_pct"),
+        zigzag_in_range=bool(metrics.get("zigzag_in_range", False)),
+        pullback_ok=bool(metrics.get("pullback_ok", False)),
         extra={"avg_vol20": metrics.get("avg_vol20")},
     )
 
@@ -252,17 +354,34 @@ def _partial_metrics_to_signal(
     if close is None and ret_5d is None and vol_ratio is None and atr_pct is None:
         return None
 
+    # Non-OHLCV sources lack daily bars — approximate pullback from daily change.
+    ret_1d = (change_pct / 100.0) if change_pct is not None else 0.0
+    nh = near_high_pct if near_high_pct is not None else 0.0
+    momentum_ok = bool(change_pct is not None and change_pct > 0) or bool(
+        (perf_week_pct or 0) > 0 and ret_1d < 0
+    )
+    down_3 = 1 if ret_1d < 0 else 0
+    in_band = _PULLBACK_NEAR_HIGH_MIN <= nh <= _PULLBACK_NEAR_HIGH_MAX
     metrics = {
         "close": close or 0.0,
         "ret_5d": ret_5d or 0.0,
         "ret_5d_pct": (ret_5d or 0.0) * 100,
+        "ret_1d": ret_1d,
+        "ret_1d_pct": ret_1d * 100,
+        "ret_2d": ret_1d,
         "vol_ratio": vol_ratio or 1.0,
         "atr_pct": atr_pct or 0.0,
-        "near_high_pct": near_high_pct or 0.0,
+        "near_high_pct": nh,
         "breakout_ok": bool(near_high_pct is not None and near_high_pct >= -2.0),
         "volume_ok": bool(vol_ratio is not None and vol_ratio >= 1.0),
         "above_ma20_pct": change_pct or 0.0,
-        "momentum_ok": bool(change_pct is not None and change_pct > 0),
+        "momentum_ok": momentum_ok,
+        "down_days_last_3": down_3,
+        "up_days_last_5": 0,
+        "down_days_last_5": down_3,
+        "range_5d_pct": 0.0,
+        "zigzag_in_range": False,
+        "pullback_ok": bool(momentum_ok and ret_1d < 0 and in_band),
     }
     return _metrics_to_signal(source, metrics, speculative)
 
@@ -667,6 +786,11 @@ def merge_source_signals(
             aggregated["source_score_spread"],
         )
 
+    tags = theme_tags(ticker)
+    bonus = float(theme_score_bonus(ticker))
+    if bonus:
+        score = float(score) + bonus
+
     primary = _pick_primary_signal(signals)
     source_scores = {s.source: round(s.score, 4) for s in signals}
     avg_vol20 = None
@@ -684,6 +808,9 @@ def merge_source_signals(
         "close": primary.close,
         "ret_5d": primary.ret_5d or 0.0,
         "ret_5d_pct": primary.ret_5d_pct or 0.0,
+        "ret_1d": primary.ret_1d or 0.0,
+        "ret_1d_pct": primary.ret_1d_pct or 0.0,
+        "ret_2d": primary.ret_2d or 0.0,
         "vol_ratio": primary.vol_ratio or 0.0,
         "atr_pct": primary.atr_pct or 0.0,
         "near_high_pct": primary.near_high_pct or 0.0,
@@ -691,9 +818,17 @@ def merge_source_signals(
         "volume_ok": primary.volume_ok,
         "above_ma20_pct": primary.above_ma20_pct or 0.0,
         "momentum_ok": primary.momentum_ok,
+        "down_days_last_3": primary.down_days_last_3,
+        "up_days_last_5": primary.up_days_last_5,
+        "down_days_last_5": primary.down_days_last_5,
+        "range_5d_pct": primary.range_5d_pct or 0.0,
+        "zigzag_in_range": primary.zigzag_in_range,
+        "pullback_ok": primary.pullback_ok,
         "avg_vol20": avg_vol20,
         "score": float(score),
         "score_technical": float(aggregated["score_weighted"]),
+        "theme_tags": tags,
+        "theme_score_bonus": bonus,
         "score_simple_avg": aggregated["score_simple_avg"],
         "source_score_std": aggregated["source_score_std"],
         "source_score_spread": aggregated["source_score_spread"],

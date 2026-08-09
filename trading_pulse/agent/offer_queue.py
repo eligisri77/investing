@@ -29,6 +29,16 @@ _BUY_AMOUNT_RE = re.compile(
     r"^(?:קנה|תקנה|buy)\s+(?:([A-Za-z][A-Za-z0-9.\-]*)\s+)?\$?\s*([\d]+(?:[.,]\d+)?)\s*$",
     re.IGNORECASE,
 )
+# Amount-first: "קנה 100 snow" / "קנה $75 FSLR"
+_BUY_AMOUNT_SYM_RE = re.compile(
+    r"^(?:קנה|תקנה|buy)\s+\$?\s*([\d]+(?:[.,]\d+)?)\$?\s+([A-Za-z][A-Za-z0-9.\-]*)\s*$",
+    re.IGNORECASE,
+)
+# Bare ticker on the current offer: "קנה wdc" / "תקנה WDC" → suggested amount
+_BUY_BARE_SYM_RE = re.compile(
+    r"^(?:קנה|תקנה|buy)\s+([A-Za-z][A-Za-z0-9.\-]*)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _rec_by_symbol(plan: dict[str, Any], symbol: str) -> dict[str, Any] | None:
@@ -170,6 +180,15 @@ def build_offer_metric_cubes(rec: dict[str, Any], *, rank: int | None = None) ->
         score_bits = [f"דירוג #{rank_n}" if rank_n else "דירוג —", f"ציון {score:.1f}"]
         if atr:
             score_bits.append(f"ATR {atr:.1f}%")
+        from trading_pulse.agent.theme_boost import theme_label_line
+
+        theme_line = theme_label_line(
+            tags=list(rec.get("theme_tags") or []),
+        )
+        if not theme_line and rec.get("symbol"):
+            theme_line = theme_label_line(str(rec.get("symbol")))
+        if theme_line:
+            score_bits.append(theme_line)
         cubes.append(
             {
                 "title": "ציון ותנודתיות",
@@ -178,23 +197,27 @@ def build_offer_metric_cubes(rec: dict[str, Any], *, rank: int | None = None) ->
             }
         )
 
-        if rec.get("breakout_ok") is not None or rec.get("near_high_pct") is not None:
-            near = float(rec.get("near_high_pct") or 0)
-            if rec.get("breakout_ok"):
-                mom = f"פריצה · {near:.1f}% משיא 20 יום"
-            else:
-                mom = f"לא בפריצה · {near:.1f}% מתחת לשיא 20 יום"
-        elif rec.get("momentum_ok") is not None:
+        near = float(rec.get("near_high_pct") or 0)
+        if rec.get("momentum_ok"):
             above = float(rec.get("above_ma20_pct") or 0)
-            mom = f"מעל MA20 ב-{above:+.1f}%" if rec.get("momentum_ok") else "מתחת ל-MA20"
+            mom = f"מגמה+ · מעל MA20 ב-{above:+.1f}%"
+        elif rec.get("momentum_ok") is not None:
+            mom = "מתחת ל-MA20"
         else:
             mom = "—"
+        if rec.get("pullback_ok"):
+            pull = "תיקון קצר / נסיגה"
+        elif near:
+            pull = f"משיא 20י {near:+.1f}%"
+        else:
+            pull = ""
         ret_txt = f"{ret5:+.1f}% ב-5 ימים" if ret5 else "ללא שינוי משמעותי ב-5 ימים"
+        value = " · ".join(p for p in (mom, pull, ret_txt) if p)
         cubes.append(
             {
                 "title": "מומנטום ומחיר",
-                "blurb": "האם המחיר חזק ביחס לממוצע / לשיא האחרון.",
-                "value": f"{mom} · {ret_txt}",
+                "blurb": "מגמה חיובית + תיקון קצר — לא רדיפה אחרי שיא.",
+                "value": value,
             }
         )
 
@@ -825,6 +848,7 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
     low = raw.lower()
     decision: str
     amount: float = 0.0
+    offer_sym = str(symbol).upper()
     if low in _YES_WORDS:
         decision = "buy"
         amount = suggested_amount(plan, po)
@@ -832,9 +856,11 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
         decision = "skip"
     else:
         m = _BUY_AMOUNT_RE.match(raw)
+        m_rev = _BUY_AMOUNT_SYM_RE.match(raw) if not m else None
+        m_bare = _BUY_BARE_SYM_RE.match(raw) if not m and not m_rev else None
         if m:
             named_sym = (m.group(1) or "").upper()
-            if named_sym and named_sym != str(symbol).upper():
+            if named_sym and named_sym != offer_sym:
                 # Explicit different ticker — leave for normal `קנה SYMBOL` handling.
                 return False
             try:
@@ -844,6 +870,25 @@ def try_resolve_pending_offer(cfg: Any, state: dict[str, Any], text: str) -> boo
             if amount <= 0:
                 return False
             decision = "buy"
+        elif m_rev:
+            named_sym = (m_rev.group(2) or "").upper()
+            if named_sym and named_sym != offer_sym:
+                return False
+            try:
+                amount = float(m_rev.group(1).replace(",", "."))
+            except ValueError:
+                return False
+            if amount <= 0:
+                return False
+            decision = "buy"
+        elif m_bare:
+            named_sym = (m_bare.group(1) or "").upper()
+            if named_sym != offer_sym:
+                # Different ticker — normal buy command (does not advance this offer).
+                return False
+            # «קנה WDC» on the WDC offer = yes at the suggested cash slice.
+            decision = "buy"
+            amount = suggested_amount(plan, po)
         else:
             cleaned = raw.replace("$", "").replace(",", "").strip()
             try:

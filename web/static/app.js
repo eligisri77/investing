@@ -114,8 +114,17 @@ function renderSignalMeta(p) {
   if (p.atr_pct != null) parts.push(`ATR ${Number(p.atr_pct).toFixed(1)}%`);
   if (p.ret_5d_pct != null) parts.push(`5 ימים ${fmtPct(p.ret_5d_pct)}`);
   if (p.vol_ratio != null) parts.push(`נפח ${Number(p.vol_ratio).toFixed(2)}x`);
-  if (p.breakout_ok != null) {
-    parts.push(p.breakout_ok ? "פריצה" : `מתחת לשיא ${fmtPct(p.near_high_pct || 0)}`);
+  if (p.momentum_ok != null || p.above_ma20_pct != null) {
+    parts.push(
+      p.momentum_ok
+        ? `מגמה+ MA20 ${fmtPct(p.above_ma20_pct || 0)}`
+        : `מתחת MA20 ${fmtPct(p.above_ma20_pct || 0)}`
+    );
+  }
+  if (p.pullback_ok) {
+    parts.push("תיקון קצר");
+  } else if (p.near_high_pct != null) {
+    parts.push(`משיא 20י ${fmtPct(p.near_high_pct)}`);
   }
   if (!parts.length) return "";
   return `<div class="signal-meta">${parts.map((x) => `<span>${x}</span>`).join("")}</div>`;

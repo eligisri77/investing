@@ -39,6 +39,8 @@ from trading_pulse.agent.dryrun_agent import (
         ),
         ("מכור ELF 100", "sell", {"symbol": "ELF", "sell_usd": 100.0}),
         ("מכירה ELF 100", "sell", {"symbol": "ELF", "sell_usd": 100.0}),
+        ("קנה 100 SNOW", "buy", {"to_ref": "SNOW", "buy_usd": 100.0}),
+        ("תקנה $75 FSLR", "buy", {"to_ref": "FSLR", "buy_usd": 75.0}),
         ("למכור SOXL ולקנות HOOD", "swap", {"from_ref": "SOXL", "to_ref": "HOOD"}),
         ("תוכל לשלוח לי פקודה מלאה?", "help", {}),
         ("1,2,3", "approve", {"indices_raw": "1,2,3"}),

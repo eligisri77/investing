@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -555,7 +555,9 @@ def test_append_idle_cash_topup_picks_best_scoring_holding():
     assert suggestions[0].kind == "buy"
     assert suggestions[0].symbol == "NVDA"
     assert "$400" in suggestions[0].message
-    assert "אין מקום לפוזיציה חדשה" in suggestions[0].message
+    assert suggestions[0].cash_deploy is True
+    assert "מזומן" in suggestions[0].message
+    assert "NVDA" in suggestions[0].message
 
 
 def test_append_idle_cash_topup_uses_default_state_when_none():
@@ -577,6 +579,245 @@ def test_build_suggestions_idle_cash_topup_fires_even_with_no_scores():
     assert len(suggestions) == 1
     assert suggestions[0].kind == "buy"
     assert suggestions[0].symbol == "AMD"
+    assert suggestions[0].cash_deploy is True
+
+
+def test_build_suggestions_cash_with_open_slot_marks_cash_deploy_buy():
+    """Idle cash + open slot → hourly-style cash_deploy buy offer for the top name."""
+    cfg = FakeCfg(max_open_positions=4)
+    holdings = [{"symbol": "ELF", "entry_price": 90, "capital_usd": 600}]
+    state = {"equity": 1000, "open_positions": holdings}  # ~$400 cash
+    scores = {
+        "ELF": {"score": 9.0, "ret_5d_pct": 1.0, "vol_ratio": 1.0, "volume_ok": True},
+        "U": {"score": 12.0, "ret_5d_pct": 5.0, "vol_ratio": 1.5, "volume_ok": True},
+    }
+    suggestions = build_suggestions(cfg, holdings, scores, {}, {}, state=state)
+    buys = [s for s in suggestions if s.kind == "buy"]
+    assert len(buys) == 1
+    assert buys[0].symbol == "U"
+    assert buys[0].cash_deploy is True
+    assert "מזומן" in buys[0].message
+
+
+def test_filter_cooled_down_cash_deploy_uses_shorter_cooldown():
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+
+    now = datetime(2026, 8, 6, 18, 0, tzinfo=timezone.utc)
+    report = IntradayReport(
+        checked_at="now",
+        suggestions=[
+            TradeSuggestion(
+                kind="buy",
+                symbol="U",
+                message="יש מזומן",
+                cash_deploy=True,
+            ),
+            TradeSuggestion(kind="watch", symbol="NVDA", message="עקוב"),
+        ],
+    )
+    state = {
+        "intraday_alert_cooldowns": {
+            "U:suggest_buy": (now - timedelta(minutes=70)).isoformat(),
+            "NVDA:suggest_watch": (now - timedelta(minutes=70)).isoformat(),
+        }
+    }
+    out = filter_cooled_down(
+        report,
+        state,
+        cooldown_minutes=120,
+        cash_deploy_cooldown_minutes=60,
+        now=now,
+    )
+    # Cash offer repeats after ~60m; watch stays cooled for 120m.
+    assert [s.symbol for s in out.suggestions] == ["U"]
+
+
+def test_filter_cooled_down_cash_deploy_still_blocks_within_shorter_window():
+    """Cash-deploy offers must not repeat before the check-interval cooldown."""
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+
+    now = datetime(2026, 8, 6, 18, 0, tzinfo=timezone.utc)
+    report = IntradayReport(
+        checked_at="now",
+        suggestions=[
+            TradeSuggestion(
+                kind="buy",
+                symbol="U",
+                message="יש מזומן",
+                cash_deploy=True,
+            ),
+        ],
+    )
+    state = {
+        "intraday_alert_cooldowns": {
+            "U:suggest_buy": (now - timedelta(minutes=30)).isoformat(),
+        }
+    }
+    out = filter_cooled_down(
+        report,
+        state,
+        cooldown_minutes=120,
+        cash_deploy_cooldown_minutes=60,
+        now=now,
+    )
+    assert out.suggestions == []
+
+
+def test_filter_cooled_down_cash_deploy_enforces_15m_floor():
+    """Even a tiny check interval still waits at least 15 minutes between cash offers."""
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+
+    now = datetime(2026, 8, 6, 18, 0, tzinfo=timezone.utc)
+
+    def _cash_report() -> IntradayReport:
+        return IntradayReport(
+            checked_at="now",
+            suggestions=[
+                TradeSuggestion(
+                    kind="buy",
+                    symbol="AMD",
+                    message="יש מזומן",
+                    cash_deploy=True,
+                ),
+            ],
+        )
+
+    state = {
+        "intraday_alert_cooldowns": {
+            "AMD:suggest_buy": (now - timedelta(minutes=10)).isoformat(),
+        }
+    }
+    out = filter_cooled_down(
+        _cash_report(),
+        state,
+        cooldown_minutes=120,
+        cash_deploy_cooldown_minutes=5,
+        now=now,
+    )
+    assert out.suggestions == []
+
+    # Past the 15m floor → allowed again.
+    state["intraday_alert_cooldowns"]["AMD:suggest_buy"] = (
+        now - timedelta(minutes=16)
+    ).isoformat()
+    out2 = filter_cooled_down(
+        _cash_report(),
+        state,
+        cooldown_minutes=120,
+        cash_deploy_cooldown_minutes=5,
+        now=now,
+    )
+    assert [s.symbol for s in out2.suggestions] == ["AMD"]
+
+
+def test_filter_cooled_down_non_cash_deploy_buy_keeps_long_cooldown():
+    """Regular (non idle-cash) buy offers still use the long alert cooldown."""
+    from trading_pulse.agent.intraday_monitor import TradeSuggestion
+
+    now = datetime(2026, 8, 6, 18, 0, tzinfo=timezone.utc)
+    report = IntradayReport(
+        checked_at="now",
+        suggestions=[
+            TradeSuggestion(kind="buy", symbol="NVDA", message="ציון גבוה"),
+            TradeSuggestion(
+                kind="buy",
+                symbol="U",
+                message="יש מזומן",
+                cash_deploy=True,
+            ),
+        ],
+    )
+    state = {
+        "intraday_alert_cooldowns": {
+            "NVDA:suggest_buy": (now - timedelta(minutes=70)).isoformat(),
+            "U:suggest_buy": (now - timedelta(minutes=70)).isoformat(),
+        }
+    }
+    out = filter_cooled_down(
+        report,
+        state,
+        cooldown_minutes=120,
+        cash_deploy_cooldown_minutes=60,
+        now=now,
+    )
+    assert [s.symbol for s in out.suggestions] == ["U"]
+
+
+def test_build_suggestions_open_slot_cash_no_candidate_tops_up_holding():
+    """Open slot + idle cash but no fresh candidate → top up best holding."""
+    cfg = FakeCfg(max_open_positions=4)
+    holdings = [
+        {"symbol": "AMD", "entry_price": 100, "capital_usd": 300},
+        {"symbol": "ELF", "entry_price": 90, "capital_usd": 300},
+    ]
+    state = {"equity": 1000, "open_positions": holdings}  # ~$400 cash
+    # Scores only for holdings — no external new-buy candidate.
+    scores = {
+        "AMD": {"score": 8.0, "ret_5d_pct": 1.0, "vol_ratio": 1.0, "volume_ok": True},
+        "ELF": {"score": 11.0, "ret_5d_pct": 2.0, "vol_ratio": 1.2, "volume_ok": True},
+    }
+    suggestions = build_suggestions(cfg, holdings, scores, {}, {}, state=state)
+    buys = [s for s in suggestions if s.kind == "buy"]
+    assert len(buys) == 1
+    assert buys[0].symbol == "ELF"
+    assert buys[0].cash_deploy is True
+    assert "מזומן" in buys[0].message
+
+
+def test_build_suggestions_open_slot_low_cash_buy_not_cash_deploy():
+    """Strong new name with cash below min → buy offer without cash_deploy flag."""
+    cfg = FakeCfg(max_open_positions=4, intraday_cash_topup_min_usd=20.0)
+    holdings = [{"symbol": "ELF", "entry_price": 90, "capital_usd": 990}]
+    state = {"equity": 1000, "open_positions": holdings}  # ~$10 cash
+    scores = {
+        "ELF": {"score": 9.0, "ret_5d_pct": 1.0, "vol_ratio": 1.0, "volume_ok": True},
+        "U": {"score": 12.0, "ret_5d_pct": 5.0, "vol_ratio": 1.5, "volume_ok": True},
+    }
+    suggestions = build_suggestions(cfg, holdings, scores, {}, {}, state=state)
+    buys = [s for s in suggestions if s.kind == "buy"]
+    assert len(buys) == 1
+    assert buys[0].symbol == "U"
+    assert buys[0].cash_deploy is False
+    assert "מזומן" not in buys[0].message
+
+
+def test_run_intraday_check_passes_check_interval_as_cash_deploy_cooldown(tmp_path):
+    """Hourly idle-cash offers use intraday_check_interval_minutes, not alert cooldown."""
+    from trading_pulse.agent.intraday_monitor import run_intraday_check
+
+    cfg = FakeCfg()
+    cfg.intraday_check_interval_minutes = 45
+    cfg.intraday_alert_cooldown_minutes = 120
+    state: dict = {}
+    captured: dict = {}
+
+    def capture_filter(report, st, cooldown, **kwargs):
+        captured["cooldown"] = cooldown
+        captured["cash_cd"] = kwargs.get("cash_deploy_cooldown_minutes")
+        return report
+
+    with (
+        patch("trading_pulse.agent.dryrun_agent.is_us_trading_day", return_value=True),
+        patch("trading_pulse.core.schedule_tz.us_trading_session_date", return_value=date(2026, 7, 23)),
+        patch("trading_pulse.agent.intraday_monitor.is_within_market_hours", return_value=True),
+        patch(
+            "trading_pulse.agent.intraday_monitor.build_intraday_report",
+            return_value=_noteworthy_report(),
+        ),
+        patch("trading_pulse.agent.intraday_monitor.filter_cooled_down", side_effect=capture_filter),
+        patch(
+            "trading_pulse.telegram.reply_cards.card_intraday_monitor",
+            return_value=b"\x89PNG\r\n\x1a\nfake",
+        ),
+        patch("trading_pulse.agent.dryrun_agent.send_telegram_photo", return_value=True),
+        patch("trading_pulse.agent.dryrun_agent.plan_path", return_value=tmp_path / "missing.json"),
+        patch("trading_pulse.agent.dryrun_agent.save_json"),
+        patch("trading_pulse.agent.intraday_monitor.mark_cooldowns"),
+    ):
+        assert run_intraday_check(cfg, state) is True
+
+    assert captured["cooldown"] == 120
+    assert captured["cash_cd"] == 45
 
 
 def test_build_suggestions_idle_cash_topup_excludes_sell_flagged_holding():

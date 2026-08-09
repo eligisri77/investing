@@ -287,7 +287,7 @@ def test_format_weekly_watchlist_omits_strategy_line_when_unused():
     )
     assert "נסרקו בהצלחה" in html
     assert "שיטות שזוהו" not in html
-    assert "מומנטום · תנודתיות · נפח" in html
+    assert "מגמה+תיקון · תנודתיות · נפח" in html
     assert "אותות אסטרטגיה" not in html
 
 

@@ -72,11 +72,17 @@ def user_guide_full() -> str:
         [
             "<b>📖 איך זה עובד — פשוט</b>",
             "",
-            "1. לפני הפתיחה — סקירת תיק בקוביות (או סריקה מלאה בתיק ריק), ואז הצעות אחת-אחת "
-            "(גרף → כרטיס קוביות אחד עם מדדים + איך לבצע) · ממזומן: <code>כן</code> / סכום · "
-            "או <code>החלף X Y</code> אם הציון חזק יותר · <code>דלג</code>",
+            "1. לפני הפתיחה — סקירת תיק בקוביות שמתחילה ב«מניות בתיק» "
+            "(או סריקה מלאה בתיק ריק), ואז הצעות אחת-אחת "
+            "(גרף → כרטיס קוביות אחד עם מדדים + איך לבצע) · ממזומן: "
+            "<code>כן</code> / <code>קנה</code> / <code>קנה WDC</code> (אותה הצעה) / "
+            "<code>קנה WDC 75</code> / <code>קנה 100 WDC</code> / סכום · "
+            "או <code>החלף X Y</code> אם הציון חזק יותר · <code>דלג</code> "
+            "(כולם מקדמים את התור על ההצעה הנוכחית)",
             "2. בפתיחה — תמונת כניסה; נרות סיניים 2 ממתינה לפריצה ולא נקנית אוטומטית",
-            "3. אין מקום לפוזיציה חדשה אבל יש מזומן פנוי? מעקב שעתי יציע לחזק החזקה קיימת — <code>תקנה SYMBOL</code>",
+            "3. בשעות המסחר — מזומן פנוי (~$20+)? מעקב שעתי שולח הצעה בכל שעה: "
+            "קנייה חדשה (יש מקום + מניה חזקה) או חיזוק — <code>תקנה SYMBOL</code> "
+            "(לא נחסם ע״י השהיית התראות ~120 דק׳). בלי מזומן — רק חריגות/החלפות",
             "4. בערב אחרי סגירה — כרטיס PNG «דוח יומי» על הרווח/הפסד",
             "",
             "לא ענית להצעה? תזכורת עדינה אחרי ~10 דק׳; בפתיחת השוק — רק «לא נענו» יורדים "
@@ -288,7 +294,7 @@ def format_weekly_watchlist(result: dict[str, Any]) -> str:
     sym_names = [s for s in sym_names if s]
     strategies = result.get("strategies_used") or []
     strategy_hits = int(result.get("strategy_hit_symbols", 0) or 0)
-    rank = "מומנטום · תנודתיות · נפח"
+    rank = "מגמה+תיקון · תנודתיות · נפח · בונוס נושא (קוונטים/Data center)"
     if strategies:
         rank += " · אותות אסטרטגיה"
     lines = [
@@ -696,7 +702,27 @@ def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
     lines = ["<b>📋 סקירת תיק לפני הפתיחה</b>"]
     if not holdings:
         lines.append("אין החזקות פתוחות כרגע.")
+        lines.append(f"מזומן פנוי: <b>${cash:.0f}</b>")
     else:
+        lines.append("")
+        lines.append("<b>מניות בתיק:</b>")
+        action_by = {str(a.get("symbol") or "").upper(): a for a in actions}
+        for h in holdings:
+            sym_raw = str(h.get("symbol") or "").upper()
+            if not sym_raw:
+                continue
+            a = action_by.get(sym_raw) or {}
+            cap = float(a.get("capital_usd") or h.get("capital_usd") or 0)
+            score = float(a.get("score") or h.get("score") or 0)
+            pnl = float(
+                a.get("pnl_pct")
+                if a.get("pnl_pct") is not None
+                else h.get("unrealized_pnl_pct") or 0
+            )
+            lines.append(
+                f"• <b>{escape_html(sym_raw)}</b> — <b>${cap:.0f}</b> · "
+                f"ציון {score:.1f} · {pnl:+.1f}%"
+            )
         lines.append(f"מזומן פנוי: <b>${cash:.0f}</b>")
         manual = [
             a for a in actions if str(a.get("verdict")) in {"swap", "sell", "take_profit"}
@@ -725,20 +751,7 @@ def format_portfolio_review_digest(plan: dict[str, Any]) -> str:
                         f"<code>מכור {escape_html(sym)}</code>"
                     )
         else:
-            # Still show scored holdings so the review is visibly about the book.
-            scored = [a for a in actions if str(a.get("symbol") or "")]
-            if scored:
-                lines.append("")
-                lines.append("<b>ציוני ההחזקות:</b>")
-                for a in scored:
-                    sym = escape_html(str(a.get("symbol") or ""))
-                    my_score = float(a.get("score") or 0)
-                    pnl = float(a.get("pnl_pct") or 0)
-                    lines.append(
-                        f"🟢 <b>{sym}</b> · ציון <b>{my_score:.1f}</b> · {pnl:+.1f}% — ממשיכים להחזיק"
-                    )
-            else:
-                lines.append("<i>כל ההחזקות במגמה תקינה — ממשיכים להחזיק</i>")
+            lines.append("<i>כל ההחזקות במגמה תקינה — ממשיכים להחזיק</i>")
 
     held_syms = {str(h.get("symbol")) for h in holdings}
     new_recs = [

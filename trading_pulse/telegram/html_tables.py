@@ -919,7 +919,7 @@ def html_weekly_watchlist(result: dict[str, Any]) -> str:
     preview = sym_names[:10]
     more = max(0, len(sym_names) - len(preview))
 
-    rank_bits = ["מומנטום", "תנודתיות", "נפח"]
+    rank_bits = ["מגמה+תיקון", "תנודתיות", "נפח"]
     if strategies:
         rank_bits.append("אותות אסטרטגיה")
 

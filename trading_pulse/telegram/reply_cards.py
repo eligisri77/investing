@@ -704,7 +704,6 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
     score = float(rec.get("score", 0))
     on_list = bool(detail.get("on_watchlist"))
     would = bool(detail.get("would_pick"))
-    speculative = bool(detail.get("speculative"))
 
     rows: list[tuple[str, str]] = [
         ("ציון סופי", f"{score:.1f}"),
@@ -724,20 +723,17 @@ def card_stock_detail(detail: dict[str, Any]) -> bytes:
         rows.insert(0, ("מחיר עכשיו", f"${last:.2f}"))
         rows.insert(1, ("שינוי היום", f"{sign}{day_chg:.2f}%"))
         rows.insert(2, ("טווח היום", f"${low:.2f} – ${high:.2f}"))
-    if speculative:
-        rows.append(
-            (
-                "פריצה 20י",
-                "כן" if rec.get("breakout_ok") else f"{float(rec.get('near_high_pct', 0)):+.1f}%",
-            )
+    rows.append(
+        (
+            "מול MA20",
+            "מעל" if rec.get("momentum_ok") else f"{float(rec.get('above_ma20_pct', 0)):+.1f}%",
         )
+    )
+    near_high = float(rec.get("near_high_pct", 0) or 0)
+    if rec.get("pullback_ok"):
+        rows.append(("תיקון", "קצר / נסיגה משיא"))
     else:
-        rows.append(
-            (
-                "מול MA20",
-                "מעל" if rec.get("momentum_ok") else f"{float(rec.get('above_ma20_pct', 0)):+.1f}%",
-            )
-        )
+        rows.append(("משיא 20י", f"{near_high:+.1f}%"))
     rows.append(
         (
             "SL / TP",

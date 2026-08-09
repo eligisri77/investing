@@ -45,6 +45,8 @@ class TradeSuggestion:
     message: str
     score: float = 0.0
     swap_from: str | None = None
+    # Idle-cash deploy offer — may repeat every check interval (not the long alert cooldown).
+    cash_deploy: bool = False
 
 
 @dataclass
@@ -383,6 +385,17 @@ def _sell_recommendations(
     return out
 
 
+def _free_cash_usd(cfg: Any, state: dict[str, Any] | None, holdings: list[dict[str, Any]]) -> float:
+    from trading_pulse.agent.positions import available_capital
+
+    state_obj = state or {"equity": 0, "open_positions": holdings}
+    return float(available_capital(cfg, state_obj))
+
+
+def _min_cash_deploy_usd(cfg: Any) -> float:
+    return float(getattr(cfg, "intraday_cash_topup_min_usd", 20.0) or 20.0)
+
+
 def _append_idle_cash_topup(
     cfg: Any,
     holdings: list[dict[str, Any]],
@@ -390,21 +403,19 @@ def _append_idle_cash_topup(
     state: dict[str, Any] | None,
     exclude_symbols: set[str],
     suggestions: list[TradeSuggestion],
+    *,
+    cash: float | None = None,
 ) -> None:
-    """No open slots, but cash sits idle — offer to top up the strongest holding.
+    """Cash sits idle — offer to top up the strongest holding.
 
-    Closes the gap left by the removed once-daily cash reminder: this is the
-    only place idle cash gets surfaced during market hours once the book is
-    at max position count. `exclude_symbols` are holdings already flagged for
-    sell/swap/cooldown (not candidates for adding more cash).
+    Used when the book is full, or when there is cash but no new-buy candidate
+    this hour. `exclude_symbols` are holdings flagged for sell/swap/cooldown.
     """
     if not holdings:
         return
-    from trading_pulse.agent.positions import available_capital
-
-    state_obj = state or {"equity": 0, "open_positions": holdings}
-    cash = available_capital(cfg, state_obj)
-    min_cash = float(getattr(cfg, "intraday_cash_topup_min_usd", 20.0) or 20.0)
+    if cash is None:
+        cash = _free_cash_usd(cfg, state, holdings)
+    min_cash = _min_cash_deploy_usd(cfg)
     if cash < min_cash:
         return
     candidates = [h for h in holdings if str(h.get("symbol")) not in exclude_symbols]
@@ -421,9 +432,10 @@ def _append_idle_cash_topup(
             kind="buy",
             symbol=sym,
             score=score,
+            cash_deploy=True,
             message=(
-                f"אין מקום לפוזיציה חדשה, אבל יש ${cash:.0f} מזומן פנוי — "
-                f"אפשר לחזק את {sym} (ציון {score:.1f})"
+                f"יש ${cash:.0f} מזומן פנוי — הצעה לחזק את {sym} "
+                f"(ציון {score:.1f}) ב־~${cash:.0f}"
             ),
         )
     )
@@ -455,34 +467,49 @@ def build_suggestions(
 
     max_open = int(getattr(cfg, "max_open_positions", 4))
     open_slots = max(0, max_open - len(holdings))
+    cash = _free_cash_usd(cfg, state, holdings)
+    min_cash = _min_cash_deploy_usd(cfg)
+    has_deployable_cash = cash >= min_cash
+    topup_exclude = sell_symbols | _plan_sell_or_cooldown_symbols(cfg, state)
+
     if open_slots <= 0:
         _append_idle_cash_topup(
             cfg,
             holdings,
             scores,
             state,
-            sell_symbols | _plan_sell_or_cooldown_symbols(cfg, state),
+            topup_exclude,
             suggestions,
+            cash=cash,
         )
 
-    if not scores:
-        return suggestions
+    top = _top_candidate(cfg, scores, skip) if scores else None
 
-    top = _top_candidate(cfg, scores, skip)
-    if top is None:
-        return suggestions
-    best_sym, best = top
-
-    if open_slots > 0:
-        from trading_pulse.agent.positions import available_capital
-
+    if open_slots > 0 and top is not None:
+        best_sym, best = top
         state_obj = state or {"equity": 0, "open_positions": holdings}
-        cash = available_capital(cfg, state_obj)
         equity = float(state_obj.get("equity", 0)) or cash + sum(
             float(p.get("capital_usd", 0)) for p in holdings
         )
         pos_pct = float(getattr(cfg, "max_position_pct", 0.34))
-        buy_usd = round(min(max(cash, 0), equity * pos_pct), 0) if cash > 0 else round(equity * pos_pct, 0)
+        if has_deployable_cash:
+            buy_usd = round(min(cash, equity * pos_pct), 0)
+            suggestions.append(
+                TradeSuggestion(
+                    kind="buy",
+                    symbol=best_sym,
+                    score=float(best["score"]),
+                    cash_deploy=True,
+                    message=(
+                        f"יש ${cash:.0f} מזומן — הצעה: {best_sym} "
+                        f"(ציון {best['score']:.1f} · 5י {best.get('ret_5d_pct', 0):+.1f}% · "
+                        f"נפח {best.get('vol_ratio', 0):.2f}x) ~${buy_usd:.0f}"
+                    ),
+                )
+            )
+            return suggestions
+        # No idle cash — still surface a strong name (swap/funding path).
+        buy_usd = round(equity * pos_pct, 0)
         suggestions.append(
             TradeSuggestion(
                 kind="buy",
@@ -495,6 +522,24 @@ def build_suggestions(
             )
         )
         return suggestions
+
+    # Cash free + open slot but no fresh candidate this hour → top up a holding.
+    if open_slots > 0 and has_deployable_cash:
+        if not any(s.cash_deploy for s in suggestions):
+            _append_idle_cash_topup(
+                cfg,
+                holdings,
+                scores,
+                state,
+                topup_exclude,
+                suggestions,
+                cash=cash,
+            )
+        return suggestions
+
+    if top is None:
+        return suggestions
+    best_sym, best = top
 
     held_scores = [
         (
@@ -556,6 +601,7 @@ def filter_cooled_down(
     state: dict[str, Any],
     cooldown_minutes: int,
     *,
+    cash_deploy_cooldown_minutes: int | None = None,
     now: datetime | None = None,
 ) -> IntradayReport:
     now = now or datetime.now(timezone.utc)
@@ -563,8 +609,15 @@ def filter_cooled_down(
         now = now.replace(tzinfo=timezone.utc)
     cooldowns: dict[str, str] = state.setdefault("intraday_alert_cooldowns", {})
     cutoff = now - timedelta(minutes=cooldown_minutes)
+    cash_cd = (
+        int(cash_deploy_cooldown_minutes)
+        if cash_deploy_cooldown_minutes is not None
+        else cooldown_minutes
+    )
+    # Allow repeating the same cash offer every check interval (e.g. hourly).
+    cash_cutoff = now - timedelta(minutes=max(15, cash_cd))
 
-    def fresh(key: str) -> bool:
+    def fresh(key: str, *, cutoff_at: datetime) -> bool:
         ts = cooldowns.get(key)
         if not ts:
             return True
@@ -572,17 +625,22 @@ def filter_cooled_down(
             prev = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
             if prev.tzinfo is None:
                 prev = prev.replace(tzinfo=timezone.utc)
-            return prev < cutoff
+            return prev < cutoff_at
         except ValueError:
             return True
 
     report.alerts = [
-        a for a in report.alerts if fresh(_cooldown_key(a.symbol, a.kind))
+        a
+        for a in report.alerts
+        if fresh(_cooldown_key(a.symbol, a.kind), cutoff_at=cutoff)
     ]
     report.suggestions = [
         s
         for s in report.suggestions
-        if fresh(_cooldown_key(s.symbol, f"suggest_{s.kind}"))
+        if fresh(
+            _cooldown_key(s.symbol, f"suggest_{s.kind}"),
+            cutoff_at=cash_cutoff if s.cash_deploy else cutoff,
+        )
     ]
     return report
 
@@ -788,7 +846,15 @@ def run_intraday_check(cfg: Any, state: dict[str, Any]) -> bool:
 
     report = build_intraday_report(cfg, state)
     cooldown = int(getattr(cfg, "intraday_alert_cooldown_minutes", DEFAULT_COOLDOWN_MINUTES))
-    report = filter_cooled_down(report, state, cooldown)
+    # Cash-deploy offers follow the check interval so idle cash gets a fresh
+    # review + offer about once per hour during the session.
+    cash_cd = int(getattr(cfg, "intraday_check_interval_minutes", 60) or 60)
+    report = filter_cooled_down(
+        report,
+        state,
+        cooldown,
+        cash_deploy_cooldown_minutes=cash_cd,
+    )
 
     if not report.has_content:
         if not sent_any:

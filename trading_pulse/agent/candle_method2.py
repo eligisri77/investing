@@ -199,6 +199,7 @@ def detect_pending_trigger(
         return None
 
     bias_fn = _bullish_bias_for_bar if side == "LONG" else _bearish_bias_for_bar
+    opposite_fn = _bearish_bias_for_bar if side == "LONG" else _bullish_bias_for_bar
 
     for length in (2, 1):
         seq = tuple(types[-length:])
@@ -225,6 +226,24 @@ def detect_pending_trigger(
             kind_break,
         ):
             continue
+
+        # 2-2-2 = impulse then opposite pullback (middle), not two same-direction type-2 bars.
+        # Entry is the break of the middle bar on the next session.
+        if trigger == "2-2-2":
+            i_mid = -1
+            prev_mid = -2
+            if types[i_mid] != 2:
+                continue
+            if not opposite_fn(
+                float(opens[i_mid]),
+                float(highs[i_mid]),
+                float(lows[i_mid]),
+                float(closes[i_mid]),
+                float(highs[prev_mid]),
+                float(lows[prev_mid]),
+                types[i_mid],
+            ):
+                continue
 
         entry_ref, stop_ref = _levels_for_pending(
             trigger, seq, opens, highs, lows, closes, side=side
@@ -267,7 +286,8 @@ def _levels_for_pending(
         if trigger == "3-2-2" and seq == (3, 2):
             return float(highs[-1]) + cent, float(opens[-1]) - cent
         if trigger == "2-2-2" and seq == (2, 2):
-            return float(highs[-2]) + cent, float(opens[-2]) - cent
+            # Break above middle (pullback) bar high; stop under that bar.
+            return float(highs[-1]) + cent, float(lows[-1]) - cent
         return None, None
 
     # SHORT — mirror: entry cent below the level, stop above
@@ -278,7 +298,8 @@ def _levels_for_pending(
     if trigger == "3-2-2" and seq == (3, 2):
         return float(lows[-1]) - cent, float(opens[-1]) + cent
     if trigger == "2-2-2" and seq == (2, 2):
-        return float(lows[-2]) - cent, float(opens[-2]) + cent
+        # Break below middle (pullback-up) bar low; stop above that bar.
+        return float(lows[-1]) - cent, float(highs[-1]) + cent
     return None, None
 
 
@@ -511,11 +532,6 @@ def analyze_method2_daily(
             score += 0.5
         if htf_info.get("Y") in (2, 3):
             score += 0.5
-        # Prefer continuity over reversal-looking 2-2-2 when HTF is only weakly aligned
-        if pending["trigger"] == "2-2-2" and htf_info.get("W_bias") != (
-            "up" if side == "LONG" else "down"
-        ):
-            score -= 1.0
 
         candidate = {
             **pending,

@@ -66,6 +66,99 @@ def test_pending_short_2_1():
     assert pending["entry_ref"] < pending["stop_ref"]
 
 
+def test_pending_2_2_2_long_up_then_down_pullback():
+    """2↑ then 2↓ → pending 2-2-2; entry above middle (2↓) high."""
+    rows = [
+        (10.0, 11.0, 9.5, 10.5),
+        (10.6, 12.0, 10.4, 11.8),  # 2 up (took high only)
+        (11.5, 11.7, 10.0, 10.2),  # 2 down (took low only) — middle
+    ]
+    o = np.array([r[0] for r in rows], dtype=float)
+    h = np.array([r[1] for r in rows], dtype=float)
+    l = np.array([r[2] for r in rows], dtype=float)
+    c = np.array([r[3] for r in rows], dtype=float)
+    types = classify_series(h, l)
+    assert types[-2:] == [2, 2]
+    pending = detect_pending_trigger(types, o, h, l, c, side="LONG")
+    assert pending is not None
+    assert pending["trigger"] == "2-2-2"
+    assert pending["entry_ref"] == round(11.7 + 0.01, 4)
+    assert pending["stop_ref"] == round(10.0 - 0.01, 4)
+
+
+def test_pending_2_2_2_rejects_two_ups():
+    """Two consecutive 2-up bars are not a 2-2-2 pullback setup."""
+    rows = [
+        (10.0, 11.0, 9.5, 10.5),
+        (10.6, 12.0, 10.4, 11.8),  # 2 up
+        (11.7, 13.0, 11.5, 12.8),  # 2 up again
+    ]
+    o = np.array([r[0] for r in rows], dtype=float)
+    h = np.array([r[1] for r in rows], dtype=float)
+    l = np.array([r[2] for r in rows], dtype=float)
+    c = np.array([r[3] for r in rows], dtype=float)
+    types = classify_series(h, l)
+    assert types[-2:] == [2, 2]
+    pending = detect_pending_trigger(types, o, h, l, c, side="LONG")
+    assert pending is None
+
+
+def test_pending_2_2_2_short_down_then_up_pullback():
+    """2↓ then 2↑ → SHORT 2-2-2; entry below middle (2↑) low."""
+    rows = [
+        (12.0, 12.5, 11.0, 11.5),
+        (11.4, 11.6, 10.0, 10.2),  # 2 down
+        (10.4, 11.8, 10.3, 11.5),  # 2 up (pullback) — middle
+    ]
+    o = np.array([r[0] for r in rows], dtype=float)
+    h = np.array([r[1] for r in rows], dtype=float)
+    l = np.array([r[2] for r in rows], dtype=float)
+    c = np.array([r[3] for r in rows], dtype=float)
+    types = classify_series(h, l)
+    assert types[-2:] == [2, 2]
+    pending = detect_pending_trigger(types, o, h, l, c, side="SHORT")
+    assert pending is not None
+    assert pending["trigger"] == "2-2-2"
+    assert pending["side"] == "SHORT"
+    assert pending["entry_ref"] == round(10.3 - 0.01, 4)
+    assert pending["stop_ref"] == round(11.8 + 0.01, 4)
+    assert pending["entry_ref"] < pending["stop_ref"]
+
+
+def test_pending_2_2_2_short_rejects_two_downs():
+    """Two consecutive 2-down bars are not a SHORT 2-2-2 pullback setup."""
+    rows = [
+        (12.0, 12.5, 11.0, 11.5),
+        (11.4, 11.6, 10.0, 10.2),  # 2 down
+        (10.1, 10.3, 9.0, 9.2),  # 2 down again
+    ]
+    o = np.array([r[0] for r in rows], dtype=float)
+    h = np.array([r[1] for r in rows], dtype=float)
+    l = np.array([r[2] for r in rows], dtype=float)
+    c = np.array([r[3] for r in rows], dtype=float)
+    types = classify_series(h, l)
+    assert types[-2:] == [2, 2]
+    pending = detect_pending_trigger(types, o, h, l, c, side="SHORT")
+    assert pending is None
+
+
+def test_pending_2_2_2_long_rejects_down_then_up():
+    """LONG needs impulse-up then pullback-down; reverse order is not 2-2-2."""
+    rows = [
+        (12.0, 12.5, 11.0, 11.5),
+        (11.4, 11.6, 10.0, 10.2),  # 2 down
+        (10.4, 11.8, 10.3, 11.5),  # 2 up
+    ]
+    o = np.array([r[0] for r in rows], dtype=float)
+    h = np.array([r[1] for r in rows], dtype=float)
+    l = np.array([r[2] for r in rows], dtype=float)
+    c = np.array([r[3] for r in rows], dtype=float)
+    types = classify_series(h, l)
+    assert types[-2:] == [2, 2]
+    pending = detect_pending_trigger(types, o, h, l, c, side="LONG")
+    assert pending is None
+
+
 def test_htf_rejects_weekly_inside():
     idx = pd.date_range("2025-01-01", periods=80, freq="B")
     close = np.linspace(10, 20, len(idx))

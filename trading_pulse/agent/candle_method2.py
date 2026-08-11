@@ -29,6 +29,46 @@ PENDING_TO_TRIGGER: dict[tuple[int, ...], str] = {
     (2, 2): "2-2-2",
 }
 
+DEFAULT_METHOD2_SCAN_CAP = 200
+
+
+def build_method2_scan_pool(
+    *,
+    priority: list[str],
+    universe: list[str],
+    exclude: set[str] | None = None,
+    cap: int = DEFAULT_METHOD2_SCAN_CAP,
+) -> list[str]:
+    """Watchlist/held first, then fill from the broader universe up to ``cap``.
+
+    Symbols in ``exclude`` are skipped. Order is stable: priority order, then
+    universe order for anything not already included.
+    """
+    exclude_u = {str(s).upper() for s in (exclude or set())}
+    cap_n = max(0, int(cap))
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        if len(out) >= cap_n:
+            return
+        sym = str(raw or "").strip().upper()
+        if not sym or sym in seen or sym in exclude_u:
+            return
+        seen.add(sym)
+        out.append(sym)
+
+    for s in priority:
+        _add(s)
+        if len(out) >= cap_n:
+            return out
+    for s in universe:
+        _add(s)
+        if len(out) >= cap_n:
+            break
+    return out
+
+
 # Close in bottom/top of range → conflict with that side
 _WEAK_CLOSE_PCT = 0.35
 
@@ -558,10 +598,12 @@ def scan_method2(
     min_avg_volume: float = 1_000_000,
     min_atr_pct: float = 0.7,
     allow_short: bool = True,
-) -> Method2Hit | None:
-    """Best שיטה 2 pending setup across symbols."""
+    top_n: int = 1,
+) -> list[Method2Hit]:
+    """Top ``top_n`` שיטה 2 pending setups across symbols (best score first)."""
     exclude = {s.upper() for s in (exclude or set())}
-    best: Method2Hit | None = None
+    hits: list[Method2Hit] = []
+    limit = max(1, int(top_n))
 
     for raw in symbols:
         symbol = str(raw).upper().strip()
@@ -612,9 +654,20 @@ def scan_method2(
             side=side if side in ("LONG", "SHORT") else "LONG",  # type: ignore[arg-type]
             details={**analysis, "market_cap": cap},
         )
-        if best is None or hit.pattern_score > best.pattern_score:
-            best = hit
-    return best
+        hits.append(hit)
+
+    hits.sort(key=lambda h: float(h.pattern_score), reverse=True)
+    # Unique symbols — keep highest score per symbol
+    seen: set[str] = set()
+    unique: list[Method2Hit] = []
+    for hit in hits:
+        if hit.symbol in seen:
+            continue
+        seen.add(hit.symbol)
+        unique.append(hit)
+        if len(unique) >= limit:
+            break
+    return unique
 
 
 def fetch_intraday_ohlc(

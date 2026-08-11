@@ -17,6 +17,8 @@
   "method2_intraday_intervals": ["5m", "1m"],
   "method2_risk_pct": 0.02,
   "method2_max_position_pct": 0.15,
+  "method2_scan_cap": 200,
+  "method2_max_offers": 3,
   "max_open_positions": 5,
   "stop_loss_pct": 0.12,
   "take_profit_pct": 0.25,

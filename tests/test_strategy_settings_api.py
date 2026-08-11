@@ -18,11 +18,25 @@ def test_settings_payload_exposes_strategy_defaults_and_metadata(monkeypatch):
     assert payload["values"]["vcp_breakout_enabled"] is False
     assert payload["values"]["relative_strength_enabled"] is False
     assert payload["values"]["market_regime_filter_enabled"] is False
+    assert payload["values"]["method2_scan_cap"] == 200
+    assert payload["values"]["method2_max_offers"] == 3
     metadata = {row["id"]: row for row in payload["strategy_metadata"]}
     assert metadata["method2"]["entry_policy"] == "stop_breakout"
     assert metadata["trend_pullback"]["default_enabled"] is False
     assert metadata["vcp_breakout"]["default_enabled"] is False
     assert metadata["relative_strength"]["default_enabled"] is False
+
+
+def test_settings_sections_include_method2_scan_and_offers_fields(monkeypatch):
+    monkeypatch.setattr(app_settings, "_read_config", lambda: {})
+    payload = app_settings.get_settings_payload()
+    keys = {
+        field["key"]
+        for section in payload["sections"]
+        for field in section["fields"]
+    }
+    assert "method2_scan_cap" in keys
+    assert "method2_max_offers" in keys
 
 
 def test_update_settings_validates_and_persists_strategy_fields(monkeypatch):

@@ -24,6 +24,18 @@ def test_sleeve_aware_equal_keeps_method2_capital():
     assert abs(amounts[0] - amounts[1]) < 0.01
 
 
+def test_sleeve_aware_equal_keeps_multiple_method2_offers():
+    recs = [
+        {"symbol": "AAA", "strategy": "score", "capital_usd": 400},
+        {"symbol": "M2A", "strategy": "method2", "capital_usd": 120, "sleeve": True},
+        {"symbol": "M2B", "strategy": "method2", "capital_usd": 80, "sleeve": True},
+        {"symbol": "M2C", "strategy": "method2", "capital_usd": 100, "sleeve": True},
+    ]
+    amounts = _sleeve_aware_equal_amounts(recs, 1000.0)
+    assert amounts[1:] == [120.0, 80.0, 100.0]
+    assert abs(amounts[0] - 700.0) < 0.01
+
+
 def test_apply_confirm_adds_method2_watch():
     cfg = SimpleNamespace(initial_capital=1000.0)
     state: dict = {"equity": 1000.0, "open_positions": []}

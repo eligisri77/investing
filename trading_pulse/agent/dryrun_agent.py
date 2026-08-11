@@ -145,9 +145,11 @@ class AgentConfig:
     relative_strength_enabled: bool = False
     market_regime_filter_enabled: bool = False
     method2_allow_short: bool = True
-    method2_enabled: bool = True  # מניה חמישית — שיטה 2 (שרוול סיכון)
+    method2_enabled: bool = True  # נרות סיניים 2 — שרוול סיכון (עד method2_max_offers)
     method2_risk_pct: float = 0.02
     method2_max_position_pct: float = 0.15
+    method2_scan_cap: int = 200  # watchlist first, then fill from SOURCE_UNIVERSE
+    method2_max_offers: int = 3  # top Method2 setups offered (was hard-capped at 1)
     method2_intraday_enabled: bool = True  # פריצה תוך־יומית (5m/1m) אחרי הבוקר
     method2_intraday_intervals: list[str] | None = None  # default ["5m","1m"]
     intraday_check_enabled: bool = True
@@ -4531,14 +4533,15 @@ def generate_plan(
                 picks = pd.concat([picks, more], ignore_index=True) if not picks.empty else more
                 logging.info("No candle pattern — filled %d extra score pick(s)", len(more))
 
-    method2_hit = None
+    method2_hits: list = []
     if "method2" in enabled_strategies and bool(getattr(cfg, "method2_enabled", True)):
-        from trading_pulse.agent.candle_method2 import scan_method2
+        from trading_pulse.agent.candle_method2 import build_method2_scan_pool, scan_method2
         from trading_pulse.agent.symbol_cooldown import (
             LEVERAGED_ETF_SYMBOLS,
             is_symbol_in_cooldown,
             leveraged_symbols,
         )
+        from trading_pulse.agent.universe import SOURCE_UNIVERSE
 
         # Do not exclude other strategy picks: duplicate symbols become
         # confluence in combine_recommendations().
@@ -4560,32 +4563,52 @@ def generate_plan(
                 exclude_m2 |= set(LEVERAGED_ETF_SYMBOLS) - main_symbols
         # Need a free open slot beyond main picks
         main_count = len(main_symbols)
-        if open_slots > main_count or (is_empty_portfolio(state) and main_count < int(cfg.max_open_positions)):
-            scan_pool_m2 = [
-                str(s)
-                for s in scan_tickers
-                if str(s).upper() not in exclude_m2
-                and not is_symbol_in_cooldown(state, str(s), as_of=run_day)
-            ]
-            method2_hit = scan_method2(
+        max_offers = max(1, min(3, int(getattr(cfg, "method2_max_offers", 3) or 3)))
+        m2_room = max(0, int(open_slots) - main_count)
+        if is_empty_portfolio(state):
+            m2_room = max(m2_room, max_offers)
+        top_n = min(max_offers, m2_room) if m2_room > 0 else 0
+        if top_n > 0:
+            cooldown_block = {
+                str(s).upper()
+                for s in set(scan_tickers) | set(SOURCE_UNIVERSE)
+                if is_symbol_in_cooldown(state, str(s), as_of=run_day)
+            }
+            scan_pool_m2 = build_method2_scan_pool(
+                priority=[str(s) for s in scan_tickers],
+                universe=list(SOURCE_UNIVERSE),
+                exclude=exclude_m2 | cooldown_block,
+                cap=int(getattr(cfg, "method2_scan_cap", 200) or 200),
+            )
+            logging.info(
+                "Method2 scan pool: %d symbols (cap=%s, max_offers=%d, room=%d)",
+                len(scan_pool_m2),
+                getattr(cfg, "method2_scan_cap", 200),
+                max_offers,
+                top_n,
+            )
+            # Split risk across offered sleeves so total Method2 risk stays ~risk_pct.
+            per_risk = float(getattr(cfg, "method2_risk_pct", 0.02)) / float(top_n)
+            method2_hits = scan_method2(
                 scan_pool_m2,
                 exclude=exclude_m2,
                 equity=capital,
-                risk_pct=float(getattr(cfg, "method2_risk_pct", 0.02)),
+                risk_pct=per_risk,
                 max_position_pct=float(getattr(cfg, "method2_max_position_pct", 0.15)),
                 min_avg_volume=float(getattr(cfg, "min_avg_volume_20d", 1_000_000)),
                 allow_short=bool(getattr(cfg, "method2_allow_short", True)),
+                top_n=top_n,
             )
-            if method2_hit:
+            for hit in method2_hits:
                 logging.info(
-                    "Method2 fifth pick: %s %s trigger=%s capital=$%.0f",
-                    method2_hit.symbol,
-                    method2_hit.side,
-                    method2_hit.trigger,
-                    method2_hit.capital_usd,
+                    "Method2 offer: %s %s trigger=%s capital=$%.0f",
+                    hit.symbol,
+                    hit.side,
+                    hit.trigger,
+                    hit.capital_usd,
                 )
 
-    m2_capital = float(method2_hit.capital_usd) if method2_hit else 0.0
+    m2_capital = sum(float(h.capital_usd) for h in method2_hits)
     main_n = len(picks) + (1 if candle_hit else 0)
     main_budget = max(0.0, float(deployable) - m2_capital)
     if main_n > 0:
@@ -4701,53 +4724,54 @@ def generate_plan(
             candle_rec["breakout_ok"] = not candle_hit.pattern_weak
         recommendations.append(candle_rec)
 
-    if method2_hit:
-        entry = float(method2_hit.entry_ref)
-        stop = float(method2_hit.stop_ref)
-        side = str(method2_hit.side or "LONG")
-        stop_pct = abs(entry - stop) / entry if entry else cfg.stop_loss_pct
-        if side == "SHORT":
-            tp_price = round(entry * (1 - cfg.take_profit_pct), 4)
-        else:
-            tp_price = round(entry * (1 + cfg.take_profit_pct), 4)
-        method2_rec: dict[str, Any] = {
-            "symbol": method2_hit.symbol,
-            "side": side,
-            "capital_usd": round(float(method2_hit.capital_usd), 2),
-            "entry_ref_price": round(entry, 4),
-            "stop_loss_price": round(stop, 4),
-            "take_profit_price": tp_price,
-            "floor_price": round(stop, 4),
-            "stop_loss_pct": round(stop_pct, 4),
-            "take_profit_pct": cfg.take_profit_pct,
-            "score": round(float(method2_hit.pattern_score), 4),
-            "score_technical": round(float(method2_hit.pattern_score), 4),
-            "score_simple_avg": round(float(method2_hit.pattern_score), 4),
-            "source_score_std": 0.0,
-            "source_score_spread": 0.0,
-            "source_disagreement": False,
-            "ret_5d_pct": 0.0,
-            "vol_ratio": 0.0,
-            "volume_ok": True,
-            "source_scores": {"method2": round(method2_hit.pattern_score, 2)},
-            "sources_used": 1,
-            "sources_list": ["method2"],
-            "approved": False,
-            "below_bar": False,
-            "strategy": "method2",
-            "trigger": method2_hit.trigger,
-            "method2_entry_ref": round(entry, 4),
-            "method2_stop_ref": round(stop, 4),
-            "pattern_score": method2_hit.pattern_score,
-            "reason": method2_hit.reason_he,
-            "sleeve": True,
-            "entry_style": "breakout",
-        }
-        if speculative:
-            method2_rec["atr_pct"] = float((method2_hit.details or {}).get("atr_pct") or 0)
-            method2_rec["near_high_pct"] = 0.0
-            method2_rec["breakout_ok"] = True
-        recommendations.append(method2_rec)
+    if method2_hits:
+        for method2_hit in method2_hits:
+            entry = float(method2_hit.entry_ref)
+            stop = float(method2_hit.stop_ref)
+            side = str(method2_hit.side or "LONG")
+            stop_pct = abs(entry - stop) / entry if entry else cfg.stop_loss_pct
+            if side == "SHORT":
+                tp_price = round(entry * (1 - cfg.take_profit_pct), 4)
+            else:
+                tp_price = round(entry * (1 + cfg.take_profit_pct), 4)
+            method2_rec: dict[str, Any] = {
+                "symbol": method2_hit.symbol,
+                "side": side,
+                "capital_usd": round(float(method2_hit.capital_usd), 2),
+                "entry_ref_price": round(entry, 4),
+                "stop_loss_price": round(stop, 4),
+                "take_profit_price": tp_price,
+                "floor_price": round(stop, 4),
+                "stop_loss_pct": round(stop_pct, 4),
+                "take_profit_pct": cfg.take_profit_pct,
+                "score": round(float(method2_hit.pattern_score), 4),
+                "score_technical": round(float(method2_hit.pattern_score), 4),
+                "score_simple_avg": round(float(method2_hit.pattern_score), 4),
+                "source_score_std": 0.0,
+                "source_score_spread": 0.0,
+                "source_disagreement": False,
+                "ret_5d_pct": 0.0,
+                "vol_ratio": 0.0,
+                "volume_ok": True,
+                "source_scores": {"method2": round(method2_hit.pattern_score, 2)},
+                "sources_used": 1,
+                "sources_list": ["method2"],
+                "approved": False,
+                "below_bar": False,
+                "strategy": "method2",
+                "trigger": method2_hit.trigger,
+                "method2_entry_ref": round(entry, 4),
+                "method2_stop_ref": round(stop, 4),
+                "pattern_score": method2_hit.pattern_score,
+                "reason": method2_hit.reason_he,
+                "sleeve": True,
+                "entry_style": "breakout",
+            }
+            if speculative:
+                method2_rec["atr_pct"] = float((method2_hit.details or {}).get("atr_pct") or 0)
+                method2_rec["near_high_pct"] = 0.0
+                method2_rec["breakout_ok"] = True
+            recommendations.append(method2_rec)
 
     if "trend_pullback" in enabled_strategies and new_trade_slots > 0:
         from trading_pulse.agent.strategies.trend_pullback import (
@@ -4833,7 +4857,7 @@ def generate_plan(
 
     selection_cap = min(
         open_slots,
-        new_trade_slots + (1 if method2_hit else 0),
+        new_trade_slots + len(method2_hits),
     )
     if market_regime and float(market_regime.get("exposure_multiplier", 1.0)) <= 0:
         selection_cap = 0

@@ -186,3 +186,42 @@ def test_combined_allocation_caps_sleeve_at_deployable_cash():
     assert rows[0]["capital_usd"] == 250
     assert rows[1]["capital_usd"] == 0
     assert sum(float(row["capital_usd"]) for row in rows) == 250
+
+
+def test_combiner_keeps_multiple_distinct_method2_offers():
+    """selection_cap = new_trade_slots + len(method2_hits) must retain several M2 names."""
+    rows = [
+        {"symbol": "AAA", "strategy": "score", "score": 8.0},
+        {"symbol": "M2A", "strategy": "method2", "score": 9.0, "sleeve": True},
+        {"symbol": "M2B", "strategy": "method2", "score": 8.5, "sleeve": True},
+        {"symbol": "M2C", "strategy": "method2", "score": 8.0, "sleeve": True},
+    ]
+    out = combine_recommendations(rows, max_picks=4)
+    assert len(out) == 4
+    m2_syms = {
+        r["symbol"] for r in out if r.get("strategy_id") == "method2"
+    }
+    assert m2_syms == {"M2A", "M2B", "M2C"}
+
+
+def test_combined_allocation_preserves_multiple_method2_sleeves():
+    rows = [
+        {"symbol": "A", "strategy_id": "score_momentum", "capital_usd": 0},
+        {
+            "symbol": "M2A",
+            "strategy_id": "method2",
+            "capital_usd": 120,
+            "sleeve": True,
+        },
+        {
+            "symbol": "M2B",
+            "strategy_id": "method2",
+            "capital_usd": 80,
+            "sleeve": True,
+        },
+    ]
+    allocate_combined_capital(rows, deployable=1000)
+    by_sym = {r["symbol"]: float(r["capital_usd"]) for r in rows}
+    assert by_sym["M2A"] == 120
+    assert by_sym["M2B"] == 80
+    assert by_sym["A"] == 800

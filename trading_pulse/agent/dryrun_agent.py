@@ -238,7 +238,10 @@ def load_config() -> AgentConfig:
     from trading_pulse.core.env_config import apply_secrets_to_config
 
     raw = apply_secrets_to_config(raw)
-    cfg = AgentConfig(**raw)
+    # Ignore unknown keys so older builds / newer config keys never crash startup.
+    known = {f.name for f in AgentConfig.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+    filtered = {k: v for k, v in raw.items() if k in known}
+    cfg = AgentConfig(**filtered)
     apply_risk_profile(cfg, raw)
     return cfg
 

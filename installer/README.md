@@ -67,6 +67,8 @@ Needs: [Inno Setup 6](https://jrsoftware.org/isinfo.php) + [GitHub CLI](https://
 
 **Manual:** bump `APP_VERSION` → `.\installer\build.ps1 -Package` → upload `TradingPulse-Setup-X.Y.Z.exe` to a Release tagged `vX.Y.Z`.
 
+After `.\scripts\release.ps1` succeeds it also **syncs** `dist\TradingPulse\` into `%LOCALAPPDATA%\Programs\TradingPulse\` and relaunches that install (so Windows Startup does not keep an old build). End users still update via Setup.exe or Settings → עדכון גרסה.
+
 The app settings page lists up to **3 newer** releases (forward-only) from `eligisri77/investing`.
 
 ## Version bump

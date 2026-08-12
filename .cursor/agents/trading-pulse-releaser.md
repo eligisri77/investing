@@ -2,10 +2,10 @@
 name: trading-pulse-releaser
 description: >-
   Builds TradingPulse-Setup-*.exe and publishes a GitHub Release for end-user
-  install + in-app updater. After each successful release, relaunches
-  dist/TradingPulse/TradingPulse.exe (build stops the running app). Use when
-  the user asks to release, publish a version, bump APP_VERSION, or upload
-  Setup.exe to GitHub Releases.
+  install + in-app updater. After each successful release, syncs
+  dist → %LOCALAPPDATA%\Programs\TradingPulse and relaunches that install
+  (Startup must not keep a stale build). Use when the user asks to release,
+  publish a version, bump APP_VERSION, or upload Setup.exe to GitHub Releases.
 model: inherit
 readonly: false
 ---
@@ -43,20 +43,19 @@ You publish **Trading Pulse Windows releases**. You do not invent product featur
 
 4. If `TradingPulse.exe` / dist is locked, quit tray apps first; `build.ps1` tries to stop `TradingPulse.exe`.
 5. Never commit `.env`, tokens, or `instance/data/`.
-6. After a successful build/publish (not DryRun), **always relaunch the new local app** — the build stops the running process, so start the fresh binary:
+6. After a successful build/publish (not DryRun), **`release.ps1` syncs and relaunches the local install**:
+   - Copies `dist\TradingPulse\` → `%LOCALAPPDATA%\Programs\TradingPulse\` (what Startup / Start Menu use)
+   - Removes duplicate Startup `TradingPulse.lnk` if it pointed at `run_app.ps1`
+   - Updates `Trading Pulse.lnk` target to the installed exe
+   - Starts `%LOCALAPPDATA%\Programs\TradingPulse\TradingPulse.exe`
 
-```powershell
-$exe = Join-Path $ProjectRoot "dist\TradingPulse\TradingPulse.exe"
-# or from repo root:
-Start-Process -FilePath ".\dist\TradingPulse\TradingPulse.exe"
-```
+   If you publish without the script’s sync step for any reason, do the same manually — **do not** only start `dist\…` while Startup still points at an old Programs build (that caused the `strategy_mode` crash after reboot).
 
-Confirm a `TradingPulse` process is running. If the exe is missing, say so; do not skip this step silently when the file exists.
 7. After success, report (Hebrew-friendly, clear numbers):
    - version + tag (`vX.Y.Z`)
    - **how many tests passed** (from script output / `installer/output/release-test-summary.txt`, e.g. `Tests: 603 passed`)
    - Release URL
-   - that local `dist\TradingPulse\TradingPulse.exe` was started
+   - that **Programs\TradingPulse** was synced and relaunched (not only `dist\`)
    - reminder: users open Releases page or use Settings → עדכון גרסה (only newer than installed)
 
 If the test gate failed, report the failure count and **do not** publish a release.

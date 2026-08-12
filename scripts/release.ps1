@@ -215,6 +215,66 @@ else {
     if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 }
 
+function Sync-AndRelaunchLocalInstall {
+    <#
+      After release: copy dist → %LOCALAPPDATA%\Programs\TradingPulse so Startup
+      / Start Menu shortcuts do not keep running a stale July-era install.
+    #>
+    $src = Join-Path $ProjectRoot "dist\TradingPulse"
+    $exeSrc = Join-Path $src "TradingPulse.exe"
+    if (-not (Test-Path $exeSrc)) {
+        Write-Warning "dist\TradingPulse\TradingPulse.exe missing — skip local install sync"
+        return
+    }
+    $dst = Join-Path $env:LOCALAPPDATA "Programs\TradingPulse"
+    Write-Host "==> Syncing local install: $dst"
+    Get-Process -Name "TradingPulse" -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "    stopping PID $($_.Id)"
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    & robocopy $src $dst /MIR /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    $rc = $LASTEXITCODE
+    if ($rc -ge 8) {
+        throw "robocopy failed while syncing local install (exit $rc)"
+    }
+    # Reset robocopy's non-zero "success" codes so callers using $ErrorActionPreference=Stop are fine
+    $global:LASTEXITCODE = 0
+
+    $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+    $dup = Join-Path $startup "TradingPulse.lnk"
+    if (Test-Path $dup) {
+        # Avoid dual Startup (old run_app.ps1 + installed exe)
+        Remove-Item -LiteralPath $dup -Force -ErrorAction SilentlyContinue
+        Write-Host "    removed duplicate Startup shortcut TradingPulse.lnk"
+    }
+    $main = Join-Path $startup "Trading Pulse.lnk"
+    if (Test-Path $main) {
+        $sh = New-Object -ComObject WScript.Shell
+        $lnk = $sh.CreateShortcut($main)
+        $lnk.TargetPath = (Join-Path $dst "TradingPulse.exe")
+        $lnk.WorkingDirectory = $dst
+        if ([string]::IsNullOrWhiteSpace($lnk.Arguments)) {
+            $lnk.Arguments = "--tray-only"
+        }
+        $lnk.Save()
+        Write-Host "    Startup shortcut → $($lnk.TargetPath)"
+    }
+
+    $exeDst = Join-Path $dst "TradingPulse.exe"
+    Write-Host "==> Relaunching installed app..."
+    Start-Process -FilePath $exeDst -WorkingDirectory $dst
+    Start-Sleep -Seconds 2
+    $alive = Get-Process -Name "TradingPulse" -ErrorAction SilentlyContinue
+    if ($alive) {
+        Write-Host "OK: TradingPulse running (PID $($alive.Id -join ', ')) from $exeDst"
+    }
+    else {
+        Write-Warning "TradingPulse process not detected after relaunch — start manually: $exeDst"
+    }
+}
+
 $url = & gh release view $tag --json url -q .url
 Write-Host ""
 Write-Host "OK: $url"
@@ -224,3 +284,5 @@ Write-Host "In-app updater reads: https://github.com/eligisri77/investing/releas
 if (Test-Path $testSummaryPath) {
     Write-Host "Test summary file: $testSummaryPath"
 }
+
+Sync-AndRelaunchLocalInstall

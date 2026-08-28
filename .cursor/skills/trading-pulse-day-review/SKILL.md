@@ -71,3 +71,4 @@ Use the same sections as `.cursor/agents/trading-pulse-cracker.md` (סיכום �
 - Dump secrets from `.env`
 - Change code during a pure review (list fix ideas separately)
 - Confuse Israel clock with US session date
+- During selection freeze (~until 2026-08-28): do not propose implementing Method2/score filters unless the user asks — append observations to `.cursor/learnings/selection-insights.md` instead

@@ -28,6 +28,7 @@ Read this skill before changing Telegram, plans, guides, or watchlist behavior.
 | Settings UI | `core/app_settings.py` → `/api/settings` → `#/settings` |
 | Config | `config.json` (secrets in `.env`) |
 | Desktop app | `desktop/win_app.py`, `scripts/run_app.ps1` |
+| Selection learnings (freeze ~2 weeks) | `.cursor/learnings/selection-insights.md` |
 
 Paths are under `trading_pulse/` unless noted. Entry: `python -m trading_pulse`, `python -m trading_pulse.api`, `python -m trading_pulse.desktop`.
 

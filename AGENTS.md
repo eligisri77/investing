@@ -9,6 +9,7 @@ Dry-run swing trading agent (Telegram + desktop dashboard). Package: `trading_pu
 | Tooling overview | `.cursor/README.md` |
 | Conventions | `.cursor/skills/trading-pulse/SKILL.md` |
 | Day / “what happened?” | `trading-pulse-day-review` + `@trading-pulse-cracker` |
+| Selection learnings (freeze) | `.cursor/learnings/selection-insights.md` — **no strategy tweaks until ~2026-08-28** |
 | Pre-done checklist | skill `trading-pulse-ship-check` |
 | Bot copy | `@trading-pulse-bot-messages` |
 | App guides | `@trading-pulse-guide-updater` |

@@ -315,15 +315,109 @@ def test_build_offer_action_cubes_merges_cash_swap_and_howto():
         {"symbol": "SOXL", "score": 11.4},
         cash_free=0.0,
         suggested_usd=0.0,
-        swap={"from_symbol": "PBF", "from_score": 5.9},
+        swap={"from_symbol": "PBF", "from_score": 5.9, "capital_usd": 180.0},
+        portfolio=[
+            {"symbol": "PBF", "capital_usd": 180.0},
+            {"symbol": "AMZN", "capital_usd": 220.0},
+        ],
     )
     titles = [c["title"] for c in cubes]
     assert titles == ["מזומן וקנייה", "החלפה מומלצת", "איך לבצע"]
     assert "$0" in cubes[0]["value"]
-    assert "החלף PBF SOXL" in cubes[1]["value"]
+    assert "PBF $180" in cubes[0]["value"]
+    assert "מזומן $0" in cubes[0]["value"]
+    swap_cube = cubes[1]
+    assert "החלף PBF SOXL" in swap_cube["value"]
+    assert "מעביר ~$180 מ־PBF" in swap_cube["value"]
+    assert "עכשיו: PBF $180" in swap_cube["value"]
+    assert "AMZN $220" in swap_cube["value"]
+    assert "מזומן $0" in swap_cube["value"]
     assert "דלג" in cubes[2]["value"]
     assert "כן / קנה" not in cubes[2]["value"]
     assert "מכור SYMBOL" not in cubes[2]["value"]
+
+
+def test_where_money_is_lists_holdings_and_cash():
+    from trading_pulse.agent.offer_queue import _where_money_is
+
+    text = _where_money_is(
+        [
+            {"symbol": "TGT", "capital_usd": 100.0},
+            {"symbol": "PATH", "capital_usd": 200.0},
+        ],
+        300.0,
+        swap={"from_symbol": "TGT", "capital_usd": 100.0},
+    )
+    assert text.startswith("TGT $100")
+    assert "PATH $200" in text
+    assert text.endswith("מזומן $300")
+
+
+def test_where_money_is_tags_approved_pending():
+    from trading_pulse.agent.offer_queue import _where_money_is
+
+    text = _where_money_is(
+        [
+            {
+                "symbol": "ELF",
+                "capital_usd": 950.0,
+                "source": "approved_pending",
+            },
+            {"symbol": "AMZN", "capital_usd": 200.0},
+        ],
+        0.0,
+    )
+    assert "ELF $950 (אושר)" in text
+    assert "AMZN $200" in text
+    assert "AMZN $200 (אושר)" not in text
+    assert text.endswith("מזומן $0")
+
+
+def test_where_money_is_skips_tiny_and_blank_symbols():
+    from trading_pulse.agent.offer_queue import _where_money_is
+
+    text = _where_money_is(
+        [
+            {"symbol": "", "capital_usd": 500.0},
+            {"symbol": "DUST", "capital_usd": 0.5},
+            {"symbol": "META", "capital_usd": 120.0},
+        ],
+        50.0,
+    )
+    assert text == "META $120 · מזומן $50"
+
+
+def test_where_money_is_fills_from_swap_when_holding_missing():
+    """Swap capital_usd can seed the map when the from-name is absent from holdings."""
+    from trading_pulse.agent.offer_queue import _where_money_is
+
+    text = _where_money_is(
+        [{"symbol": "META", "capital_usd": 80.0}],
+        0.0,
+        swap={"from_symbol": "AMD", "capital_usd": 200.0},
+    )
+    assert text.startswith("AMD $200")
+    assert "META $80" in text
+
+
+def test_build_offer_action_cubes_fills_swap_capital_from_portfolio():
+    """When swap.capital_usd is missing, «מעביר» uses the matching portfolio row."""
+    cubes = build_offer_action_cubes(
+        {"symbol": "NVDA", "score": 14.0},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        swap={"from_symbol": "AMD", "from_score": 6.0},  # no capital_usd
+        portfolio=[
+            {"symbol": "AMD", "capital_usd": 175.0},
+            {"symbol": "META", "capital_usd": 90.0},
+        ],
+    )
+    swap_cube = next(c for c in cubes if c["title"] == "החלפה מומלצת")
+    assert "מעביר ~$175 מ־AMD" in swap_cube["value"]
+    assert "עכשיו: AMD $175" in swap_cube["value"]
+    assert "META $90" in swap_cube["value"]
+    cash_cube = next(c for c in cubes if c["title"] == "מזומן וקנייה")
+    assert "עכשיו: AMD $175" in cash_cube["value"]
 
 
 def test_build_offer_action_cubes_with_cash_suggests_yes_buy_amount():
@@ -357,8 +451,17 @@ def test_format_offer_prompt_zero_cash_with_swap_recommends_swap_command():
         position_no=1,
         total=2,
         swap=swap,
+        portfolio=[
+            {"symbol": "AMD", "capital_usd": 200.0},
+            {"symbol": "META", "capital_usd": 150.0},
+        ],
     )
     assert "מזומן פנוי: <b>$0</b>" in text
+    assert "עכשיו בתיק:" in text
+    assert "AMD $200" in text
+    assert "META $150" in text
+    assert "מזומן $0" in text
+    assert "מעביר ~$200" in text
     assert "מומלץ להחליף" in text
     assert "<code>החלף AMD NVDA</code>" in text
     assert "ממזומן" not in text  # no cash-buy path
@@ -383,12 +486,65 @@ def test_format_offer_prompt_with_cash_and_swap_shows_both_paths():
         position_no=1,
         total=2,
         swap=swap,
+        portfolio=[
+            {"symbol": "AMD", "capital_usd": 200.0},
+            {"symbol": "META", "capital_usd": 100.0},
+        ],
     )
     assert "ממזומן ($150)" in text
     assert "<code>כן</code>" in text or "<code>קנה</code>" in text
     assert "<code>החלף AMD NVDA</code>" in text
     assert "מומלץ להחליף" in text
+    assert "עכשיו בתיק:" in text
+    assert "AMD $200" in text
+    assert "META $100" in text
+    assert "מזומן $300" in text
+    assert "מעביר ~$200" in text
     assert "מכור SYMBOL" not in text
+
+
+def test_format_offer_prompt_fills_swap_capital_from_portfolio():
+    text = format_offer_prompt(
+        {"symbol": "NVDA", "score": 14.0, "strategy_id": "score_momentum"},
+        cash_free=0.0,
+        suggested_usd=0.0,
+        position_no=1,
+        total=1,
+        swap={"from_symbol": "AMD", "from_score": 6.0},  # capital omitted
+        portfolio=[{"symbol": "AMD", "capital_usd": 220.0}],
+    )
+    assert "מעביר ~$220" in text
+    assert "עכשיו בתיק:" in text
+    assert "AMD $220" in text
+    assert "<code>החלף AMD NVDA</code>" in text
+
+
+def test_format_offer_prompt_shows_approved_pending_in_money_map():
+    text = format_offer_prompt(
+        {"symbol": "U", "score": 10.2},
+        cash_free=0.0,
+        suggested_usd=190.0,
+        position_no=2,
+        total=5,
+        swap=None,
+        holdings=[
+            {
+                "symbol": "ELF",
+                "capital_usd": 950.0,
+                "source": "approved_pending",
+            }
+        ],
+        portfolio=[
+            {
+                "symbol": "ELF",
+                "capital_usd": 950.0,
+                "source": "approved_pending",
+            }
+        ],
+    )
+    assert "עכשיו בתיק:" in text
+    assert "ELF $950 (אושר)" in text
+    assert "מזומן $0" in text
 
 
 def test_format_offer_prompt_zero_cash_without_swap_names_real_holdings():
@@ -618,6 +774,51 @@ def test_send_offer_passes_held_funding_candidates_to_cubes(monkeypatch):
     holdings = cubes_kwargs[0].get("holdings") or []
     assert [h["symbol"] for h in holdings] == ["AMZN", "META"]  # weakest first
     assert cubes_kwargs[0].get("cash_free") == 0.0
+    portfolio = cubes_kwargs[0].get("portfolio") or []
+    assert {h["symbol"] for h in portfolio} == {"META", "AMZN"}
+
+
+def test_send_offer_merges_approved_pending_into_portfolio(monkeypatch):
+    """Empty book + approved buy: portfolio money-map includes that pending capital."""
+    _, notify_calls, cubes_kwargs = _patch_send_offer_deps(monkeypatch)
+    plan = _plan(
+        available_capital_usd=0.0,
+        holdings=[],
+        holding_actions=[],
+        recommendations=[
+            {
+                "symbol": "ELF",
+                "approved": True,
+                "capital_usd": 950.0,
+                "score": 10.4,
+            },
+            {"symbol": "U", "score": 10.2},
+        ],
+    )
+    state: dict = {
+        "pending_offer": {
+            "trading_day": plan["for_trading_day"],
+            "queue": ["U"],
+            "index": 0,
+            "decided": {"ELF": 950.0},
+            "offered_at": None,
+            "nudged_at": None,
+        }
+    }
+    assert offer_queue.send_offer(object(), state, plan) is True
+    assert notify_calls == []
+    assert cubes_kwargs
+    holdings = cubes_kwargs[0].get("holdings") or []
+    assert any(
+        str(h.get("symbol") or "").upper() == "ELF"
+        and str(h.get("source") or "") == "approved_pending"
+        for h in holdings
+    )
+    portfolio = cubes_kwargs[0].get("portfolio") or []
+    assert any(str(h.get("symbol") or "").upper() == "ELF" for h in portfolio)
+    elf = next(h for h in portfolio if str(h.get("symbol") or "").upper() == "ELF")
+    assert float(elf.get("capital_usd") or 0) == 950.0
+    assert str(elf.get("source") or "") == "approved_pending"
 
 
 def test_send_offer_text_fallback_zero_cash_names_real_tickers(monkeypatch):

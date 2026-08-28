@@ -858,6 +858,7 @@ def offer_cubes_card(
     swap_from: str | None = None,
     swap_from_score: float | None = None,
     holdings: list[dict[str, Any]] | None = None,
+    portfolio: list[dict[str, Any]] | None = None,
 ) -> bytes | None:
     """PNG card: metric cubes + cash/swap/how-to (single message, no action strip)."""
     from trading_pulse.agent.offer_queue import (
@@ -880,6 +881,7 @@ def offer_cubes_card(
                 suggested_usd=suggested_usd,
                 swap=swap,
                 holdings=holdings,
+                portfolio=portfolio,
             )
         )
         doc = html_offer_cubes(

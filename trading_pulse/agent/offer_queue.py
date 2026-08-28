@@ -264,6 +264,49 @@ def build_offer_metric_cubes(rec: dict[str, Any], *, rank: int | None = None) ->
     return cubes
 
 
+def _where_money_is(
+    holdings: list[dict[str, Any]] | None,
+    cash_free: float,
+    *,
+    swap: dict[str, Any] | None = None,
+    max_names: int = 6,
+) -> str:
+    """One-liner: ``TGT $100 · AMZN $200 · מזומן $0`` (where capital sits now)."""
+    by_sym: dict[str, tuple[float, str]] = {}
+    for h in holdings or []:
+        sym = str(h.get("symbol") or "").upper()
+        if not sym:
+            continue
+        cap = float(h.get("capital_usd") or 0)
+        if cap < 1:
+            continue
+        source = str(h.get("source") or "held")
+        tag = "אושר" if source == "approved_pending" else ""
+        prev = by_sym.get(sym)
+        if prev is None or cap > prev[0]:
+            by_sym[sym] = (cap, tag)
+
+    if swap:
+        from_sym = str(swap.get("from_symbol") or "").upper()
+        from_cap = float(swap.get("capital_usd") or 0)
+        if from_sym and from_cap >= 1:
+            prev = by_sym.get(from_sym)
+            if prev is None or from_cap > prev[0]:
+                by_sym[from_sym] = (from_cap, prev[1] if prev else "")
+
+    highlight = str((swap or {}).get("from_symbol") or "").upper()
+
+    def _sort_key(item: tuple[str, tuple[float, str]]) -> tuple[int, float, str]:
+        sym, (cap, _tag) = item
+        return (0 if sym == highlight else 1, -cap, sym)
+
+    bits: list[str] = []
+    for sym, (cap, tag) in sorted(by_sym.items(), key=_sort_key)[:max_names]:
+        bits.append(f"{sym} ${cap:.0f}" + (f" ({tag})" if tag else ""))
+    bits.append(f"מזומן ${float(cash_free):.0f}")
+    return " · ".join(bits)
+
+
 def build_offer_action_cubes(
     rec: dict[str, Any],
     *,
@@ -271,15 +314,20 @@ def build_offer_action_cubes(
     suggested_usd: float,
     swap: dict[str, Any] | None = None,
     holdings: list[dict[str, Any]] | None = None,
+    portfolio: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Cash / swap / how-to cubes — merged into the metrics PNG (no second message).
 
     Action commands always name real cash amounts or real tickers from ``holdings`` /
     ``swap`` — never the placeholder word SYMBOL.
+    ``portfolio`` (full book) drives the «where is my money» map; falls back to
+    ``holdings`` when omitted.
     """
     sym = str(rec.get("symbol") or "")
     score = float(rec.get("score") or rec.get("score_technical") or 0)
     cubes: list[dict[str, str]] = []
+    money_src = portfolio if portfolio is not None else holdings
+    money_map = _where_money_is(money_src, cash_free, swap=swap)
 
     if cash_free >= 1 and suggested_usd >= 1:
         cubes.append(
@@ -294,11 +342,19 @@ def build_offer_action_cubes(
             }
         )
     else:
+        has_invested = any(float(h.get("capital_usd") or 0) >= 1 for h in (money_src or []))
+        if not has_invested and swap and float(swap.get("capital_usd") or 0) >= 1:
+            has_invested = True
+        cash_value = (
+            f"$0 פנוי · עכשיו: {money_map}"
+            if has_invested
+            else "$0 פנוי — רק מכירה/החלפה ממניות שבתיק"
+        )
         cubes.append(
             {
                 "title": "מזומן וקנייה",
-                "blurb": "בלי מזומן אי אפשר לאשר קנייה ישירה מההצעה.",
-                "value": "$0 פנוי — רק מכירה/החלפה ממניות שבתיק",
+                "blurb": "בלי מזומן אי אפשר לאשר קנייה ישירה מההצעה — הכסף כבר במניות.",
+                "value": cash_value,
                 "wide": "1",
             }
         )
@@ -309,14 +365,24 @@ def build_offer_action_cubes(
     if swap:
         from_sym = str(swap.get("from_symbol") or "")
         from_score = float(swap.get("from_score") or 0)
+        from_cap = float(swap.get("capital_usd") or 0)
+        if from_cap < 1 and money_src:
+            for h in money_src:
+                if str(h.get("symbol") or "").upper() == from_sym.upper():
+                    from_cap = float(h.get("capital_usd") or 0)
+                    break
+        value_bits = [
+            f"החלף {from_sym} {sym}",
+            f"ציון {from_score:.1f} → {score:.1f}",
+        ]
+        if from_cap >= 1:
+            value_bits.append(f"מעביר ~${from_cap:.0f} מ־{from_sym}")
+        value_bits.append(f"עכשיו: {money_map}")
         cubes.append(
             {
                 "title": "החלפה מומלצת",
-                "blurb": "ההצעה חזקה יותר בציונים ממניה שכבר בתיק.",
-                "value": (
-                    f"החלף {from_sym} {sym} · "
-                    f"ציון {from_score:.1f} → {score:.1f}"
-                ),
+                "blurb": "איפה הכסף מושקע עכשיו, ומה ההחלפה מעבירה למניה החזקה יותר.",
+                "value": " · ".join(value_bits),
                 "wide": "1",
             }
         )
@@ -444,6 +510,7 @@ def format_offer_prompt(
     total: int,
     swap: dict[str, Any] | None = None,
     holdings: list[dict[str, Any]] | None = None,
+    portfolio: list[dict[str, Any]] | None = None,
 ) -> str:
     """Text fallback when the cubes PNG cannot be sent."""
     from trading_pulse.agent.strategy_labels import strategy_label
@@ -453,6 +520,8 @@ def format_offer_prompt(
     sym = escape_html(sym_raw)
     score = float(rec.get("score") or rec.get("score_technical") or 0)
     method = strategy_label(rec) or str(rec.get("strategy_id") or rec.get("strategy") or "").strip()
+    money_src = portfolio if portfolio is not None else holdings
+    money_map = _where_money_is(money_src, cash_free, swap=swap)
     lines = [
         f"💡 <b>הצעה {position_no}/{total}: {sym}</b> · ציון <b>{score:.1f}</b>",
     ]
@@ -465,14 +534,29 @@ def format_offer_prompt(
         )
     else:
         lines.append("מזומן פנוי: <b>$0</b> — אי אפשר לקנות בלי למכור/להחליף מהתיק")
+    if money_map and (
+        any(float(h.get("capital_usd") or 0) >= 1 for h in (money_src or []))
+        or (swap and float(swap.get("capital_usd") or 0) >= 1)
+        or cash_free >= 1
+    ):
+        lines.append(f"עכשיו בתיק: <b>{escape_html(money_map)}</b>")
 
     if swap:
         from_sym = escape_html(str(swap["from_symbol"]))
         from_score = float(swap.get("from_score") or 0)
-        lines.append(
+        from_cap = float(swap.get("capital_usd") or 0)
+        if from_cap < 1 and money_src:
+            for h in money_src:
+                if str(h.get("symbol") or "").upper() == str(swap["from_symbol"]).upper():
+                    from_cap = float(h.get("capital_usd") or 0)
+                    break
+        swap_line = (
             f"🔁 מומלץ להחליף: <b>{from_sym}</b> (ציון {from_score:.1f}) → "
             f"<b>{sym}</b> ({score:.1f})"
         )
+        if from_cap >= 1:
+            swap_line += f" — מעביר ~${from_cap:.0f}"
+        lines.append(swap_line)
     elif cash_free < 1:
         pending = _pending_funding_rows(holdings, exclude=sym_raw)
         if pending:
@@ -574,6 +658,17 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             for h in (plan.get("holdings") or [])
             if str(h.get("symbol") or "").upper() != str(symbol or "").upper()
         ]
+    # Full book for «where is my money» (amounts) — not only weak funding candidates.
+    portfolio_for_money = list(plan.get("holdings") or [])
+    for h in holdings_for_funding:
+        if str(h.get("source") or "") != "approved_pending":
+            continue
+        sym_u = str(h.get("symbol") or "").upper()
+        if not sym_u:
+            continue
+        if any(str(x.get("symbol") or "").upper() == sym_u for x in portfolio_for_money):
+            continue
+        portfolio_for_money.append(h)
     from trading_pulse.telegram.reply_cards import (
         chart_with_recommendation_details,
         offer_cubes_card,
@@ -607,6 +702,7 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             rank=position_no,
             swap=swap,
             holdings=holdings_for_funding,
+            portfolio=portfolio_for_money,
         )
         if cubes_img:
             # Caption stays tiny — actions live inside the PNG cubes.
@@ -630,6 +726,7 @@ def send_offer(cfg: Any, state: dict[str, Any], plan: dict[str, Any]) -> bool:
             total=total,
             swap=swap,
             holdings=holdings_for_funding,
+            portfolio=portfolio_for_money,
         )
         send_user_notification(cfg, text, context="offer", parse_mode="HTML")
 

@@ -19,6 +19,7 @@ This repo is **Trading Pulse**. See root `AGENTS.md`.
 |------|-----|
 | Telegram / plans / guides / watchlist coding | `.cursor/skills/trading-pulse/SKILL.md` |
 | «מה קרה היום?» / logs / fills | `trading-pulse-day-review` + `@trading-pulse-cracker` |
+| Selection learnings (freeze ~עד 2026-08-28) | `.cursor/learnings/selection-insights.md` |
 | New code → tests | `@trading-pulse-test-writer` (**required** after product edits) |
 | Commands / flow → app guides | `@trading-pulse-guide-updater` (**required** when UX/commands change) |
 | Unclear / new bot messages | `@trading-pulse-bot-messages` |

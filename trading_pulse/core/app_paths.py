@@ -31,6 +31,11 @@ def install_dir() -> Path:
 
 def user_data_dir() -> Path:
     """Writable config, secrets, plans, and runtime data."""
+    override = (os.environ.get("TRADING_PULSE_USER_DATA") or "").strip()
+    if override:
+        root = Path(override)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
     if is_frozen():
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / APP_NAME
         root.mkdir(parents=True, exist_ok=True)

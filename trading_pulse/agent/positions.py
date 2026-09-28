@@ -203,11 +203,25 @@ def add_lot_to_position(
     return pos
 
 
-def fetch_day_ohlc(symbol: str, trading_day: date) -> dict[str, float] | None:
+def fetch_day_ohlc(
+    symbol: str,
+    trading_day: date,
+    *,
+    lookback_calendar_days: int = 0,
+) -> dict[str, float] | None:
+    """Daily OHLC for ``trading_day``, or the latest prior bar within lookback.
+
+    Pre-market / weekends often have no bar for «today» yet — callers that must
+    mark a dry-run sell (manual ``מכור`` / ``החלף``) should pass lookback so we
+    can use the previous session close instead of failing as «no position».
+    """
+    lookback = max(0, int(lookback_calendar_days))
+    start = trading_day - timedelta(days=lookback)
+    end = trading_day + timedelta(days=1)
     day_df = yf.download(
         symbol,
-        start=trading_day.isoformat(),
-        end=(trading_day + timedelta(days=1)).isoformat(),
+        start=start.isoformat(),
+        end=end.isoformat(),
         interval="1d",
         auto_adjust=False,
         progress=False,
@@ -216,17 +230,32 @@ def fetch_day_ohlc(symbol: str, trading_day: date) -> dict[str, float] | None:
     if day_df.empty:
         return None
 
-    def col(name: str) -> pd.Series:
-        series = day_df[name]
+    def col(frame: Any, name: str) -> pd.Series:
+        series = frame[name]
         if isinstance(series, pd.DataFrame):
             series = series.iloc[:, 0]
         return series
 
+    # Prefer an exact session match; else last bar on/before trading_day.
+    chosen_i = None
+    for i in range(len(day_df) - 1, -1, -1):
+        idx = day_df.index[i]
+        day_str = idx.date().isoformat() if hasattr(idx, "date") else str(idx)[:10]
+        try:
+            bar_day = date.fromisoformat(day_str)
+        except ValueError:
+            continue
+        if bar_day <= trading_day:
+            chosen_i = i
+            break
+    if chosen_i is None:
+        return None
+    row = day_df.iloc[[chosen_i]]
     return {
-        "open": float(col("Open").iloc[0]),
-        "high": float(col("High").iloc[0]),
-        "low": float(col("Low").iloc[0]),
-        "close": float(col("Close").iloc[0]),
+        "open": float(col(row, "Open").iloc[0]),
+        "high": float(col(row, "High").iloc[0]),
+        "low": float(col(row, "Low").iloc[0]),
+        "close": float(col(row, "Close").iloc[0]),
     }
 
 
@@ -735,7 +764,8 @@ def partial_sell_position(
             continue
         pos = dict(pos)
         ensure_position_lots(pos)
-        bar = fetch_day_ohlc(symbol, day)
+        # Manual sells often run pre-US-open when today's bar is not published yet.
+        bar = fetch_day_ohlc(symbol, day, lookback_calendar_days=10)
         if bar is None:
             return None
         exit_price = float(bar["close"])

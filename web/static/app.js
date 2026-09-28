@@ -1903,39 +1903,91 @@ async function renderSettings() {
   });
 }
 
+async function loadNav() {
+  // Never call /api/dashboard here — it Yahoo-fetches skipped picks and can take 20s+,
+  // blocking every page transition (and starving other API calls in the UI).
+  try {
+    const navData = await fetchJson("/api/nav");
+    renderNav(navData.symbols || [], navData.inbox || {});
+    return navData;
+  } catch {
+    /* older builds without /api/nav */
+  }
+  try {
+    const portfolio = await fetchJson("/api/portfolio");
+    const symbols = (portfolio.open_positions || [])
+      .map((p) => p.symbol)
+      .filter(Boolean);
+    renderNav(symbols, {});
+    return { symbols, inbox: {} };
+  } catch {
+    renderNav([], {});
+    return null;
+  }
+}
+
 async function router() {
   destroyCharts();
   app.innerHTML = '<p class="empty">טוען...</p>';
 
   try {
-    const dash = await fetchJson("/api/dashboard");
-    renderNav(dash.symbols, dash.inbox || {});
-
     const hash = location.hash || "#/";
     const stockMatch = hash.match(/^#\/stock\/([A-Z0-9.^-]+)$/i);
 
-    if (hash === "#/plan") {
-      await renderActivePlan();
-    } else if (hash === "#/portfolio") {
+    // Highlight current tab immediately; fill symbol chips in background.
+    renderNav([], {});
+    const navPromise = loadNav();
+
+    if (hash === "#/portfolio") {
       const portfolio = await fetchJson("/api/portfolio");
       renderPortfolio(portfolio);
-    } else if (hash === "#/messages") {
+      await navPromise;
+      return;
+    }
+
+    if (hash === "#/plan") {
+      await renderActivePlan();
+      await navPromise;
+      return;
+    }
+    if (hash === "#/messages") {
       const msgs = await fetchJson("/api/telegram/messages");
       renderMessages(msgs);
-    } else if (hash === "#/selection") {
-      await renderSelectionGuide();
-    } else if (hash === "#/guide") {
-      await renderTelegramGuide();
-    } else if (hash === "#/bot-guide") {
-      await renderBotGuide();
-    } else if (hash === "#/settings") {
-      await renderSettings();
-    } else if (stockMatch) {
-      await renderStock(stockMatch[1].toUpperCase());
-    } else {
-      const health = await fetchJson("/api/health");
-      renderDashboard(dash, health);
+      await navPromise;
+      return;
     }
+    if (hash === "#/selection") {
+      await renderSelectionGuide();
+      await navPromise;
+      return;
+    }
+    if (hash === "#/guide") {
+      await renderTelegramGuide();
+      await navPromise;
+      return;
+    }
+    if (hash === "#/bot-guide") {
+      await renderBotGuide();
+      await navPromise;
+      return;
+    }
+    if (hash === "#/settings") {
+      await renderSettings();
+      await navPromise;
+      return;
+    }
+    if (stockMatch) {
+      await renderStock(stockMatch[1].toUpperCase());
+      await navPromise;
+      return;
+    }
+
+    const [dash, health] = await Promise.all([
+      fetchJson("/api/dashboard"),
+      fetchJson("/api/health"),
+    ]);
+    renderNav(dash.symbols || [], dash.inbox || {});
+    renderDashboard(dash, health);
   } catch (err) {
     app.innerHTML = `<p class="empty">שגיאה: ${err.message}</p>`;
   }

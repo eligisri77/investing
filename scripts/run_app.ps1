@@ -1,5 +1,6 @@
 param(
-    [switch]$Startup
+    [switch]$Startup,
+    [switch]$LiveData
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,12 @@ if (-not (Test-Path $python)) {
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing desktop app dependencies..."
     & $python -m pip install pystray Pillow pywebview
+}
+
+if ($LiveData) {
+    $live = Join-Path $env:LOCALAPPDATA "TradingPulse"
+    $env:TRADING_PULSE_USER_DATA = $live
+    Write-Host "Using live user data: $live"
 }
 
 $appArgs = @("-m", "trading_pulse.desktop")

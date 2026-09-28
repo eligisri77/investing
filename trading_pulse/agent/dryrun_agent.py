@@ -2350,12 +2350,30 @@ def execute_sell_command(
                 break
         trade = partial_sell_usd(cfg, state, symbol, sell_usd)
         if trade is None:
+            still_held = any(
+                str(p.get("symbol") or "").upper() == symbol.upper()
+                for p in (state.get("open_positions") or [])
+            )
+            if still_held:
+                return (
+                    f"❌ יש פוזיציה ב-<b>{symbol}</b> אבל אין מחיר זמין כרגע "
+                    f"(לרוב לפני פתיחת וול סטריט) — נסה שוב בעוד כמה דקות"
+                )
             return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
         sold_usd = float(trade.get("capital_usd", 0))
         fraction = min(1.0, sold_usd / cap_before) if cap_before else 1.0
     else:
         trade = partial_sell_position(cfg, state, symbol, fraction)
         if trade is None:
+            still_held = any(
+                str(p.get("symbol") or "").upper() == symbol.upper()
+                for p in (state.get("open_positions") or [])
+            )
+            if still_held:
+                return (
+                    f"❌ יש פוזיציה ב-<b>{symbol}</b> אבל אין מחיר זמין כרגע "
+                    f"(לרוב לפני פתיחת וול סטריט) — נסה שוב בעוד כמה דקות"
+                )
             return f"❌ <b>אין פוזיציה ב-{symbol}</b>"
         sold_usd = float(trade.get("capital_usd", 0))
     save_json(STATE_FILE, state)
@@ -2591,6 +2609,15 @@ def execute_swap_command(
     else:
         trade = partial_sell_position(cfg, state, from_symbol, sell_fraction)
     if trade is None:
+        still_held = any(
+            str(p.get("symbol") or "").upper() == from_symbol
+            for p in (state.get("open_positions") or [])
+        )
+        if still_held or from_symbol in held_now:
+            return (
+                f"❌ יש פוזיציה ב-<b>{from_symbol}</b> אבל אין מחיר זמין כרגע "
+                f"(לרוב לפני פתיחת וול סטריט) — נסה שוב בעוד כמה דקות"
+            )
         return f"❌ <b>אין פוזיציה ב-{from_symbol}</b>"
     sold_usd = float(trade.get("capital_usd", 0))
     sell_price = float(trade.get("exit_price") or 0) or None

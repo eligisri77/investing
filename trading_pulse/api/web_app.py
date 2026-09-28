@@ -191,7 +191,12 @@ def build_source_breakdown(rec: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def build_pick_record(plan: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
+def build_pick_record(
+    plan: dict[str, Any],
+    rec: dict[str, Any],
+    *,
+    include_hypothetical: bool = False,
+) -> dict[str, Any]:
     trading_day = plan["for_trading_day"]
     report = load_report(trading_day)
     executed = None
@@ -201,8 +206,9 @@ def build_pick_record(plan: dict[str, Any], rec: dict[str, Any]) -> dict[str, An
                 executed = trade
                 break
 
+    # Yahoo per-pick is slow — only for stock detail (or explicit opt-in).
     skipped_hypo = None
-    if not executed:
+    if include_hypothetical and not executed:
         try:
             skipped_hypo = hypothetical_trade(rec, trading_day)
         except Exception:
@@ -255,15 +261,42 @@ def build_pick_record(plan: dict[str, Any], rec: dict[str, Any]) -> dict[str, An
     }
 
 
-def load_all_picks(limit: int = 60) -> list[dict[str, Any]]:
+def load_all_picks(
+    limit: int = 60,
+    *,
+    include_hypothetical: bool = False,
+) -> list[dict[str, Any]]:
     picks: list[dict[str, Any]] = []
     plan_files = sorted(PLANS_DIR.glob("plan_*.json"), reverse=True)
     for path in plan_files[:limit]:
         plan = read_json(path)
         for rec in plan.get("recommendations", []):
-            picks.append(build_pick_record(plan, rec))
+            picks.append(
+                build_pick_record(
+                    plan,
+                    rec,
+                    include_hypothetical=include_hypothetical,
+                )
+            )
     picks.sort(key=lambda x: (x["trading_day"], x["symbol"]), reverse=True)
     return picks
+
+
+def enrich_picks_hypothetical(picks: list[dict[str, Any]], *, limit: int = 12) -> None:
+    """Fill skipped-day PnL via Yahoo for a small slice (mutates in place)."""
+    n = 0
+    for p in picks:
+        if n >= limit:
+            break
+        if p.get("invested") or p.get("hypothetical_if_skipped"):
+            continue
+        try:
+            hypo = hypothetical_trade(p, str(p["trading_day"]))
+        except Exception:
+            hypo = None
+        if hypo:
+            p["hypothetical_if_skipped"] = hypo
+            n += 1
 
 
 def fetch_price_history(symbol: str, trading_day: str, window_days: int = 7) -> list[dict[str, Any]]:
@@ -361,11 +394,27 @@ def api_health() -> dict[str, Any]:
     return collect_health(cfg)
 
 
+@app.get("/api/nav")
+def api_nav() -> dict[str, Any]:
+    """Lightweight nav payload — no Yahoo / no full picks scan."""
+    state = load_state()
+    open_syms = sorted(
+        {
+            str(p.get("symbol") or "").upper()
+            for p in (state.get("open_positions") or [])
+            if str(p.get("symbol") or "").strip()
+        }
+    )
+    return {"symbols": open_syms, "inbox": inbox_summary()}
+
+
 @app.get("/api/dashboard")
 def api_dashboard() -> dict[str, Any]:
     state = load_state()
     cfg = load_config()
-    picks = load_all_picks()
+    picks = load_all_picks(include_hypothetical=False)
+    recent = picks[:12]
+    enrich_picks_hypothetical(recent, limit=12)
     symbols = sorted({p["symbol"] for p in picks}, key=lambda s: s)
     invested = [p for p in picks if p["invested"]]
     total_pnl = sum(float(p["trade"]["pnl_usd"]) for p in invested if p.get("trade"))
@@ -380,7 +429,7 @@ def api_dashboard() -> dict[str, Any]:
         "invested_count": len(invested),
         "total_realized_pnl": round(total_pnl, 2),
         "symbols": symbols,
-        "recent_picks": picks[:12],
+        "recent_picks": recent,
         "equity_history": [
             {
                 "day": h.get("trading_day"),
@@ -410,9 +459,10 @@ def api_picks() -> list[dict[str, Any]]:
 @app.get("/api/stock/{symbol}")
 def api_stock(symbol: str) -> dict[str, Any]:
     symbol = symbol.upper()
-    picks = [p for p in load_all_picks() if p["symbol"] == symbol]
+    picks = [p for p in load_all_picks(include_hypothetical=False) if p["symbol"] == symbol]
     if not picks:
         raise HTTPException(status_code=404, detail=f"No recommendations for {symbol}")
+    enrich_picks_hypothetical(picks, limit=len(picks))
 
     invested_pnl = sum(
         float(p["trade"]["pnl_usd"]) for p in picks if p.get("trade")
